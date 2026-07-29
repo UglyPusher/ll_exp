@@ -1,3 +1,7 @@
+/**
+ * @file test_price_structures.cpp
+ * @brief Autonomous tests for PriceSegment masks and SideBook FIFO behavior.
+ */
 #include <fexma/order_book/side_book.hpp>
 
 using namespace fexma::order_book;

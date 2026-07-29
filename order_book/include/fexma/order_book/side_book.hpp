@@ -1,3 +1,10 @@
+/**
+ * @file side_book.hpp
+ * @brief One-sided price-indexed book for bids or asks.
+ *
+ * SideBook owns a fixed array of price segments for a configured price range.
+ * It maintains FIFO levels, side aggregate counts, and a cached best segment.
+ */
 #pragma once
 
 #include <cstddef>
@@ -9,6 +16,12 @@
 
 namespace fexma::order_book {
 
+/**
+ * @brief Bid or ask storage selected at compile time.
+ *
+ * @tparam BookSide Side::Bid finds maximum prices; Side::Ask finds minimum
+ * prices. The template avoids runtime side branches inside best-price scans.
+ */
 template <Side BookSide>
 class SideBook {
 public:
@@ -31,8 +44,9 @@ public:
   SideBook& operator=(SideBook&&) noexcept = default;
 
   void warm_up(std::uint32_t page_size = 4096) noexcept {
-    touch_pages(segments_.get(), sizeof(PriceSegment) * segment_count_,
-                page_size);
+    last_warm_up_ =
+        touch_pages(segments_.get(), sizeof(PriceSegment) * segment_count_,
+                    page_size);
     clear();
   }
 
@@ -62,6 +76,8 @@ public:
       pool[level.tail].next = slot;
     } else {
       level.head = slot;
+      // The occupancy bit must be set exactly when the FIFO transitions from
+      // empty to non-empty; validate_invariants() mirrors this relation.
       price_segment.active_mask |= (std::uint64_t{1} << offset);
     }
     level.tail = slot;
@@ -79,6 +95,8 @@ public:
     PriceSegment& price_segment = segments_[segment];
     PriceLevel& level = price_segment.levels[offset];
 
+    // Unlink in O(1) using intrusive prev/next slots; this is what allows
+    // cancel/change-to-zero by OrderId without walking the price level.
     if (order.prev != invalid_order_slot) {
       pool[order.prev].next = order.next;
     } else {
@@ -99,8 +117,10 @@ public:
     order.next = invalid_order_slot;
 
     if (level.order_count == 0) {
+      // Clearing the bit is coupled with the last-order removal from a price.
       price_segment.active_mask &= ~(std::uint64_t{1} << offset);
       if (segment == best_segment_ && price_segment.empty()) {
+        // Only removal of the current best segment can require a segment scan.
         recompute_best();
       }
     }
@@ -174,6 +194,14 @@ public:
     return best_segment_;
   }
 
+  [[nodiscard]] WarmUpTouchStats last_warm_up_stats() const noexcept {
+    return last_warm_up_;
+  }
+
+  [[nodiscard]] std::size_t byte_size() const noexcept {
+    return sizeof(PriceSegment) * segment_count_;
+  }
+
   void recompute_best() noexcept {
     best_segment_ = invalid_segment();
     if constexpr (BookSide == Side::Ask) {
@@ -236,17 +264,20 @@ private:
     return last - first + 1;
   }
 
-  static void touch_pages(void* memory, std::size_t bytes,
-                          std::uint32_t page_size) noexcept {
+  static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
+                                      std::uint32_t page_size) noexcept {
     if (memory == nullptr || bytes == 0) {
-      return;
+      return {};
     }
     const std::size_t step = page_size == 0 ? 4096U : page_size;
     auto* raw = static_cast<volatile std::uint8_t*>(memory);
+    std::size_t pages = 0;
     for (std::size_t offset = 0; offset < bytes; offset += step) {
       raw[offset] = raw[offset];
+      ++pages;
     }
     raw[bytes - 1] = raw[bytes - 1];
+    return {bytes, pages};
   }
 
   PriceTick min_price_tick_{};
@@ -257,6 +288,7 @@ private:
   std::size_t best_segment_{invalid_segment()};
   std::uint32_t order_count_{};
   Quantity total_quantity_{};
+  WarmUpTouchStats last_warm_up_{};
 };
 
 } // namespace fexma::order_book

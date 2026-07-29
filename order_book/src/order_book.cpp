@@ -1,7 +1,15 @@
+/**
+ * @file order_book.cpp
+ * @brief OrderBook facade implementation and slow invariant validation.
+ *
+ * The implementation coordinates the fixed pool, fixed OrderId index, and the
+ * bid/ask side books. It keeps structural operations local and deliberately
+ * avoids matcher policy, event generation, WAL, callbacks, locks, and atomics.
+ */
 #include <fexma/order_book/order_book.hpp>
 
-#include <array>
-#include <limits>
+#include <cassert>
+#include <memory>
 
 namespace fexma::order_book {
 
@@ -13,16 +21,18 @@ OrderBook::OrderBook(const OrderBookConfig& config)
       asks_(config.min_price_tick, config.max_price_tick) {}
 
 void OrderBook::warm_up() noexcept {
+  assert(empty());
   pool_.warm_up(config_.page_size);
   index_.warm_up(config_.page_size);
   bids_.warm_up(config_.page_size);
   asks_.warm_up(config_.page_size);
   selected_order_ = invalid_order_slot;
+  selected_generation_ = generation_;
 }
 
 PutResult OrderBook::put(const RestingOrderData& order) noexcept {
-  invalidate_selection();
-
+  // Failure checks happen before any mutation so rejected puts preserve the
+  // logical book, including the selected-order protocol state.
   if (order.quantity == 0) {
     return {PutStatus::InvalidQuantity};
   }
@@ -47,6 +57,7 @@ PutResult OrderBook::put(const RestingOrderData& order) noexcept {
 
   const IndexInsertStatus insert_status = index_.insert(order.id, slot);
   if (insert_status != IndexInsertStatus::Ok) {
+    // Roll back the acquired pool slot before any FIFO/aggregate mutation.
     pool_.release(slot);
     return {insert_status == IndexInsertStatus::Duplicate
                 ? PutStatus::DuplicateOrderId
@@ -58,6 +69,8 @@ PutResult OrderBook::put(const RestingOrderData& order) noexcept {
   } else {
     asks_.append(pool_, slot);
   }
+  // Selection is invalidated only after the FIFO/index/pool mutation commits.
+  mark_mutation();
   return {PutStatus::Ok};
 }
 
@@ -67,15 +80,18 @@ OrderBook::select_best_opposite(Side incoming_side) noexcept {
                                                     : bids_.best_order(pool_);
   selected_order_ = slot;
   if (slot == invalid_order_slot) {
+    selected_generation_ = generation_;
     return std::nullopt;
   }
 
   const Order& order = pool_[slot];
+  selected_generation_ = generation_;
   return BestOrderView{order.id, order.owner_id, order.price, order.remaining};
 }
 
 void OrderBook::decrement_selected(Quantity quantity) noexcept {
   assert(selected_order_ != invalid_order_slot);
+  assert(selected_generation_ == generation_);
   assert(quantity > 0);
 
   const OrderSlot slot = selected_order_;
@@ -84,6 +100,8 @@ void OrderBook::decrement_selected(Quantity quantity) noexcept {
   assert(order.in_use);
   assert(quantity <= order.remaining);
 
+  // Release builds trust the selected slot and avoid an index lookup. Debug
+  // assertions guard stale selection through the generation check above.
   if (order.side == Side::Bid) {
     bids_.reduce(pool_, slot, quantity);
   } else {
@@ -99,21 +117,24 @@ void OrderBook::decrement_selected(Quantity quantity) noexcept {
     }
     pool_.release(slot);
   }
+  ++generation_;
+  selected_generation_ = generation_;
 }
 
 CancelResult OrderBook::cancel(OrderId id) noexcept {
-  invalidate_selection();
   const OrderSlot slot = index_.find(id);
   if (slot == invalid_order_slot) {
     return {CancelStatus::NotFound};
   }
 
+  // NotFound is non-mutating. A successful cancel invalidates any selection
+  // before unlinking so stale-slot access cannot survive the call.
+  mark_mutation();
   remove_active_order(slot);
   return {CancelStatus::Ok};
 }
 
 ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
-  invalidate_selection();
   const OrderSlot slot = index_.find(id);
   if (slot == invalid_order_slot) {
     return {ChangeStatus::NotFound};
@@ -123,6 +144,9 @@ ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
   if (change.new_remaining >= order.remaining) {
     return {ChangeStatus::InvalidQuantity};
   }
+  // Invalid reductions are non-mutating; successful reductions invalidate
+  // selection because the cached snapshot may no longer match the slot.
+  mark_mutation();
   if (change.new_remaining == 0) {
     remove_active_order(slot);
     return {ChangeStatus::Ok};
@@ -139,7 +163,8 @@ ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
 
 bool OrderBook::validate_invariants() const noexcept {
   if (selected_order_ != invalid_order_slot &&
-      (selected_order_ >= pool_.capacity() || !pool_.in_use(selected_order_))) {
+      (selected_order_ >= pool_.capacity() || !pool_.in_use(selected_order_) ||
+       selected_generation_ != generation_)) {
     return false;
   }
 
@@ -147,19 +172,44 @@ bool OrderBook::validate_invariants() const noexcept {
     return false;
   }
 
-  std::unique_ptr<bool[]> fifo_seen;
-  std::unique_ptr<bool[]> free_seen;
+  std::unique_ptr<unsigned char[]> fifo_seen;
+  std::unique_ptr<unsigned char[]> free_seen;
   try {
-    fifo_seen = std::make_unique<bool[]>(pool_.capacity());
-    free_seen = std::make_unique<bool[]>(pool_.capacity());
+    fifo_seen = std::make_unique<unsigned char[]>(pool_.capacity());
+    free_seen = std::make_unique<unsigned char[]>(pool_.capacity());
   } catch (...) {
+    return false;
+  }
+
+  const auto mark_side = [this, &fifo_seen](const auto& book) noexcept {
+    for (std::size_t segment_index = 0; segment_index < book.segment_count();
+         ++segment_index) {
+      const PriceSegment& segment = book.segment(segment_index);
+      for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
+        const PriceLevel& level = segment.levels[offset];
+        OrderSlot steps = 0;
+        for (OrderSlot current = level.head; current != invalid_order_slot;
+             current = pool_[current].next) {
+          if (current >= pool_.capacity() || steps++ > pool_.capacity()) {
+            return false;
+          }
+          ++fifo_seen[current];
+        }
+      }
+    }
+    return true;
+  };
+
+  if (!mark_side(bids_) || !mark_side(asks_)) {
     return false;
   }
 
   OrderSlot fifo_count = 0;
   for (OrderSlot slot = 0; slot < pool_.capacity(); ++slot) {
-    fifo_seen[slot] = slot_in_any_fifo(slot);
-    if (fifo_seen[slot]) {
+    if (fifo_seen[slot] > 1) {
+      return false;
+    }
+    if (fifo_seen[slot] == 1) {
       ++fifo_count;
     }
   }
@@ -167,10 +217,10 @@ bool OrderBook::validate_invariants() const noexcept {
   OrderSlot free_count = 0;
   for (OrderSlot slot = pool_.free_head(); slot != invalid_order_slot;
        slot = pool_[slot].next) {
-    if (slot >= pool_.capacity() || free_seen[slot]) {
+    if (slot >= pool_.capacity() || free_seen[slot] != 0) {
       return false;
     }
-    free_seen[slot] = true;
+    free_seen[slot] = 1;
     ++free_count;
   }
 
@@ -183,13 +233,14 @@ bool OrderBook::validate_invariants() const noexcept {
 
   for (OrderSlot slot = 0; slot < pool_.capacity(); ++slot) {
     if (pool_.in_use(slot)) {
-      if (!fifo_seen[slot] || free_seen[slot]) {
+      if (fifo_seen[slot] != 1 || free_seen[slot] != 0) {
         return false;
       }
       if (index_.find(pool_[slot].id) != slot) {
         return false;
       }
-    } else if (fifo_seen[slot] || !free_seen[slot]) {
+    } else if (fifo_seen[slot] != 0 || free_seen[slot] != 1 ||
+               index_.find(pool_[slot].id) != invalid_order_slot) {
       return false;
     }
   }
@@ -219,6 +270,14 @@ bool OrderBook::price_in_range(PriceTick price) const noexcept {
 
 void OrderBook::invalidate_selection() noexcept {
   selected_order_ = invalid_order_slot;
+  selected_generation_ = generation_;
+}
+
+void OrderBook::mark_mutation() noexcept {
+  ++generation_;
+  // Generation moves before clearing selection so validate_invariants() can
+  // detect any stale selected slot accidentally left behind by future edits.
+  invalidate_selection();
 }
 
 void OrderBook::remove_active_order(OrderSlot slot) noexcept {

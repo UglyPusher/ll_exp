@@ -1,3 +1,11 @@
+/**
+ * @file order_id_index.hpp
+ * @brief Fixed-capacity OrderId -> OrderSlot index.
+ *
+ * The index uses open addressing over one preallocated bucket array. Deletion
+ * uses backward-shift compaction so long-running churn does not accumulate
+ * tombstones or require runtime rehash/allocation.
+ */
 #pragma once
 
 #include <cstddef>
@@ -14,6 +22,18 @@ enum class IndexInsertStatus : std::uint8_t {
   Full
 };
 
+/** @brief Probe diagnostics for tests and benchmarks. */
+struct IndexProbeStats {
+  std::size_t probes{};
+  std::size_t max_probe{};
+};
+
+/**
+ * @brief Fixed-size hash index from external OrderId to internal OrderSlot.
+ *
+ * @warning Not thread-safe and contains no atomics.
+ * @note Capacity is fixed at construction; no runtime rehash is performed.
+ */
 class OrderIdIndex {
 public:
   OrderIdIndex() = default;
@@ -31,7 +51,8 @@ public:
   OrderIdIndex& operator=(OrderIdIndex&&) noexcept = default;
 
   void warm_up(std::uint32_t page_size = 4096) noexcept {
-    touch_pages(buckets_.get(), sizeof(Bucket) * bucket_count_, page_size);
+    last_warm_up_ =
+        touch_pages(buckets_.get(), sizeof(Bucket) * bucket_count_, page_size);
     clear();
   }
 
@@ -44,13 +65,21 @@ public:
   }
 
   [[nodiscard]] OrderSlot find(OrderId id) const noexcept {
+    return find(id, nullptr);
+  }
+
+  [[nodiscard]] OrderSlot find(OrderId id,
+                               IndexProbeStats* stats) const noexcept {
     if (bucket_count_ == 0) {
       return invalid_order_slot;
     }
 
     std::size_t pos = hash(id) & (bucket_count_ - 1);
     for (std::size_t probe = 0; probe < bucket_count_; ++probe) {
+      record_probe(stats, probe + 1);
       const Bucket& bucket = buckets_[pos];
+      // A truly empty bucket terminates a linear-probe chain. Deleted buckets
+      // cannot terminate lookup because matching keys may be further ahead.
       if (bucket.state == State::Empty) {
         return invalid_order_slot;
       }
@@ -63,6 +92,11 @@ public:
   }
 
   [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderSlot slot) noexcept {
+    return insert(id, slot, nullptr);
+  }
+
+  [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderSlot slot,
+                                         IndexProbeStats* stats) noexcept {
     if (bucket_count_ == 0) {
       return IndexInsertStatus::Full;
     }
@@ -70,6 +104,7 @@ public:
     std::size_t first_tombstone = bucket_count_;
     std::size_t pos = hash(id) & (bucket_count_ - 1);
     for (std::size_t probe = 0; probe < bucket_count_; ++probe) {
+      record_probe(stats, probe + 1);
       Bucket& bucket = buckets_[pos];
       if (bucket.state == State::Occupied) {
         if (bucket.id == id) {
@@ -107,21 +142,24 @@ public:
   }
 
   [[nodiscard]] bool erase(OrderId id) noexcept {
+    return erase(id, nullptr);
+  }
+
+  [[nodiscard]] bool erase(OrderId id, IndexProbeStats* stats) noexcept {
     if (bucket_count_ == 0) {
       return false;
     }
 
     std::size_t pos = hash(id) & (bucket_count_ - 1);
     for (std::size_t probe = 0; probe < bucket_count_; ++probe) {
+      record_probe(stats, probe + 1);
       Bucket& bucket = buckets_[pos];
       if (bucket.state == State::Empty) {
         return false;
       }
       if (bucket.state == State::Occupied && bucket.id == id) {
-        bucket.state = State::Deleted;
-        bucket.slot = invalid_order_slot;
         --size_;
-        ++tombstones_;
+        erase_at(pos);
         return true;
       }
       pos = (pos + 1) & (bucket_count_ - 1);
@@ -135,6 +173,32 @@ public:
 
   [[nodiscard]] std::size_t bucket_count() const noexcept {
     return bucket_count_;
+  }
+
+  [[nodiscard]] std::size_t tombstone_count() const noexcept {
+    return tombstones_;
+  }
+
+  [[nodiscard]] double load_factor() const noexcept {
+    return bucket_count_ == 0 ? 0.0
+                              : static_cast<double>(size_) /
+                                    static_cast<double>(bucket_count_);
+  }
+
+  [[nodiscard]] static constexpr std::size_t bucket_size() noexcept {
+    return sizeof(Bucket);
+  }
+
+  [[nodiscard]] static constexpr std::size_t bucket_align() noexcept {
+    return alignof(Bucket);
+  }
+
+  [[nodiscard]] std::size_t byte_size() const noexcept {
+    return sizeof(Bucket) * bucket_count_;
+  }
+
+  [[nodiscard]] WarmUpTouchStats last_warm_up_stats() const noexcept {
+    return last_warm_up_;
   }
 
   template <typename Fn>
@@ -180,23 +244,49 @@ private:
     return static_cast<std::size_t>(x);
   }
 
-  static void touch_pages(void* memory, std::size_t bytes,
-                          std::uint32_t page_size) noexcept {
-    if (memory == nullptr || bytes == 0) {
+  static void record_probe(IndexProbeStats* stats, std::size_t probes) noexcept {
+    if (stats == nullptr) {
       return;
+    }
+    ++stats->probes;
+    if (probes > stats->max_probe) {
+      stats->max_probe = probes;
+    }
+  }
+
+  void erase_at(std::size_t erased_pos) noexcept {
+    buckets_[erased_pos] = Bucket{};
+    std::size_t candidate_pos = (erased_pos + 1) & (bucket_count_ - 1);
+    while (buckets_[candidate_pos].state == State::Occupied) {
+      const Bucket saved = buckets_[candidate_pos];
+      buckets_[candidate_pos] = Bucket{};
+      --size_;
+      (void)insert(saved.id, saved.slot);
+      candidate_pos = (candidate_pos + 1) & (bucket_count_ - 1);
+    }
+  }
+
+  static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
+                                      std::uint32_t page_size) noexcept {
+    if (memory == nullptr || bytes == 0) {
+      return {};
     }
     const std::size_t step = page_size == 0 ? 4096U : page_size;
     auto* raw = static_cast<volatile std::uint8_t*>(memory);
+    std::size_t pages = 0;
     for (std::size_t offset = 0; offset < bytes; offset += step) {
       raw[offset] = raw[offset];
+      ++pages;
     }
     raw[bytes - 1] = raw[bytes - 1];
+    return {bytes, pages};
   }
 
   std::size_t bucket_count_{};
   std::unique_ptr<Bucket[]> buckets_;
   std::size_t size_{};
   std::size_t tombstones_{};
+  WarmUpTouchStats last_warm_up_{};
 };
 
 } // namespace fexma::order_book

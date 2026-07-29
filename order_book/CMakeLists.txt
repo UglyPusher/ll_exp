@@ -64,7 +64,7 @@ foreach(test_name IN LISTS order_book_tests)
   add_executable(${test_name} tests/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE fexma::order_book)
   fexma_order_book_apply_warnings(${test_name})
-  if(test_name STREQUAL "test_randomized")
+  if(test_name STREQUAL "test_randomized" OR test_name STREQUAL "test_order_book")
     target_compile_definitions(${test_name} PRIVATE
       FEXMA_ORDER_BOOK_ENABLE_TEST_ACCESS
     )

@@ -1,3 +1,7 @@
+/**
+ * @file test_order_pool.cpp
+ * @brief Autonomous return-code tests for OrderPool acquire/release/warm-up.
+ */
 #include <fexma/order_book/order_pool.hpp>
 
 #include <vector>
