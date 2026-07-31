@@ -23,7 +23,9 @@ using PriceTick = std::uint32_t;
 /** @brief Integer quantity in the instrument's minimum quantity step. */
 using Quantity = std::uint32_t;
 /** @brief Index into the fixed order pool; never exposed by OrderBook API. */
-using OrderSlot = std::uint32_t;
+using OrderIndex = std::uint32_t;
+/** @brief Fixed order-pool capacity/count domain. */
+using OrderCapacity = std::uint32_t;
 
 /** @brief Resting order side. */
 enum class Side : std::uint8_t {
@@ -31,9 +33,9 @@ enum class Side : std::uint8_t {
   Ask
 };
 
-/** @brief Sentinel slot value used for FIFO links, freelist end, and selection. */
-inline constexpr OrderSlot invalid_order_slot =
-    (std::numeric_limits<OrderSlot>::max)();
+/** @brief Sentinel index value used for FIFO links, freelist end, and selection. */
+inline constexpr OrderIndex invalid_order_index =
+    (std::numeric_limits<OrderIndex>::max)();
 
 inline constexpr std::uint32_t price_segment_shift = 6;
 inline constexpr std::uint32_t prices_per_segment = 64;
@@ -49,7 +51,7 @@ inline constexpr std::uint32_t price_offset_mask = prices_per_segment - 1;
 struct OrderBookConfig {
   PriceTick min_price_tick{};
   PriceTick max_price_tick{};
-  OrderSlot max_orders{};
+  OrderCapacity max_orders{};
   std::uint32_t page_size{4096};
 };
 

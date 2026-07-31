@@ -1,6 +1,6 @@
 /**
  * @file order_id_index.hpp
- * @brief Fixed-capacity OrderId -> OrderSlot index.
+ * @brief Fixed-capacity OrderId -> OrderIndex index.
  *
  * The index uses open addressing over one preallocated bucket array. Deletion
  * uses backward-shift compaction so long-running churn does not accumulate
@@ -29,7 +29,7 @@ struct IndexProbeStats {
 };
 
 /**
- * @brief Fixed-size hash index from external OrderId to internal OrderSlot.
+ * @brief Fixed-size hash index from external OrderId to internal OrderIndex.
  *
  * @warning Not thread-safe and contains no atomics.
  * @note Capacity is fixed at construction; no runtime rehash is performed.
@@ -38,7 +38,7 @@ class OrderIdIndex {
 public:
   OrderIdIndex() = default;
 
-  explicit OrderIdIndex(std::size_t capacity)
+  explicit OrderIdIndex(OrderCapacity capacity)
       : bucket_count_(bucket_count_for(capacity)),
         buckets_(bucket_count_ == 0 ? nullptr
                                     : std::make_unique<Bucket[]>(bucket_count_)) {
@@ -64,14 +64,14 @@ public:
     }
   }
 
-  [[nodiscard]] OrderSlot find(OrderId id) const noexcept {
+  [[nodiscard]] OrderIndex find(OrderId id) const noexcept {
     return find(id, nullptr);
   }
 
-  [[nodiscard]] OrderSlot find(OrderId id,
-                               IndexProbeStats* stats) const noexcept {
+  [[nodiscard]] OrderIndex find(OrderId id,
+                                IndexProbeStats* stats) const noexcept {
     if (bucket_count_ == 0) {
-      return invalid_order_slot;
+      return invalid_order_index;
     }
 
     std::size_t pos = hash(id) & (bucket_count_ - 1);
@@ -81,21 +81,21 @@ public:
       // A truly empty bucket terminates a linear-probe chain. Deleted buckets
       // cannot terminate lookup because matching keys may be further ahead.
       if (bucket.state == State::Empty) {
-        return invalid_order_slot;
+        return invalid_order_index;
       }
       if (bucket.state == State::Occupied && bucket.id == id) {
         return bucket.slot;
       }
       pos = (pos + 1) & (bucket_count_ - 1);
     }
-    return invalid_order_slot;
+    return invalid_order_index;
   }
 
-  [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderSlot slot) noexcept {
+  [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderIndex slot) noexcept {
     return insert(id, slot, nullptr);
   }
 
-  [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderSlot slot,
+  [[nodiscard]] IndexInsertStatus insert(OrderId id, OrderIndex slot,
                                          IndexProbeStats* stats) noexcept {
     if (bucket_count_ == 0) {
       return IndexInsertStatus::Full;
@@ -221,13 +221,14 @@ private:
 
   struct Bucket {
     OrderId id{};
-    OrderSlot slot{invalid_order_slot};
+    OrderIndex slot{invalid_order_index};
     State state{State::Empty};
   };
 
-  static std::size_t bucket_count_for(std::size_t capacity) noexcept {
+  static std::size_t bucket_count_for(OrderCapacity capacity) noexcept {
     std::size_t count = 1;
-    const std::size_t required = capacity == 0 ? 1 : capacity * 2 + 1;
+    const std::size_t required =
+        capacity == 0 ? 1 : static_cast<std::size_t>(capacity) * 2 + 1;
     while (count < required) {
       count <<= 1;
     }

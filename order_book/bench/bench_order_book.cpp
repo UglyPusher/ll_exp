@@ -89,7 +89,7 @@ void print(std::string_view name, const Stats& stats) {
   std::cout << '\n';
 }
 
-OrderBook make_book(OrderSlot capacity = 300000) {
+OrderBook make_book(OrderCapacity capacity = 300000) {
   OrderBook book({1, 4096, capacity});
   book.warm_up();
   return book;
@@ -137,6 +137,36 @@ void print_layout() {
             << '\n';
 }
 
+void print_build_context(OrderCapacity pool_capacity,
+                         std::uint64_t batches,
+                         std::uint64_t ops_per_batch) {
+#if defined(_MSC_VER)
+  std::cout << "compiler: MSVC _MSC_VER=" << _MSC_VER
+            << " _MSC_FULL_VER=" << _MSC_FULL_VER << '\n';
+#else
+  std::cout << "compiler: unknown\n";
+#endif
+#if defined(_M_X64)
+  std::cout << "architecture: x64\n";
+#elif defined(_M_IX86)
+  std::cout << "architecture: x86\n";
+#else
+  std::cout << "architecture: unknown\n";
+#endif
+  std::cout << "optimization: /O2\n";
+#if defined(NDEBUG)
+  std::cout << "NDEBUG: defined\n";
+#else
+  std::cout << "NDEBUG: not defined\n";
+#endif
+  std::cout << "pool_benchmark: sizeof(Order)=" << OrderPool::order_size()
+            << " alignof(Order)=" << OrderPool::order_align()
+            << " capacity=" << pool_capacity
+            << " working_set_windows=64,4096,65536"
+            << " batch_count=" << batches
+            << " operations_per_batch=" << ops_per_batch << '\n';
+}
+
 Stats with_probe_stats(Stats stats, const IndexProbeStats& probes,
                        std::uint64_t probe_ops, std::size_t tombstones) {
   stats.avg_probes =
@@ -148,38 +178,119 @@ Stats with_probe_stats(Stats stats, const IndexProbeStats& probes,
   return stats;
 }
 
+OrderPool make_warmed_pool(OrderCapacity capacity) {
+  OrderPool pool(capacity, OrderPool::Uninitialized{});
+  pool.prefault_pages();
+  pool.reset();
+  return pool;
+}
+
+Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
+                            std::uint64_t batches,
+                            std::uint64_t ops_per_batch) {
+  if (window == 0 || (window & (window - 1)) != 0 ||
+      window > pool_capacity) {
+    std::abort();
+  }
+
+  OrderPool pool = make_warmed_pool(pool_capacity);
+  std::vector<OrderIndex> active(window);
+  for (OrderCapacity i = 0; i < window; ++i) {
+    active[i] = pool.acquire();
+  }
+
+  const std::size_t mask = static_cast<std::size_t>(window - 1);
+  std::size_t cursor = 0;
+  const Stats stats = run_batches(
+      batches, ops_per_batch, [&](std::uint64_t, std::uint64_t) {
+        pool.release(active[cursor]);
+        active[cursor] = pool.acquire();
+        cursor = (cursor + 1) & mask;
+      });
+
+  g_sink += active.front();
+  g_sink += active[active.size() / 2];
+  g_sink += active.back();
+  return stats;
+}
+
 } // namespace
 
 int main() {
   print_layout();
   constexpr std::uint64_t fast_batches = 1000;
   constexpr std::uint64_t fast_ops = 1000;
+  constexpr OrderCapacity pool_bench_capacity = 1'000'000;
   constexpr std::uint64_t book_batches = 300;
   constexpr std::uint64_t book_ops = 1000;
+  print_build_context(pool_bench_capacity, fast_batches, fast_ops);
 
   {
-    OrderPool pool(100000);
-    pool.warm_up();
-    print("pool_acquire", run_batches(fast_batches, fast_ops,
-                                      [&](std::uint64_t, std::uint64_t) {
-                                        g_sink += pool.acquire();
-                                      }));
+    OrderPool pool(pool_bench_capacity, OrderPool::Uninitialized{});
+    pool.prefault_pages();
+    const auto start = std::chrono::steady_clock::now();
+    pool.reset();
+    const auto stop = std::chrono::steady_clock::now();
+    const auto ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
+            .count();
+    std::cout << "pool_reset_1M: ns=" << ns
+              << " ms=" << static_cast<double>(ns) / 1'000'000.0 << '\n';
   }
 
   {
-    OrderPool pool(100000);
-    pool.warm_up();
-    std::vector<OrderSlot> slots;
-    slots.reserve(100000);
-    for (int i = 0; i < 100000; ++i) {
+    OrderPool pool(pool_bench_capacity, OrderPool::Uninitialized{});
+    const auto start = std::chrono::steady_clock::now();
+    pool.prefault_pages();
+    const auto stop = std::chrono::steady_clock::now();
+    const auto ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
+            .count();
+    std::cout << "pool_prefault_1M: ns=" << ns
+              << " ms=" << static_cast<double>(ns) / 1'000'000.0
+              << " bytes=" << pool.last_warm_up_stats().bytes
+              << " pages=" << pool.last_warm_up_stats().pages << '\n';
+  }
+
+  {
+    OrderPool pool = make_warmed_pool(pool_bench_capacity);
+    std::vector<OrderIndex> acquired(pool_bench_capacity);
+    std::size_t position = 0;
+    const Stats stats = run_batches(fast_batches, fast_ops,
+                                    [&](std::uint64_t, std::uint64_t) {
+                                      acquired[position] = pool.acquire();
+                                      ++position;
+                                    });
+    g_sink += acquired.front();
+    g_sink += acquired[acquired.size() / 2];
+    g_sink += acquired.back();
+    print("pool_bulk_acquire_1M", stats);
+  }
+
+  {
+    OrderPool pool = make_warmed_pool(pool_bench_capacity);
+    std::vector<OrderIndex> slots;
+    slots.reserve(pool_bench_capacity);
+    for (OrderCapacity i = 0; i < pool_bench_capacity; ++i) {
       slots.push_back(pool.acquire());
     }
     std::size_t index = 0;
-    print("pool_release", run_batches(fast_batches, 100,
-                                      [&](std::uint64_t, std::uint64_t) {
-                                        pool.release(slots[index++]);
-                                      }));
+    const Stats stats = run_batches(fast_batches, fast_ops,
+                                    [&](std::uint64_t, std::uint64_t) {
+                                      pool.release(slots[index++]);
+                                    });
+    g_sink += pool.free_count();
+    print("pool_bulk_release_1M", stats);
   }
+
+  print("pool_steady_state_churn_window_64",
+        run_pool_churn_window(pool_bench_capacity, 64, fast_batches, fast_ops));
+  print("pool_steady_state_churn_window_4096",
+        run_pool_churn_window(pool_bench_capacity, 4096, fast_batches,
+                              fast_ops));
+  print("pool_steady_state_churn_window_65536",
+        run_pool_churn_window(pool_bench_capacity, 65536, fast_batches,
+                              fast_ops));
 
   for (double load : {0.25, 0.50, 0.70, 0.85}) {
     OrderIdIndex index(100000);
@@ -188,7 +299,7 @@ int main() {
                                  load);
     for (std::size_t i = 0; i < active; ++i) {
       (void)index.insert(static_cast<OrderId>(i + 1),
-                         static_cast<OrderSlot>(i));
+                         static_cast<OrderIndex>(i));
     }
     IndexProbeStats probes{};
     const auto hit = run_batches(fast_batches, fast_ops,
@@ -219,7 +330,7 @@ int main() {
     OrderId id = 1;
     const auto stats = run_batches(fast_batches, fast_ops,
                                    [&](std::uint64_t, std::uint64_t) {
-                                     (void)index.insert(id, static_cast<OrderSlot>(id),
+                                     (void)index.insert(id, static_cast<OrderIndex>(id),
                                                         &insert_probes);
                                      ++id;
                                    });
@@ -231,7 +342,7 @@ int main() {
   {
     OrderIdIndex index(600000);
     for (OrderId id = 1; id <= fast_batches * fast_ops; ++id) {
-      (void)index.insert(id, static_cast<OrderSlot>(id));
+      (void)index.insert(id, static_cast<OrderIndex>(id));
     }
     IndexProbeStats erase_probes{};
     OrderId id = 1;
@@ -247,16 +358,16 @@ int main() {
   {
     OrderIdIndex index(128);
     for (OrderId id = 1; id <= 100; ++id) {
-      (void)index.insert(id, static_cast<OrderSlot>(id));
+      (void)index.insert(id, static_cast<OrderIndex>(id));
     }
     IndexProbeStats probes{};
     OrderId next = 1000;
     const auto stats = run_batches(1000, 1000, [&](std::uint64_t, std::uint64_t op) {
       const OrderId victim = 1 + static_cast<OrderId>(op % 100);
       (void)index.erase(victim, &probes);
-      (void)index.insert(next, static_cast<OrderSlot>(next), &probes);
+      (void)index.insert(next, static_cast<OrderIndex>(next), &probes);
       (void)index.erase(next, &probes);
-      (void)index.insert(victim, static_cast<OrderSlot>(victim), &probes);
+      (void)index.insert(victim, static_cast<OrderIndex>(victim), &probes);
       ++next;
     });
     print("index_churn_after_1M_insert_erase",

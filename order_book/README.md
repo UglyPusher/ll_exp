@@ -2,7 +2,7 @@
 
 Standalone single-threaded storage for resting orders in a low-latency matching
 engine. The library owns bid/ask books, intrusive FIFO price levels, a fixed
-order pool, and a fixed-capacity `OrderId -> OrderSlot` index.
+order pool, and a fixed-capacity `OrderId -> OrderIndex` index.
 
 It deliberately does not implement matcher policy, STP, events, WAL, accounts,
 networking, callbacks, virtual interfaces, locks, atomics, or session state.
@@ -33,9 +33,9 @@ Construction allocates exactly these fixed arrays:
 - one `PriceSegment[]` array for bids;
 - one `PriceSegment[]` array for asks.
 
-After construction and `warm_up()`, runtime operations `put`, `select`, `decrement`,
-`cancel`, and `change` do not allocate. `validate_invariants()` is explicitly a
-slow debug/test helper and may allocate temporary memory.
+After construction and `warm_up()`, runtime operations `put`, `select`,
+`decrement`, `cancel`, and `change` do not allocate. `validate_invariants()` is
+explicitly a slow debug/test helper and may allocate temporary memory.
 
 ## Selected-Order Protocol
 
@@ -47,7 +47,7 @@ matcher reads BestOrderView snapshot
 decrement_selected()
 ```
 
-A successful `select_best_opposite()` caches an internal slot and generation.
+A successful `select_best_opposite()` caches an internal order-pool index and generation.
 Calling `select_best_opposite()` again replaces the selection. Selecting an empty
 opposite side clears it. Any successful `put`, `cancel`, or `change` invalidates
 selection. Failed `put`, `cancel`, or `change` calls leave selection unchanged.
@@ -81,10 +81,18 @@ accept `IndexProbeStats*`; normal runtime calls do not collect stats.
 ## Warm-Up
 
 `warm_up()` touches the pages for the order pool, index buckets, bid segments,
-and ask segments through volatile page touches, then reinitializes structures.
+and ask segments through volatile page touches. `OrderPool::prefault_pages()`
+does not change logical pool state; explicit `OrderPool::reset()` is the
+operation that rebuilds the freelist and discards contents.
 
-`warm_up()` must be called before runtime orders are inserted. Calling it after
-runtime start would reset the book; Debug builds assert that the book is empty.
+`OrderPool(capacity)` remains a ready-to-use constructor and therefore builds
+the freelist immediately. `OrderBook` uses the explicit
+`OrderPool::Uninitialized` construction path instead, so pool pages are not
+first-touched until `OrderBook::warm_up()` runs on the caller's chosen thread.
+
+`warm_up()` must be called before runtime orders are inserted because the side
+books and index still clear their fixed storage; Debug builds assert that the
+book is empty.
 The library does not call `mlockall`, `VirtualLock`, thread affinity, or NUMA
 policy APIs.
 
@@ -102,14 +110,13 @@ measured sections. Benchmark does not set OS affinity or memory locking.
 
 ## Latest Local Run
 
-Environment checked: MSVC 2022 x64, Release build, Windows CMake from Visual
-Studio. GCC/Clang Linux builds were not run in this environment.
+Environment checked: MSVC 2022 x64, direct `cl` optimized build. GCC/Clang Linux
+builds were not run in this environment.
 
 Tests:
 
 ```text
-Release: 100% tests passed, 0 tests failed out of 5
-Debug:   100% tests passed, 0 tests failed out of 5
+/O2 /DNDEBUG: 5/5 tests passed
 ```
 
 Memory layout report:
@@ -125,28 +132,25 @@ OrderPool_bytes=4000000 OrderIdIndex_bytes=4194304
 Bid_segments_bytes=67080 Ask_segments_bytes=67080 Total_bytes=8328464
 ```
 
-Selected benchmark results from the latest run:
+Selected `bench_order_pool` results, median of five direct `/O2 /DNDEBUG` runs:
 
 ```text
-pool_acquire mean=6.0788 ns/op p99=47.4
-pool_release mean=24.393 ns/op p99=30
-index_find_hit_load_50 mean=12.5381 ns/op avg_probes=1.001 max_probes=2
-index_find_miss_load_85 mean=166.771 ns/op avg_probes=22.366 max_probes=318
-index_churn_after_1M_insert_erase mean=88.3759 ns/op tombstones=0
-select_best_only mean=9.0579 ns/op p99=17
-decrement_partial_only mean=21.2347 ns/op p99=49.6
-full_remove_keep_price_level_nonempty mean=260.704 ns/op p99=419.7
-full_remove_empty_price_level_same_segment mean=268.638 ns/op p99=424.1
-full_remove_cross_segment mean=217.46 ns/op p99=400
-cancel_head mean=260.294 ns/op p99=433.4
-change_quantity mean=160.809 ns/op p99=826.6
+pool_allocate_uninitialized median_ms=0.052 best_ms=0.0381 worst_ms=0.1201
+pool_prefault median_ms=24.5196 best_ms=17.5701 worst_ms=47.3211
+pool_reset median_ms=27.6719 best_ms=18.4878 worst_ms=43.7141
+pool_bulk_acquire_blocks block=64 median_mean=32.4688 ns/op median_p99=3600 ns/block
+pool_bulk_release_blocks block=64 median_mean=28.6712 ns/op median_p99=3000 ns/block
+pool_bulk_acquire_blocks block=4096 median_mean=33.6575 ns/op median_p99=579100 ns/block
+pool_bulk_release_blocks block=4096 median_mean=24.9241 ns/op median_p99=362900 ns/block
+pool_bulk_acquire_blocks block=65536 median_mean=30.5866 ns/op median_p99=3350800 ns/block
+pool_bulk_release_blocks block=65536 median_mean=25.58 ns/op median_p99=2473200 ns/block
 ```
 
 ## Known Limitations
 
 - No matcher, no execution policy, no event output.
 - `change` cannot increase quantity or change price.
-- `warm_up()` is pre-runtime only.
+- `warm_up()` is pre-runtime only for the full `OrderBook`.
 - `decrement_selected()` reports protocol errors by Debug assertions because the
   API is intentionally void.
 - Linux portability is expected from the C++20 code and CMake, but was not

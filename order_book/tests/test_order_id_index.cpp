@@ -13,7 +13,7 @@ int main() {
   OrderIdIndex index(4);
   index.warm_up();
 
-  if (index.find(10) != invalid_order_slot) {
+  if (index.find(10) != invalid_order_index) {
     return 1;
   }
   if (index.insert(10, 1) != IndexInsertStatus::Ok ||
@@ -27,7 +27,7 @@ int main() {
   if (index.find(20) != 2) {
     return 4;
   }
-  if (!index.erase(20) || index.find(20) != invalid_order_slot) {
+  if (!index.erase(20) || index.find(20) != invalid_order_index) {
     return 5;
   }
   if (index.insert(40, 2) != IndexInsertStatus::Ok ||
@@ -38,7 +38,7 @@ int main() {
   OrderIdIndex small(1);
   std::uint32_t inserted = 0;
   for (OrderId id = 1; id < 100; ++id) {
-    const IndexInsertStatus status = small.insert(id, static_cast<OrderSlot>(id));
+    const IndexInsertStatus status = small.insert(id, static_cast<OrderIndex>(id));
     if (status == IndexInsertStatus::Full) {
       break;
     }
@@ -55,7 +55,7 @@ int main() {
   std::vector<OrderId> active;
   for (OrderId id = 1; id <= 32; ++id) {
     IndexProbeStats stats{};
-    if (churn.insert(id * 129, static_cast<OrderSlot>(id), &stats) !=
+    if (churn.insert(id * 129, static_cast<OrderIndex>(id), &stats) !=
             IndexInsertStatus::Ok ||
         stats.probes == 0) {
       return 9;
@@ -78,7 +78,7 @@ int main() {
 
     const OrderId next = 1000000 + cycle * 129;
     IndexProbeStats insert_stats{};
-    if (churn.insert(next, static_cast<OrderSlot>(victim), &insert_stats) !=
+    if (churn.insert(next, static_cast<OrderIndex>(victim), &insert_stats) !=
         IndexInsertStatus::Ok) {
       return 11;
     }
@@ -90,7 +90,7 @@ int main() {
     if ((cycle % 10000) == 0) {
       for (OrderId id : active) {
         IndexProbeStats find_stats{};
-        if (churn.find(id, &find_stats) == invalid_order_slot ||
+        if (churn.find(id, &find_stats) == invalid_order_index ||
             find_stats.probes == 0) {
           return 12;
         }

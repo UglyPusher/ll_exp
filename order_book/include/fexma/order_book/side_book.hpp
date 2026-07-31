@@ -63,7 +63,7 @@ public:
     return price >= min_price_tick_ && price <= max_price_tick_;
   }
 
-  void append(OrderPool& pool, OrderSlot slot) noexcept {
+  void append(OrderPool& pool, OrderIndex slot) noexcept {
     Order& order = pool[slot];
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
@@ -71,8 +71,8 @@ public:
     PriceLevel& level = price_segment.levels[offset];
 
     order.prev = level.tail;
-    order.next = invalid_order_slot;
-    if (level.tail != invalid_order_slot) {
+    order.next = invalid_order_index;
+    if (level.tail != invalid_order_index) {
       pool[level.tail].next = slot;
     } else {
       level.head = slot;
@@ -88,22 +88,22 @@ public:
     update_best_after_insert(segment);
   }
 
-  void remove(OrderPool& pool, OrderSlot slot) noexcept {
+  void remove(OrderPool& pool, OrderIndex slot) noexcept {
     Order& order = pool[slot];
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
     PriceSegment& price_segment = segments_[segment];
     PriceLevel& level = price_segment.levels[offset];
 
-    // Unlink in O(1) using intrusive prev/next slots; this is what allows
+    // Unlink in O(1) using intrusive prev/next pool indices; this is what allows
     // cancel/change-to-zero by OrderId without walking the price level.
-    if (order.prev != invalid_order_slot) {
+    if (order.prev != invalid_order_index) {
       pool[order.prev].next = order.next;
     } else {
       level.head = order.next;
     }
 
-    if (order.next != invalid_order_slot) {
+    if (order.next != invalid_order_index) {
       pool[order.next].prev = order.prev;
     } else {
       level.tail = order.prev;
@@ -113,8 +113,8 @@ public:
     --level.order_count;
     --order_count_;
     total_quantity_ -= order.remaining;
-    order.prev = invalid_order_slot;
-    order.next = invalid_order_slot;
+    order.prev = invalid_order_index;
+    order.next = invalid_order_index;
 
     if (level.order_count == 0) {
       // Clearing the bit is coupled with the last-order removal from a price.
@@ -126,7 +126,7 @@ public:
     }
   }
 
-  void reduce(OrderPool& pool, OrderSlot slot, Quantity quantity) noexcept {
+  void reduce(OrderPool& pool, OrderIndex slot, Quantity quantity) noexcept {
     Order& order = pool[slot];
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
@@ -136,10 +136,10 @@ public:
     total_quantity_ -= quantity;
   }
 
-  [[nodiscard]] OrderSlot best_order(const OrderPool& pool) const noexcept {
+  [[nodiscard]] OrderIndex best_order(const OrderPool& pool) const noexcept {
     const PriceLevel* level = best_level();
     if (level == nullptr) {
-      return invalid_order_slot;
+      return invalid_order_index;
     }
     (void)pool;
     return level->head;

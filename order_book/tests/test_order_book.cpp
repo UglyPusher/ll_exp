@@ -30,8 +30,8 @@ struct Snapshot {
   std::vector<Quantity> quantities;
   std::optional<PriceTick> best_bid;
   std::optional<PriceTick> best_ask;
-  OrderSlot free_count{};
-  OrderSlot selected{};
+  OrderCapacity free_count{};
+  OrderIndex selected{};
   std::uint64_t generation{};
 
   [[nodiscard]] bool operator==(const Snapshot& rhs) const {
@@ -290,17 +290,17 @@ int main() {
     return 16;
   }
   (void)cancel_equiv_a.put({102, 1, Side::Ask, 110, 1});
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_slot) {
+  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
     return 17;
   }
   selected = cancel_equiv_a.select_best_opposite(Side::Bid);
   (void)cancel_equiv_a.cancel(102);
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_slot) {
+  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
     return 18;
   }
   selected = cancel_equiv_a.select_best_opposite(Side::Bid);
   (void)cancel_equiv_a.change(101, {1});
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_slot) {
+  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
     return 19;
   }
 
@@ -355,8 +355,40 @@ int main() {
   OrderBook empty({1, 2, 1});
   empty.warm_up();
   if (empty.select_best_opposite(Side::Bid).has_value() ||
-      empty.selected_order_for_test() != invalid_order_slot) {
+      empty.selected_order_for_test() != invalid_order_index) {
     return 28;
+  }
+
+  OrderBook reuse_book({1, 200, 2});
+  reuse_book.warm_up();
+  if (!reuse_book.put({1001, 1, Side::Ask, 100, 10}).ok() ||
+      !reuse_book.put({1002, 2, Side::Ask, 100, 20}).ok()) {
+    return 29;
+  }
+  if (!reuse_book.cancel(1001).ok() ||
+      !reuse_book.put({1003, 3, Side::Bid, 90, 30}).ok()) {
+    return 30;
+  }
+  if (!reuse_book.best_bid().has_value() || *reuse_book.best_bid() != 90 ||
+      !reuse_book.best_ask().has_value() || *reuse_book.best_ask() != 100 ||
+      !reuse_book.validate_invariants()) {
+    return 31;
+  }
+  std::vector<OrderId> bid_ids;
+  std::vector<OrderId> ask_ids;
+  (void)reuse_book.for_each_order_for_test(
+      Side::Bid, [&bid_ids](const BestOrderView& order) {
+        bid_ids.push_back(order.id);
+        return true;
+      });
+  (void)reuse_book.for_each_order_for_test(
+      Side::Ask, [&ask_ids](const BestOrderView& order) {
+        ask_ids.push_back(order.id);
+        return true;
+      });
+  if (bid_ids.size() != 1 || bid_ids[0] != 1003 || ask_ids.size() != 1 ||
+      ask_ids[0] != 1002) {
+    return 32;
   }
 
   return 0;

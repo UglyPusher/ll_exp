@@ -8,9 +8,9 @@ using namespace fexma::order_book;
 
 namespace {
 
-OrderSlot make_order(OrderPool& pool, OrderId id, Side side, PriceTick price,
+OrderIndex make_order(OrderPool& pool, OrderId id, Side side, PriceTick price,
                      Quantity quantity) {
-  const OrderSlot slot = pool.acquire();
+  const OrderIndex slot = pool.acquire();
   Order& order = pool[slot];
   order.id = id;
   order.owner_id = id + 1000;
@@ -38,13 +38,13 @@ int main() {
   }
 
   OrderPool pool(16);
-  pool.warm_up();
+  pool.prefault_pages();
   SideBook<Side::Ask> asks(64, 191);
   asks.warm_up();
 
-  const OrderSlot ask_high = make_order(pool, 1, Side::Ask, 130, 10);
-  const OrderSlot ask_low_a = make_order(pool, 2, Side::Ask, 70, 20);
-  const OrderSlot ask_low_b = make_order(pool, 3, Side::Ask, 70, 30);
+  const OrderIndex ask_high = make_order(pool, 1, Side::Ask, 130, 10);
+  const OrderIndex ask_low_a = make_order(pool, 2, Side::Ask, 70, 20);
+  const OrderIndex ask_low_b = make_order(pool, 3, Side::Ask, 70, 30);
   asks.append(pool, ask_high);
   asks.append(pool, ask_low_a);
   asks.append(pool, ask_low_b);
@@ -71,9 +71,9 @@ int main() {
 
   SideBook<Side::Bid> bids(64, 191);
   bids.warm_up();
-  const OrderSlot bid_low = make_order(pool, 4, Side::Bid, 65, 10);
-  const OrderSlot bid_high = make_order(pool, 5, Side::Bid, 190, 10);
-  const OrderSlot bid_mid = make_order(pool, 6, Side::Bid, 128, 10);
+  const OrderIndex bid_low = make_order(pool, 4, Side::Bid, 65, 10);
+  const OrderIndex bid_high = make_order(pool, 5, Side::Bid, 190, 10);
+  const OrderIndex bid_mid = make_order(pool, 6, Side::Bid, 128, 10);
   bids.append(pool, bid_low);
   bids.append(pool, bid_high);
   bids.append(pool, bid_mid);

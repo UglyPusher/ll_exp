@@ -66,7 +66,7 @@ public:
    * @param incoming_side Side of the incoming order.
    * @return Snapshot of the selected resting order, or std::nullopt if the
    * opposite side is empty.
-   * @post A successful call caches an internal selected-order slot. A later
+   * @post A successful call caches an internal selected-order index. A later
    * select replaces the previous selection. Empty selection clears it.
    * @warning Any successful put/cancel/change invalidates the current selection.
    */
@@ -114,7 +114,7 @@ public:
     return bids_.order_count() + asks_.order_count();
   }
 
-  [[nodiscard]] OrderSlot capacity() const noexcept {
+  [[nodiscard]] OrderCapacity capacity() const noexcept {
     return pool_.capacity();
   }
 
@@ -146,11 +146,11 @@ public:
   }
 
 #ifdef FEXMA_ORDER_BOOK_ENABLE_TEST_ACCESS
-  [[nodiscard]] OrderSlot free_count_for_test() const noexcept {
+  [[nodiscard]] OrderCapacity free_count_for_test() const noexcept {
     return pool_.free_count();
   }
 
-  [[nodiscard]] OrderSlot selected_order_for_test() const noexcept {
+  [[nodiscard]] OrderIndex selected_order_for_test() const noexcept {
     return selected_order_;
   }
 
@@ -170,8 +170,8 @@ public:
            ++segment_index) {
         const PriceSegment& segment = book.segment(segment_index);
         for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
-          for (OrderSlot slot = segment.levels[offset].head;
-               slot != invalid_order_slot; slot = pool_[slot].next) {
+          for (OrderIndex slot = segment.levels[offset].head;
+               slot != invalid_order_index; slot = pool_[slot].next) {
             const Order& order = pool_[slot];
             if (!fn(BestOrderView{order.id, order.owner_id, order.price,
                                   order.remaining})) {
@@ -188,8 +188,8 @@ public:
            --segment_index) {
         const PriceSegment& segment = book.segment(segment_index - 1);
         for (std::uint32_t offset = prices_per_segment; offset > 0; --offset) {
-          for (OrderSlot slot = segment.levels[offset - 1].head;
-               slot != invalid_order_slot; slot = pool_[slot].next) {
+          for (OrderIndex slot = segment.levels[offset - 1].head;
+               slot != invalid_order_index; slot = pool_[slot].next) {
             const Order& order = pool_[slot];
             if (!fn(BestOrderView{order.id, order.owner_id, order.price,
                                   order.remaining})) {
@@ -212,9 +212,9 @@ private:
   [[nodiscard]] bool price_in_range(PriceTick price) const noexcept;
   void invalidate_selection() noexcept;
   void mark_mutation() noexcept;
-  void remove_active_order(OrderSlot slot) noexcept;
-  [[nodiscard]] bool slot_in_any_fifo(OrderSlot slot) const noexcept;
-  [[nodiscard]] bool slot_in_freelist(OrderSlot slot) const noexcept;
+  void remove_active_order(OrderIndex slot) noexcept;
+  [[nodiscard]] bool slot_in_any_fifo(OrderIndex slot) const noexcept;
+  [[nodiscard]] bool slot_in_freelist(OrderIndex slot) const noexcept;
   [[nodiscard]] bool validate_side(Side side) const noexcept;
 
   OrderBookConfig config_;
@@ -222,7 +222,7 @@ private:
   OrderIdIndex index_;
   BidBook bids_;
   AskBook asks_;
-  OrderSlot selected_order_{invalid_order_slot};
+  OrderIndex selected_order_{invalid_order_index};
   std::uint64_t generation_{};
   std::uint64_t selected_generation_{};
 };
