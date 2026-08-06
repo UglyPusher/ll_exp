@@ -4,6 +4,9 @@
  */
 #include <fexma/order_book/order_pool.hpp>
 
+#include <algorithm>
+#include <random>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -19,32 +22,77 @@ bool check(bool condition) noexcept {
 
 int main() {
   {
+    OrderPool default_pool;
+    if (!check(!default_pool.initialized()) ||
+        !check(default_pool.capacity() == 0) ||
+        !check(default_pool.free_count() == 0) ||
+        !check(default_pool.free_head() == invalid_order_index) ||
+        !check(!default_pool.in_use(0)) ||
+        !check(!default_pool.validate_freelist())) {
+      return 28;
+    }
+  }
+
+  {
+    OrderPool empty_pool(0);
+    if (!check(empty_pool.initialized()) ||
+        !check(empty_pool.capacity() == 0) ||
+        !check(empty_pool.free_count() == 0) ||
+        !check(empty_pool.free_head() == invalid_order_index) ||
+        !check(empty_pool.emplace(1, 1, 1, 1, Side::Bid) ==
+               invalid_order_index) ||
+        !check(!empty_pool.in_use(0)) ||
+        !check(empty_pool.validate_freelist())) {
+      return 29;
+    }
+  }
+
+  {
+    bool rejected = false;
+    try {
+      OrderPool invalid_pool(invalid_order_index, OrderPool::Uninitialized{});
+      (void)invalid_pool;
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    if (!check(rejected)) {
+      return 30;
+    }
+  }
+
+  {
     OrderPool source(4);
     const OrderIndex slot = source.acquire_for_test();
     source[slot].id = 91;
     OrderPool target(std::move(source));
-    if (!check(source.capacity() == 0) ||
+    if (!check(!source.initialized()) ||
+        !check(source.capacity() == 0) ||
         !check(source.free_count() == 0) ||
         !check(source.free_head() == invalid_order_index) ||
         !check(source.acquire_for_test() == invalid_order_index) ||
-        !check(source.validate_freelist())) {
+        !check(!source.in_use(slot)) ||
+        !check(!source.validate_freelist())) {
       return 23;
     }
-    if (!check(target.capacity() == 4) || !check(target.in_use(slot)) ||
+    if (!check(target.initialized()) || !check(target.capacity() == 4) ||
+        !check(target.in_use(slot)) ||
         !check(target[slot].id == 91) || !check(target.validate_freelist())) {
       return 24;
     }
 
     OrderPool assigned(2);
     assigned = std::move(target);
-    if (!check(target.capacity() == 0) ||
+    if (!check(!target.initialized()) ||
+        !check(target.capacity() == 0) ||
         !check(target.free_count() == 0) ||
         !check(target.free_head() == invalid_order_index) ||
         !check(target.acquire_for_test() == invalid_order_index) ||
-        !check(target.validate_freelist())) {
+        !check(!target.in_use(slot)) ||
+        !check(!target.validate_freelist())) {
       return 25;
     }
-    if (!check(assigned.capacity() == 4) || !check(assigned.in_use(slot)) ||
+    if (!check(assigned.initialized()) || !check(assigned.capacity() == 4) ||
+        !check(assigned.in_use(slot)) ||
         !check(assigned[slot].id == 91) ||
         !check(assigned.validate_freelist())) {
       return 26;
@@ -53,22 +101,29 @@ int main() {
 
   {
     OrderPool raw_pool(4, OrderPool::Uninitialized{});
-    if (!check(raw_pool.capacity() == 4) ||
+    if (!check(!raw_pool.initialized()) ||
+        !check(raw_pool.capacity() == 4) ||
         !check(raw_pool.free_count() == 0) ||
         !check(raw_pool.free_head() == invalid_order_index) ||
+        !check(!raw_pool.in_use(0)) ||
+        !check(!raw_pool.in_use(raw_pool.capacity())) ||
         !check(raw_pool.acquire_for_test() == invalid_order_index) ||
-        !check(raw_pool.validate_freelist())) {
+        !check(!raw_pool.validate_freelist())) {
       return 20;
     }
     raw_pool.prefault_pages();
-    if (!check(raw_pool.free_count() == 0) ||
+    if (!check(!raw_pool.initialized()) ||
+        !check(raw_pool.free_count() == 0) ||
         !check(raw_pool.free_head() == invalid_order_index) ||
-        !check(raw_pool.validate_freelist())) {
+        !check(!raw_pool.in_use(0)) ||
+        !check(!raw_pool.validate_freelist())) {
       return 21;
     }
     raw_pool.reset();
-    if (!check(raw_pool.free_count() == raw_pool.capacity()) ||
+    if (!check(raw_pool.initialized()) ||
+        !check(raw_pool.free_count() == raw_pool.capacity()) ||
         !check(raw_pool.free_head() == 0) ||
+        !check(!raw_pool.in_use(0)) ||
         !check(raw_pool.validate_freelist())) {
       return 22;
     }
@@ -94,6 +149,18 @@ int main() {
       return 27;
     }
   }
+
+#ifdef NDEBUG
+  {
+    OrderPool raw_emplace(1, OrderPool::Uninitialized{});
+    if (!check(raw_emplace.emplace(1, 1, 1, 1, Side::Bid) ==
+               invalid_order_index) ||
+        !check(!raw_emplace.in_use(0)) ||
+        !check(!raw_emplace.validate_freelist())) {
+      return 31;
+    }
+  }
+#endif
 
   std::vector<OrderIndex> slots;
   for (int i = 0; i < 4; ++i) {
@@ -190,13 +257,13 @@ int main() {
 
     const OrderIndex free_head = prefault_pool.free_head();
     const OrderCapacity free_count = prefault_pool.free_count();
-    const OrderIndex released_next = prefault_pool[second].next;
+    const OrderIndex released_next = prefault_pool.next_for_test(second);
 
     prefault_pool.prefault_pages();
 
     if (!check(prefault_pool.free_head() == free_head) ||
         !check(prefault_pool.free_count() == free_count) ||
-        !check(prefault_pool[second].next == released_next) ||
+        !check(prefault_pool.next_for_test(second) == released_next) ||
         !check(!prefault_pool.in_use(second))) {
       return 9;
     }
@@ -228,6 +295,8 @@ int main() {
     reset_pool.reset();
     if (!check(reset_pool.free_count() == reset_pool.capacity()) ||
         !check(reset_pool.free_head() == 0) ||
+        !check(!reset_pool.in_use(first)) ||
+        !check(!reset_pool.in_use(second)) ||
         !check(reset_pool.validate_freelist())) {
       return 11;
     }
@@ -246,7 +315,7 @@ int main() {
 
   {
     OrderPool corrupt_cycle(3);
-    corrupt_cycle[0].next = 0;
+    corrupt_cycle.set_next_for_test(0, 0);
     if (check(corrupt_cycle.validate_freelist())) {
       return 14;
     }
@@ -254,8 +323,8 @@ int main() {
 
   {
     OrderPool corrupt_repeat(3);
-    corrupt_repeat[0].next = 1;
-    corrupt_repeat[1].next = 0;
+    corrupt_repeat.set_next_for_test(0, 1);
+    corrupt_repeat.set_next_for_test(1, 0);
     if (check(corrupt_repeat.validate_freelist())) {
       return 15;
     }
@@ -263,7 +332,7 @@ int main() {
 
   {
     OrderPool corrupt_range(3);
-    corrupt_range[0].next = corrupt_range.capacity();
+    corrupt_range.set_next_for_test(0, corrupt_range.capacity());
     if (check(corrupt_range.validate_freelist())) {
       return 16;
     }
@@ -271,7 +340,7 @@ int main() {
 
   {
     OrderPool corrupt_count(3);
-    corrupt_count[0].next = invalid_order_index;
+    corrupt_count.set_next_for_test(0, invalid_order_index);
     if (check(corrupt_count.validate_freelist())) {
       return 17;
     }
@@ -283,6 +352,55 @@ int main() {
     lost_slot.set_in_use_for_test(slot, false);
     if (check(lost_slot.validate_freelist())) {
       return 18;
+    }
+  }
+
+  {
+    constexpr OrderCapacity model_capacity = 16;
+    OrderPool model_pool(model_capacity);
+    std::vector<bool> model(model_capacity, false);
+    std::mt19937 rng(0x5eed);
+    for (int step = 0; step < 2000; ++step) {
+      const int op = static_cast<int>(rng() % 10);
+      if (op < 5) {
+        const OrderIndex slot =
+            model_pool.emplace(static_cast<OrderId>(step), 1, 1, 1, Side::Bid);
+        OrderCapacity active = 0;
+        for (bool used : model) {
+          active += used ? 1U : 0U;
+        }
+        if (active == model_capacity) {
+          if (!check(slot == invalid_order_index)) {
+            return 32;
+          }
+        } else {
+          if (!check(slot < model_capacity) || !check(!model[slot])) {
+            return 33;
+          }
+          model[slot] = true;
+        }
+      } else if (op < 9) {
+        const OrderIndex slot = static_cast<OrderIndex>(rng() % model_capacity);
+        if (model[slot]) {
+          model_pool.release(slot);
+          model[slot] = false;
+        }
+      } else {
+        model_pool.reset();
+        std::fill(model.begin(), model.end(), false);
+      }
+
+      OrderCapacity active = 0;
+      for (OrderIndex slot = 0; slot < model_capacity; ++slot) {
+        active += model[slot] ? 1U : 0U;
+        if (!check(model_pool.in_use(slot) == model[slot])) {
+          return 34;
+        }
+      }
+      if (!check(model_pool.free_count() + active == model_capacity) ||
+          !check(model_pool.validate_freelist())) {
+        return 35;
+      }
     }
   }
 

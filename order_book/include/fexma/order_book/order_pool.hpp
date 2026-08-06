@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 #include <fexma/order_book/types.hpp>
@@ -51,6 +52,11 @@ private:
  *
  * Free slots are kept in a singly linked freelist headed by free_head_. The
  * freelist reuses Order::next as its link field while a slot is not in use.
+ * Until reset() initializes the freelist, only capacity(), data(),
+ * prefault_pages(), last_warm_up_stats(), initialized(), in_use(), and reset()
+ * are valid operations. prefault_pages() only touches bytes and must not read
+ * Order fields.
+ *
  * Once emplace() activates a slot, Order::prev and Order::next are reset and
  * become intrusive FIFO links owned by the corresponding price level. release()
  * moves the slot back to the freelist in O(1).
@@ -58,14 +64,22 @@ private:
  * The public allocation API is intentionally narrow: emplace() is the only
  * normal way to acquire an active order, so every returned slot has a fully
  * initialized payload and clean FIFO links. operator[] is an unchecked fast-path
- * accessor in release builds; callers must pass a valid slot obtained from this
- * pool.
+ * accessor in release builds; callers must pass an active slot obtained from
+ * this pool. reset() invalidates every previously returned OrderIndex.
+ *
+ * Order::in_use protects release() and diagnostics from invalid and double
+ * release, but it cannot detect a stale OrderIndex after the slot has been
+ * released and reused. OrderIndex is safe only within the lifecycle established
+ * by the owning OrderBook.
  *
  * @warning Not thread-safe. A single external owner must serialize access.
- * @note release() ignores invalid indices and double-release attempts.
+ * @note Invalid indices and double release are caller bugs. Debug builds assert;
+ * Release builds defensively ignore them without mutating the freelist.
  * @note validate_freelist() is diagnostic only and allocates scratch memory.
  */
 class OrderPool {
+  struct CheckedCapacity {};
+
 public:
   struct Uninitialized {};
 
@@ -77,12 +91,8 @@ public:
   }
 
   OrderPool(OrderCapacity capacity, Uninitialized)
-      : orders_(capacity == 0 ? nullptr
-                              : std::make_unique_for_overwrite<Order[]>(
-                                    static_cast<std::size_t>(capacity))),
-        capacity_(capacity) {
-    assert(capacity != invalid_order_index);
-  }
+      : OrderPool(validate_capacity(capacity), Uninitialized{},
+                  CheckedCapacity{}) {}
 
   OrderPool(const OrderPool&) = delete;
   OrderPool& operator=(const OrderPool&) = delete;
@@ -112,6 +122,12 @@ public:
 
   /**
    * @brief Touches backing pages only; it does not initialize Order fields.
+   *
+   * This is a best-effort first-touch helper. It does not keep pages resident
+   * and is not a substitute for mlockall, VirtualLock, or a platform equivalent.
+   * touch_stride must be no larger than the real page size to guarantee that
+   * every page is touched. Reported page_count is based on the supplied stride,
+   * not necessarily on the operating system's page size.
    */
   void prefault_pages(std::uint32_t touch_stride = 4096) noexcept {
     last_warm_up_ = touch_pages(
@@ -122,6 +138,13 @@ public:
   [[nodiscard]] OrderIndex emplace(OrderId id, OwnerId owner_id,
                                    PriceTick price, Quantity remaining,
                                    Side side) noexcept {
+#ifndef NDEBUG
+    assert(initialized_);
+#endif
+    if (!initialized_) {
+      return invalid_order_index;
+    }
+
     const OrderIndex slot = acquire();
     if (slot == invalid_order_index) {
       return invalid_order_index;
@@ -139,31 +162,40 @@ public:
   }
 
   void release(OrderIndex slot) noexcept {
+    const bool valid =
+        initialized_ && slot < capacity_ && orders_[slot].in_use;
 #ifndef NDEBUG
-    assert(slot < capacity_);
-    assert(orders_[slot].in_use);
+    assert(valid);
 #endif
-    if (slot >= capacity_ || !orders_[slot].in_use) {
+    if (!valid) [[unlikely]] {
       return;
     }
 
 #ifndef NDEBUG
+    assert(free_count_ < capacity_);
+#endif
+#ifndef NDEBUG
     poison_free_slot(slot);
+#else
+    orders_[slot].in_use = false;
 #endif
     Order& order = orders_[slot];
     order.next = free_head_;
-    order.in_use = false;
     free_head_ = slot;
     ++free_count_;
   }
 
   [[nodiscard]] Order& operator[](OrderIndex slot) noexcept {
+    assert(initialized_);
     assert(slot < capacity_);
+    assert(orders_[slot].in_use);
     return orders_[slot];
   }
 
   [[nodiscard]] const Order& operator[](OrderIndex slot) const noexcept {
+    assert(initialized_);
     assert(slot < capacity_);
+    assert(orders_[slot].in_use);
     return orders_[slot];
   }
 
@@ -183,8 +215,12 @@ public:
     return free_count_;
   }
 
+  [[nodiscard]] bool initialized() const noexcept {
+    return initialized_;
+  }
+
   [[nodiscard]] bool in_use(OrderIndex slot) const noexcept {
-    return slot < capacity_ && orders_[slot].in_use;
+    return initialized_ && slot < capacity_ && orders_[slot].in_use;
   }
 
   [[nodiscard]] OrderIndex free_head() const noexcept {
@@ -196,6 +232,9 @@ public:
    */
   [[nodiscard]] bool validate_freelist() const noexcept {
     if (!initialized_) {
+      return false;
+    }
+    if (capacity_ == 0) {
       return free_head_ == invalid_order_index && free_count_ == 0;
     }
 
@@ -204,6 +243,8 @@ public:
       seen = std::make_unique<unsigned char[]>(
           static_cast<std::size_t>(capacity_));
     } catch (...) {
+      // Current bool diagnostics cannot distinguish scratch allocation failure
+      // from an actual structural freelist error.
       return false;
     }
 
@@ -248,6 +289,14 @@ public:
   void set_in_use_for_test(OrderIndex slot, bool value) noexcept {
     orders_[slot].in_use = value;
   }
+
+  void set_next_for_test(OrderIndex slot, OrderIndex next) noexcept {
+    orders_[slot].next = next;
+  }
+
+  [[nodiscard]] OrderIndex next_for_test(OrderIndex slot) const noexcept {
+    return orders_[slot].next;
+  }
 #endif
 
   [[nodiscard]] static constexpr std::size_t order_size() noexcept {
@@ -259,11 +308,23 @@ public:
   }
 
 private:
+  OrderPool(OrderCapacity capacity, Uninitialized, CheckedCapacity)
+      : orders_(capacity == 0 ? nullptr
+                              : std::make_unique_for_overwrite<Order[]>(
+                                    static_cast<std::size_t>(capacity))),
+        capacity_(capacity) {}
+
   [[nodiscard]] OrderIndex acquire() noexcept {
     if (free_head_ == invalid_order_index) {
       return invalid_order_index;
     }
 
+#ifndef NDEBUG
+    assert(initialized_);
+    assert(free_count_ > 0);
+    assert(free_head_ < capacity_);
+    assert(!orders_[free_head_].in_use);
+#endif
     const OrderIndex slot = free_head_;
     Order& order = orders_[slot];
     // Free entries use Order::next as freelist linkage. Keep acquire()
@@ -298,7 +359,7 @@ private:
   void initialize_freelist() noexcept {
     // invalid_order_index is the all-ones sentinel, so it must never be a real
     // addressable slot.
-    assert(capacity_ != invalid_order_index);
+    assert(capacity_ <= max_capacity());
     free_head_ = capacity_ == 0 ? invalid_order_index : 0;
     free_count_ = capacity_;
     initialized_ = true;
@@ -314,9 +375,6 @@ private:
 
   void poison_free_slot(OrderIndex slot) noexcept {
     Order& order = orders_[slot];
-    order.id = 0;
-    order.owner_id = 0;
-    order.price = 0;
     order.remaining = 0;
     order.prev = invalid_order_index;
     order.next = invalid_order_index;
@@ -327,6 +385,24 @@ private:
     order.owner_id = (std::numeric_limits<OwnerId>::max)();
     order.price = (std::numeric_limits<PriceTick>::max)();
 #endif
+  }
+
+  [[nodiscard]] static constexpr OrderCapacity max_capacity() noexcept {
+    constexpr auto order_index_max = (std::numeric_limits<OrderIndex>::max)();
+    constexpr auto order_capacity_max =
+        (std::numeric_limits<OrderCapacity>::max)();
+    if constexpr (order_capacity_max < order_index_max) {
+      return order_capacity_max;
+    } else {
+      return static_cast<OrderCapacity>(order_index_max - 1);
+    }
+  }
+
+  [[nodiscard]] static OrderCapacity validate_capacity(OrderCapacity capacity) {
+    if (capacity > max_capacity()) {
+      throw std::invalid_argument("OrderPool capacity exceeds OrderIndex range");
+    }
+    return capacity;
   }
 
   std::unique_ptr<Order[]> orders_;

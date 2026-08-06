@@ -184,8 +184,9 @@ bool OrderBook::validate_invariants() const noexcept {
         const PriceLevel& level = segment.levels[offset];
         OrderCapacity steps = 0;
         for (OrderIndex current = level.head; current != invalid_order_index;
-             current = pool_[current].next) {
-          if (current >= pool_.capacity() || steps++ > pool_.capacity()) {
+             current = pool_.data()[current].next) {
+          if (current >= pool_.capacity() || !pool_.in_use(current) ||
+              steps++ > pool_.capacity()) {
             return false;
           }
           ++fifo_seen[current];
@@ -211,7 +212,7 @@ bool OrderBook::validate_invariants() const noexcept {
 
   OrderCapacity free_count = 0;
   for (OrderIndex slot = pool_.free_head(); slot != invalid_order_index;
-       slot = pool_[slot].next) {
+       slot = pool_.data()[slot].next) {
     if (slot >= pool_.capacity() || free_seen[slot] != 0) {
       return false;
     }
@@ -298,13 +299,14 @@ bool OrderBook::slot_in_any_fifo(OrderIndex slot) const noexcept {
         OrderIndex current = segment.levels[offset].head;
         OrderCapacity steps = 0;
         while (current != invalid_order_index) {
-          if (current >= pool_.capacity() || steps++ > pool_.capacity()) {
+          if (current >= pool_.capacity() || !pool_.in_use(current) ||
+              steps++ > pool_.capacity()) {
             return false;
           }
           if (current == slot) {
             return true;
           }
-          current = pool_[current].next;
+          current = pool_.data()[current].next;
         }
       }
     }
@@ -316,7 +318,10 @@ bool OrderBook::slot_in_any_fifo(OrderIndex slot) const noexcept {
 
 bool OrderBook::slot_in_freelist(OrderIndex slot) const noexcept {
   for (OrderIndex current = pool_.free_head(); current != invalid_order_index;
-       current = pool_[current].next) {
+       current = pool_.data()[current].next) {
+    if (current >= pool_.capacity()) {
+      return false;
+    }
     if (current == slot) {
       return true;
     }
