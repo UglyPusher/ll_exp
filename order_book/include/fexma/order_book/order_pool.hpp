@@ -41,10 +41,29 @@ private:
 };
 
 /**
- * @brief Fixed-capacity pool of Order objects addressed by OrderIndex.
+ * @brief Fixed-capacity intrusive storage for resting orders.
+ *
+ * OrderPool is the order book's allocator and backing store for Order objects.
+ * It owns one contiguous array allocated at construction time and returns
+ * stable OrderIndex values instead of pointers. Runtime mutation uses these
+ * indices to avoid heap allocation, pointer ownership, and allocator jitter on
+ * the hot path.
+ *
+ * Free slots are kept in a singly linked freelist headed by free_head_. The
+ * freelist reuses Order::next as its link field while a slot is not in use.
+ * Once emplace() activates a slot, Order::prev and Order::next are reset and
+ * become intrusive FIFO links owned by the corresponding price level. release()
+ * moves the slot back to the freelist in O(1).
+ *
+ * The public allocation API is intentionally narrow: emplace() is the only
+ * normal way to acquire an active order, so every returned slot has a fully
+ * initialized payload and clean FIFO links. operator[] is an unchecked fast-path
+ * accessor in release builds; callers must pass a valid slot obtained from this
+ * pool.
  *
  * @warning Not thread-safe. A single external owner must serialize access.
  * @note release() ignores invalid indices and double-release attempts.
+ * @note validate_freelist() is diagnostic only and allocates scratch memory.
  */
 class OrderPool {
 public:
@@ -61,7 +80,9 @@ public:
       : orders_(capacity == 0 ? nullptr
                               : std::make_unique_for_overwrite<Order[]>(
                                     static_cast<std::size_t>(capacity))),
-        capacity_(capacity) {}
+        capacity_(capacity) {
+    assert(capacity != invalid_order_index);
+  }
 
   OrderPool(const OrderPool&) = delete;
   OrderPool& operator=(const OrderPool&) = delete;
@@ -89,25 +110,13 @@ public:
     initialize_freelist();
   }
 
+  /**
+   * @brief Touches backing pages only; it does not initialize Order fields.
+   */
   void prefault_pages(std::uint32_t touch_stride = 4096) noexcept {
     last_warm_up_ = touch_pages(
         orders_.get(), sizeof(Order) * static_cast<std::size_t>(capacity_),
         touch_stride);
-  }
-
-  [[nodiscard]] OrderIndex acquire() noexcept {
-    if (free_head_ == invalid_order_index) {
-      return invalid_order_index;
-    }
-
-    const OrderIndex slot = free_head_;
-    Order& order = orders_[slot];
-    // Free entries use Order::next as freelist linkage. The caller is
-    // responsible for fully initializing the active order payload.
-    free_head_ = order.next;
-    order.in_use = true;
-    --free_count_;
-    return slot;
   }
 
   [[nodiscard]] OrderIndex emplace(OrderId id, OwnerId owner_id,
@@ -126,7 +135,6 @@ public:
     order.prev = invalid_order_index;
     order.next = invalid_order_index;
     order.side = side;
-    order.in_use = true;
     return slot;
   }
 
@@ -150,10 +158,12 @@ public:
   }
 
   [[nodiscard]] Order& operator[](OrderIndex slot) noexcept {
+    assert(slot < capacity_);
     return orders_[slot];
   }
 
   [[nodiscard]] const Order& operator[](OrderIndex slot) const noexcept {
+    assert(slot < capacity_);
     return orders_[slot];
   }
 
@@ -181,6 +191,9 @@ public:
     return free_head_;
   }
 
+  /**
+   * @brief Slow diagnostic check; allocates scratch memory and is not hot path.
+   */
   [[nodiscard]] bool validate_freelist() const noexcept {
     if (!initialized_) {
       return free_head_ == invalid_order_index && free_count_ == 0;
@@ -228,6 +241,10 @@ public:
   }
 
 #ifdef FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
+  [[nodiscard]] OrderIndex acquire_for_test() noexcept {
+    return acquire();
+  }
+
   void set_in_use_for_test(OrderIndex slot, bool value) noexcept {
     orders_[slot].in_use = value;
   }
@@ -242,6 +259,21 @@ public:
   }
 
 private:
+  [[nodiscard]] OrderIndex acquire() noexcept {
+    if (free_head_ == invalid_order_index) {
+      return invalid_order_index;
+    }
+
+    const OrderIndex slot = free_head_;
+    Order& order = orders_[slot];
+    // Free entries use Order::next as freelist linkage. Keep acquire()
+    // private so every public allocation path initializes the active payload.
+    free_head_ = order.next;
+    order.in_use = true;
+    --free_count_;
+    return slot;
+  }
+
   static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
                                       std::uint32_t touch_stride) noexcept {
     if (memory == nullptr || bytes == 0) {
@@ -264,6 +296,9 @@ private:
   }
 
   void initialize_freelist() noexcept {
+    // invalid_order_index is the all-ones sentinel, so it must never be a real
+    // addressable slot.
+    assert(capacity_ != invalid_order_index);
     free_head_ = capacity_ == 0 ? invalid_order_index : 0;
     free_count_ = capacity_;
     initialized_ = true;
@@ -272,7 +307,7 @@ private:
       poison_free_slot(slot);
 #endif
       orders_[slot].next =
-          slot + 1 < capacity_ ? slot + 1 : invalid_order_index;
+          slot + 1 == capacity_ ? invalid_order_index : slot + 1;
       orders_[slot].in_use = false;
     }
   }

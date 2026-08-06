@@ -196,7 +196,7 @@ Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
   OrderPool pool = make_warmed_pool(pool_capacity);
   std::vector<OrderIndex> active(window);
   for (OrderCapacity i = 0; i < window; ++i) {
-    active[i] = pool.acquire();
+    active[i] = pool.acquire_for_test();
   }
 
   const std::size_t mask = static_cast<std::size_t>(window - 1);
@@ -204,7 +204,7 @@ Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
   const Stats stats = run_batches(
       batches, ops_per_batch, [&](std::uint64_t, std::uint64_t) {
         pool.release(active[cursor]);
-        active[cursor] = pool.acquire();
+        active[cursor] = pool.acquire_for_test();
         cursor = (cursor + 1) & mask;
       });
 
@@ -258,7 +258,8 @@ int main() {
     std::size_t position = 0;
     const Stats stats = run_batches(fast_batches, fast_ops,
                                     [&](std::uint64_t, std::uint64_t) {
-                                      acquired[position] = pool.acquire();
+                                      acquired[position] =
+                                          pool.acquire_for_test();
                                       ++position;
                                     });
     g_sink += acquired.front();
@@ -272,7 +273,7 @@ int main() {
     std::vector<OrderIndex> slots;
     slots.reserve(pool_bench_capacity);
     for (OrderCapacity i = 0; i < pool_bench_capacity; ++i) {
-      slots.push_back(pool.acquire());
+      slots.push_back(pool.acquire_for_test());
     }
     std::size_t index = 0;
     const Stats stats = run_batches(fast_batches, fast_ops,

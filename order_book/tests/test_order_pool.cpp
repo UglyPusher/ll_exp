@@ -20,13 +20,13 @@ bool check(bool condition) noexcept {
 int main() {
   {
     OrderPool source(4);
-    const OrderIndex slot = source.acquire();
+    const OrderIndex slot = source.acquire_for_test();
     source[slot].id = 91;
     OrderPool target(std::move(source));
     if (!check(source.capacity() == 0) ||
         !check(source.free_count() == 0) ||
         !check(source.free_head() == invalid_order_index) ||
-        !check(source.acquire() == invalid_order_index) ||
+        !check(source.acquire_for_test() == invalid_order_index) ||
         !check(source.validate_freelist())) {
       return 23;
     }
@@ -40,7 +40,7 @@ int main() {
     if (!check(target.capacity() == 0) ||
         !check(target.free_count() == 0) ||
         !check(target.free_head() == invalid_order_index) ||
-        !check(target.acquire() == invalid_order_index) ||
+        !check(target.acquire_for_test() == invalid_order_index) ||
         !check(target.validate_freelist())) {
       return 25;
     }
@@ -56,7 +56,7 @@ int main() {
     if (!check(raw_pool.capacity() == 4) ||
         !check(raw_pool.free_count() == 0) ||
         !check(raw_pool.free_head() == invalid_order_index) ||
-        !check(raw_pool.acquire() == invalid_order_index) ||
+        !check(raw_pool.acquire_for_test() == invalid_order_index) ||
         !check(raw_pool.validate_freelist())) {
       return 20;
     }
@@ -97,14 +97,14 @@ int main() {
 
   std::vector<OrderIndex> slots;
   for (int i = 0; i < 4; ++i) {
-    const OrderIndex slot = pool.acquire();
+    const OrderIndex slot = pool.acquire_for_test();
     if (!check(slot != invalid_order_index) || !check(pool.in_use(slot))) {
       return 1;
     }
     slots.push_back(slot);
   }
 
-  if (!check(pool.acquire() == invalid_order_index) ||
+  if (!check(pool.acquire_for_test() == invalid_order_index) ||
       !check(pool.free_count() == 0) || !check(pool.validate_freelist())) {
     return 2;
   }
@@ -115,7 +115,7 @@ int main() {
     return 3;
   }
 
-  const OrderIndex reused = pool.acquire();
+  const OrderIndex reused = pool.acquire_for_test();
   if (!check(reused == slots[1]) || !check(pool.free_count() == 0) ||
       !check(pool.validate_freelist())) {
     return 4;
@@ -135,7 +135,7 @@ int main() {
 
   std::vector<bool> seen(pool.capacity(), false);
   for (int i = 0; i < 4; ++i) {
-    const OrderIndex slot = pool.acquire();
+    const OrderIndex slot = pool.acquire_for_test();
     if (!check(slot < pool.capacity()) || seen[slot]) {
       return 6;
     }
@@ -169,9 +169,9 @@ int main() {
 
   {
     OrderPool prefault_pool(6);
-    const OrderIndex first = prefault_pool.acquire();
-    const OrderIndex second = prefault_pool.acquire();
-    const OrderIndex third = prefault_pool.acquire();
+    const OrderIndex first = prefault_pool.acquire_for_test();
+    const OrderIndex second = prefault_pool.acquire_for_test();
+    const OrderIndex third = prefault_pool.acquire_for_test();
     prefault_pool[first].id = 11;
     prefault_pool[first].owner_id = 101;
     prefault_pool[first].price = 1001;
@@ -220,8 +220,8 @@ int main() {
 
   {
     OrderPool reset_pool(5);
-    const OrderIndex first = reset_pool.acquire();
-    const OrderIndex second = reset_pool.acquire();
+    const OrderIndex first = reset_pool.acquire_for_test();
+    const OrderIndex second = reset_pool.acquire_for_test();
     reset_pool[first].id = 77;
     reset_pool[second].id = 88;
     reset_pool.release(first);
@@ -233,13 +233,13 @@ int main() {
     }
     std::vector<bool> reset_seen(reset_pool.capacity(), false);
     for (OrderCapacity i = 0; i < reset_pool.capacity(); ++i) {
-      const OrderIndex slot = reset_pool.acquire();
+      const OrderIndex slot = reset_pool.acquire_for_test();
       if (!check(slot < reset_pool.capacity()) || reset_seen[slot]) {
         return 12;
       }
       reset_seen[slot] = true;
     }
-    if (!check(reset_pool.acquire() == invalid_order_index)) {
+    if (!check(reset_pool.acquire_for_test() == invalid_order_index)) {
       return 13;
     }
   }
@@ -279,7 +279,7 @@ int main() {
 
   {
     OrderPool lost_slot(3);
-    const OrderIndex slot = lost_slot.acquire();
+    const OrderIndex slot = lost_slot.acquire_for_test();
     lost_slot.set_in_use_for_test(slot, false);
     if (check(lost_slot.validate_freelist())) {
       return 18;

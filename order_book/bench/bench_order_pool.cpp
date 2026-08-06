@@ -175,7 +175,7 @@ void bench_bulk_acquire(OrderCapacity capacity, OrderCapacity block_size) {
 
   const Stats stats = run_blocks(blocks, block_size, [&](std::uint64_t) {
     for (OrderCapacity i = 0; i < block_size; ++i) {
-      acquired[position++] = pool.acquire();
+      acquired[position++] = pool.acquire_for_test();
     }
   });
 
@@ -193,7 +193,7 @@ void bench_bulk_release(OrderCapacity capacity, OrderCapacity block_size) {
   OrderPool pool = make_warmed_pool(capacity);
   std::vector<OrderIndex> acquired(static_cast<std::size_t>(operations));
   for (std::uint64_t i = 0; i < operations; ++i) {
-    acquired[static_cast<std::size_t>(i)] = pool.acquire();
+    acquired[static_cast<std::size_t>(i)] = pool.acquire_for_test();
   }
 
   std::size_t position = 0;
