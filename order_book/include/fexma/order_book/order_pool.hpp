@@ -8,16 +8,24 @@
  */
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <utility>
 
 #include <fexma/order_book/types.hpp>
 
 namespace fexma::order_book {
 
 struct Order {
+  Order() = default;
+  Order(const Order&) = default;
+  Order(Order&&) noexcept = default;
+  Order& operator=(const Order&) = delete;
+  Order& operator=(Order&&) noexcept = delete;
+
   OrderId id;
   OwnerId owner_id;
   PriceTick price;
@@ -25,6 +33,9 @@ struct Order {
   OrderIndex prev;
   OrderIndex next;
   Side side;
+
+private:
+  friend class OrderPool;
   // Kept as an O(1) pool-membership guard for release() and invariant checks.
   bool in_use;
 };
@@ -54,17 +65,34 @@ public:
 
   OrderPool(const OrderPool&) = delete;
   OrderPool& operator=(const OrderPool&) = delete;
-  OrderPool(OrderPool&&) noexcept = default;
-  OrderPool& operator=(OrderPool&&) noexcept = default;
+  OrderPool(OrderPool&& other) noexcept
+      : orders_(std::move(other.orders_)),
+        capacity_(std::exchange(other.capacity_, 0)),
+        free_head_(std::exchange(other.free_head_, invalid_order_index)),
+        free_count_(std::exchange(other.free_count_, 0)),
+        last_warm_up_(std::exchange(other.last_warm_up_, WarmUpTouchStats{})),
+        initialized_(std::exchange(other.initialized_, false)) {}
+
+  OrderPool& operator=(OrderPool&& other) noexcept {
+    if (this != &other) {
+      orders_ = std::move(other.orders_);
+      capacity_ = std::exchange(other.capacity_, 0);
+      free_head_ = std::exchange(other.free_head_, invalid_order_index);
+      free_count_ = std::exchange(other.free_count_, 0);
+      last_warm_up_ = std::exchange(other.last_warm_up_, WarmUpTouchStats{});
+      initialized_ = std::exchange(other.initialized_, false);
+    }
+    return *this;
+  }
 
   void reset() noexcept {
     initialize_freelist();
   }
 
-  void prefault_pages(std::uint32_t page_size = 4096) noexcept {
+  void prefault_pages(std::uint32_t touch_stride = 4096) noexcept {
     last_warm_up_ = touch_pages(
         orders_.get(), sizeof(Order) * static_cast<std::size_t>(capacity_),
-        page_size);
+        touch_stride);
   }
 
   [[nodiscard]] OrderIndex acquire() noexcept {
@@ -82,7 +110,31 @@ public:
     return slot;
   }
 
+  [[nodiscard]] OrderIndex emplace(OrderId id, OwnerId owner_id,
+                                   PriceTick price, Quantity remaining,
+                                   Side side) noexcept {
+    const OrderIndex slot = acquire();
+    if (slot == invalid_order_index) {
+      return invalid_order_index;
+    }
+
+    Order& order = orders_[slot];
+    order.id = id;
+    order.owner_id = owner_id;
+    order.price = price;
+    order.remaining = remaining;
+    order.prev = invalid_order_index;
+    order.next = invalid_order_index;
+    order.side = side;
+    order.in_use = true;
+    return slot;
+  }
+
   void release(OrderIndex slot) noexcept {
+#ifndef NDEBUG
+    assert(slot < capacity_);
+    assert(orders_[slot].in_use);
+#endif
     if (slot >= capacity_ || !orders_[slot].in_use) {
       return;
     }
@@ -130,23 +182,56 @@ public:
   }
 
   [[nodiscard]] bool validate_freelist() const noexcept {
+    if (!initialized_) {
+      return free_head_ == invalid_order_index && free_count_ == 0;
+    }
+
+    std::unique_ptr<unsigned char[]> seen;
+    try {
+      seen = std::make_unique<unsigned char[]>(
+          static_cast<std::size_t>(capacity_));
+    } catch (...) {
+      return false;
+    }
+
     OrderCapacity count = 0;
     for (OrderIndex current = free_head_; current != invalid_order_index;
          current = orders_[current].next) {
-      if (current >= capacity_ || orders_[current].in_use) {
+      if (current >= capacity_ || orders_[current].in_use ||
+          seen[current] != 0) {
         return false;
       }
+      seen[current] = 1;
       ++count;
-      if (count > free_count_ || count > capacity_) {
+      if (count > capacity_) {
         return false;
       }
     }
-    return count == free_count_;
+    if (count != free_count_) {
+      return false;
+    }
+
+    for (OrderIndex slot = 0; slot < capacity_; ++slot) {
+      if (orders_[slot].in_use) {
+        if (seen[slot] != 0) {
+          return false;
+        }
+      } else if (seen[slot] != 1) {
+        return false;
+      }
+    }
+    return true;
   }
 
   [[nodiscard]] WarmUpTouchStats last_warm_up_stats() const noexcept {
     return last_warm_up_;
   }
+
+#ifdef FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
+  void set_in_use_for_test(OrderIndex slot, bool value) noexcept {
+    orders_[slot].in_use = value;
+  }
+#endif
 
   [[nodiscard]] static constexpr std::size_t order_size() noexcept {
     return sizeof(Order);
@@ -158,27 +243,30 @@ public:
 
 private:
   static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
-                                      std::uint32_t page_size) noexcept {
+                                      std::uint32_t touch_stride) noexcept {
     if (memory == nullptr || bytes == 0) {
       return {};
     }
 
-    const std::size_t step = page_size == 0 ? 4096U : page_size;
+    const std::size_t step = touch_stride == 0 ? 4096U : touch_stride;
+    const std::uintptr_t start = reinterpret_cast<std::uintptr_t>(memory);
+    const std::size_t first_page_offset = start % step;
+    const std::size_t page_count =
+        (first_page_offset + bytes + step - 1) / step;
     auto* raw = static_cast<volatile unsigned char*>(memory);
-    std::size_t pages = 0;
     for (std::size_t offset = 0; offset < bytes; offset += step) {
       // Volatile read/write prevents the compiler from discarding the page
       // touch while keeping OS locking and affinity outside this component.
       raw[offset] = raw[offset];
-      ++pages;
     }
     raw[bytes - 1] = raw[bytes - 1];
-    return {bytes, pages};
+    return {bytes, page_count};
   }
 
   void initialize_freelist() noexcept {
     free_head_ = capacity_ == 0 ? invalid_order_index : 0;
     free_count_ = capacity_;
+    initialized_ = true;
     for (OrderIndex slot = 0; slot < capacity_; ++slot) {
 #ifndef NDEBUG
       poison_free_slot(slot);
@@ -211,6 +299,7 @@ private:
   OrderIndex free_head_{invalid_order_index};
   OrderCapacity free_count_{};
   WarmUpTouchStats last_warm_up_{};
+  bool initialized_{};
 };
 
 } // namespace fexma::order_book

@@ -4,6 +4,7 @@
  */
 #include <fexma/order_book/order_pool.hpp>
 
+#include <utility>
 #include <vector>
 
 using namespace fexma::order_book;
@@ -17,6 +18,39 @@ bool check(bool condition) noexcept {
 } // namespace
 
 int main() {
+  {
+    OrderPool source(4);
+    const OrderIndex slot = source.acquire();
+    source[slot].id = 91;
+    OrderPool target(std::move(source));
+    if (!check(source.capacity() == 0) ||
+        !check(source.free_count() == 0) ||
+        !check(source.free_head() == invalid_order_index) ||
+        !check(source.acquire() == invalid_order_index) ||
+        !check(source.validate_freelist())) {
+      return 23;
+    }
+    if (!check(target.capacity() == 4) || !check(target.in_use(slot)) ||
+        !check(target[slot].id == 91) || !check(target.validate_freelist())) {
+      return 24;
+    }
+
+    OrderPool assigned(2);
+    assigned = std::move(target);
+    if (!check(target.capacity() == 0) ||
+        !check(target.free_count() == 0) ||
+        !check(target.free_head() == invalid_order_index) ||
+        !check(target.acquire() == invalid_order_index) ||
+        !check(target.validate_freelist())) {
+      return 25;
+    }
+    if (!check(assigned.capacity() == 4) || !check(assigned.in_use(slot)) ||
+        !check(assigned[slot].id == 91) ||
+        !check(assigned.validate_freelist())) {
+      return 26;
+    }
+  }
+
   {
     OrderPool raw_pool(4, OrderPool::Uninitialized{});
     if (!check(raw_pool.capacity() == 4) ||
@@ -42,6 +76,24 @@ int main() {
 
   OrderPool pool(4);
   pool.prefault_pages();
+
+  {
+    OrderPool emplace_pool(2);
+    const OrderIndex slot =
+        emplace_pool.emplace(7, 17, 101, 3, Side::Ask);
+    if (!check(slot != invalid_order_index) ||
+        !check(emplace_pool.in_use(slot)) ||
+        !check(emplace_pool[slot].id == 7) ||
+        !check(emplace_pool[slot].owner_id == 17) ||
+        !check(emplace_pool[slot].price == 101) ||
+        !check(emplace_pool[slot].remaining == 3) ||
+        !check(emplace_pool[slot].prev == invalid_order_index) ||
+        !check(emplace_pool[slot].next == invalid_order_index) ||
+        !check(emplace_pool[slot].side == Side::Ask) ||
+        !check(emplace_pool.validate_freelist())) {
+      return 27;
+    }
+  }
 
   std::vector<OrderIndex> slots;
   for (int i = 0; i < 4; ++i) {
@@ -93,6 +145,7 @@ int main() {
   pool.release(slots[0]);
   const OrderCapacity free_before_double_release = pool.free_count();
   const OrderIndex head_before_double_release = pool.free_head();
+#ifdef NDEBUG
   pool.release(slots[0]);
   if (!check(pool.free_count() == free_before_double_release) ||
       !check(pool.free_head() == head_before_double_release) ||
@@ -106,6 +159,13 @@ int main() {
       !check(pool.validate_freelist())) {
     return 8;
   }
+#else
+  if (!check(pool.free_count() == free_before_double_release) ||
+      !check(pool.free_head() == head_before_double_release) ||
+      !check(pool.validate_freelist())) {
+    return 8;
+  }
+#endif
 
   {
     OrderPool prefault_pool(6);
@@ -214,6 +274,25 @@ int main() {
     corrupt_count[0].next = invalid_order_index;
     if (check(corrupt_count.validate_freelist())) {
       return 17;
+    }
+  }
+
+  {
+    OrderPool lost_slot(3);
+    const OrderIndex slot = lost_slot.acquire();
+    lost_slot.set_in_use_for_test(slot, false);
+    if (check(lost_slot.validate_freelist())) {
+      return 18;
+    }
+  }
+
+  {
+    OrderPool stats_pool(2, OrderPool::Uninitialized{});
+    stats_pool.prefault_pages();
+    const WarmUpTouchStats stats = stats_pool.last_warm_up_stats();
+    if (!check(stats.bytes == OrderPool::order_size() * 2) ||
+        !check(stats.pages >= 1)) {
+      return 19;
     }
   }
 

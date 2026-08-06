@@ -69,6 +69,11 @@ foreach(test_name IN LISTS order_book_tests)
       FEXMA_ORDER_BOOK_ENABLE_TEST_ACCESS
     )
   endif()
+  if(test_name STREQUAL "test_order_pool")
+    target_compile_definitions(${test_name} PRIVATE
+      FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
+    )
+  endif()
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 

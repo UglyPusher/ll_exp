@@ -44,19 +44,11 @@ PutResult OrderBook::put(const RestingOrderData& order) noexcept {
     return {PutStatus::DuplicateOrderId};
   }
 
-  const OrderIndex slot = pool_.acquire();
+  const OrderIndex slot = pool_.emplace(order.id, order.owner_id, order.price,
+                                        order.quantity, order.side);
   if (slot == invalid_order_index) {
     return {PutStatus::PoolExhausted};
   }
-
-  pool_[slot] = Order{order.id,
-                      order.owner_id,
-                      order.price,
-                      order.quantity,
-                      invalid_order_index,
-                      invalid_order_index,
-                      order.side,
-                      true};
 
   const IndexInsertStatus insert_status = index_.insert(order.id, slot);
   if (insert_status != IndexInsertStatus::Ok) {
@@ -100,7 +92,7 @@ void OrderBook::decrement_selected(Quantity quantity) noexcept {
   const OrderIndex slot = selected_order_;
   selected_order_ = invalid_order_index;
   Order& order = pool_[slot];
-  assert(order.in_use);
+  assert(pool_.in_use(slot));
   assert(quantity <= order.remaining);
 
   // Release builds trust the selected order index and avoid an index lookup. Debug

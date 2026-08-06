@@ -10,14 +10,7 @@ namespace {
 
 OrderIndex make_order(OrderPool& pool, OrderId id, Side side, PriceTick price,
                      Quantity quantity) {
-  const OrderIndex slot = pool.acquire();
-  Order& order = pool[slot];
-  order.id = id;
-  order.owner_id = id + 1000;
-  order.side = side;
-  order.price = price;
-  order.remaining = quantity;
-  return slot;
+  return pool.emplace(id, id + 1000, price, quantity, side);
 }
 
 } // namespace
