@@ -1,21 +1,22 @@
 /**
  * @file bench_order_pool.cpp
- * @brief Focused OrderPool initialization and block acquire/release benchmarks.
+ * @brief Focused OrderPool construction and block emplace/release benchmarks.
  */
-#include <fexma/order_book/order_pool.hpp>
+#include <fexma/order_book/detail/order_pool.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <optional>
 #include <string_view>
 #include <vector>
 
 using namespace fexma::order_book;
 
 namespace {
+
+using detail::OrderPool;
 
 volatile std::uint64_t g_sink = 0;
 
@@ -101,18 +102,14 @@ void print_build_context(OrderCapacity capacity) {
 #else
   std::cout << "NDEBUG: not defined\n";
 #endif
-  std::cout << "layout: sizeof(Order)=" << OrderPool::order_size()
-            << " alignof(Order)=" << OrderPool::order_align()
+  std::cout << "layout: sizeof(Order)=" << sizeof(detail::Order)
+            << " alignof(Order)=" << alignof(detail::Order)
             << " capacity=" << capacity
             << " block_sizes=64,4096,65536" << '\n';
 }
 
-void print_init(std::string_view name, double ms,
-                WarmUpTouchStats stats = {}) {
+void print_init(std::string_view name, double ms) {
   std::cout << name << ": ms=" << ms;
-  if (stats.bytes != 0 || stats.pages != 0) {
-    std::cout << " bytes=" << stats.bytes << " pages=" << stats.pages;
-  }
   std::cout << '\n';
 }
 
@@ -130,59 +127,37 @@ void print_runtime(std::string_view name, OrderCapacity block_size,
             << " max_ns/block=" << stats.max_ns_per_block << '\n';
 }
 
-OrderPool make_warmed_pool(OrderCapacity capacity) {
-  OrderPool pool(capacity, OrderPool::Uninitialized{});
-  pool.prefault_pages();
-  pool.reset();
-  return pool;
-}
-
 void bench_init(OrderCapacity capacity) {
   std::cout << "[init]\n";
 
   {
-    std::optional<OrderPool> pool;
-    const double ms = run_one_ms(
-        [&pool, capacity] { pool.emplace(capacity, OrderPool::Uninitialized{}); });
-    print_init("pool_allocate_uninitialized", ms);
-    g_sink += pool->capacity();
-  }
-
-  {
-    OrderPool pool(capacity, OrderPool::Uninitialized{});
-    const double ms = run_one_ms([&pool] { pool.prefault_pages(); });
-    print_init("pool_prefault", ms, pool.last_warm_up_stats());
-    g_sink += pool.last_warm_up_stats().pages;
-  }
-
-  {
-    OrderPool pool(capacity, OrderPool::Uninitialized{});
-    pool.prefault_pages();
-    const double ms = run_one_ms([&pool] { pool.reset(); });
-    print_init("pool_reset", ms);
-    g_sink += pool.free_count();
+    const double ms = run_one_ms([capacity] {
+      OrderPool pool(capacity);
+      g_sink += pool.validate_freelist() ? 1 : 0;
+    });
+    print_init("pool_construct_ready", ms);
   }
 }
 
-void bench_bulk_acquire(OrderCapacity capacity, OrderCapacity block_size) {
+void bench_bulk_emplace(OrderCapacity capacity, OrderCapacity block_size) {
   const std::uint64_t blocks = capacity / block_size;
   const std::uint64_t operations =
       blocks * static_cast<std::uint64_t>(block_size);
 
-  OrderPool pool = make_warmed_pool(capacity);
+  OrderPool pool(capacity);
   std::vector<OrderIndex> acquired(static_cast<std::size_t>(operations));
   std::size_t position = 0;
 
   const Stats stats = run_blocks(blocks, block_size, [&](std::uint64_t) {
     for (OrderCapacity i = 0; i < block_size; ++i) {
-      acquired[position++] = pool.acquire_for_test();
+      acquired[position++] = pool.emplace(i, i, i, i + 1, Side::Bid);
     }
   });
 
   g_sink += acquired.front();
   g_sink += acquired[acquired.size() / 2];
   g_sink += acquired.back();
-  print_runtime("pool_bulk_acquire_blocks", block_size, stats);
+  print_runtime("pool_bulk_emplace_blocks", block_size, stats);
 }
 
 void bench_bulk_release(OrderCapacity capacity, OrderCapacity block_size) {
@@ -190,10 +165,12 @@ void bench_bulk_release(OrderCapacity capacity, OrderCapacity block_size) {
   const std::uint64_t operations =
       blocks * static_cast<std::uint64_t>(block_size);
 
-  OrderPool pool = make_warmed_pool(capacity);
+  OrderPool pool(capacity);
   std::vector<OrderIndex> acquired(static_cast<std::size_t>(operations));
   for (std::uint64_t i = 0; i < operations; ++i) {
-    acquired[static_cast<std::size_t>(i)] = pool.acquire_for_test();
+    const auto value = static_cast<OrderIndex>(i);
+    acquired[static_cast<std::size_t>(i)] =
+        pool.emplace(value, value, value, 1, Side::Bid);
   }
 
   std::size_t position = 0;
@@ -203,7 +180,7 @@ void bench_bulk_release(OrderCapacity capacity, OrderCapacity block_size) {
     }
   });
 
-  g_sink += pool.free_count();
+  g_sink += pool.validate_freelist() ? 1 : 0;
   print_runtime("pool_bulk_release_blocks", block_size, stats);
 }
 
@@ -211,7 +188,7 @@ void bench_runtime(OrderCapacity capacity) {
   std::cout << "[runtime]\n";
   for (OrderCapacity block_size : {OrderCapacity{64}, OrderCapacity{4096},
                                    OrderCapacity{65536}}) {
-    bench_bulk_acquire(capacity, block_size);
+    bench_bulk_emplace(capacity, block_size);
     bench_bulk_release(capacity, block_size);
   }
 }

@@ -15,15 +15,13 @@ namespace fexma::order_book {
 
 OrderBook::OrderBook(const OrderBookConfig& config)
     : config_(config),
-      pool_(config.max_orders, OrderPool::Uninitialized{}),
+      pool_(config.max_orders),
       index_(config.max_orders),
       bids_(config.min_price_tick, config.max_price_tick),
       asks_(config.min_price_tick, config.max_price_tick) {}
 
 void OrderBook::warm_up() noexcept {
   assert(empty());
-  pool_.prefault_pages(config_.page_size);
-  pool_.reset();
   index_.warm_up(config_.page_size);
   bids_.warm_up(config_.page_size);
   asks_.warm_up(config_.page_size);
@@ -79,7 +77,7 @@ OrderBook::select_best_opposite(Side incoming_side) noexcept {
     return std::nullopt;
   }
 
-  const Order& order = pool_[slot];
+  const detail::Order& order = pool_.get_unchecked(slot);
   selected_generation_ = generation_;
   return BestOrderView{order.id, order.owner_id, order.price, order.remaining};
 }
@@ -91,8 +89,8 @@ void OrderBook::decrement_selected(Quantity quantity) noexcept {
 
   const OrderIndex slot = selected_order_;
   selected_order_ = invalid_order_index;
-  Order& order = pool_[slot];
-  assert(pool_.in_use(slot));
+  detail::Order& order = pool_.get_unchecked(slot);
+  assert(pool_.contains(slot));
   assert(quantity <= order.remaining);
 
   // Release builds trust the selected order index and avoid an index lookup. Debug
@@ -135,7 +133,7 @@ ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
     return {ChangeStatus::NotFound};
   }
 
-  Order& order = pool_[slot];
+  detail::Order& order = pool_.get_unchecked(slot);
   if (change.new_remaining >= order.remaining) {
     return {ChangeStatus::InvalidQuantity};
   }
@@ -158,20 +156,19 @@ ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
 
 bool OrderBook::validate_invariants() const noexcept {
   if (selected_order_ != invalid_order_index &&
-      (selected_order_ >= pool_.capacity() || !pool_.in_use(selected_order_) ||
+      (!pool_.contains(selected_order_) ||
        selected_generation_ != generation_)) {
     return false;
   }
 
-  if (!validate_side(Side::Bid) || !validate_side(Side::Ask)) {
+  if (!pool_.validate_freelist() || !validate_side(Side::Bid) ||
+      !validate_side(Side::Ask)) {
     return false;
   }
 
   std::unique_ptr<unsigned char[]> fifo_seen;
-  std::unique_ptr<unsigned char[]> free_seen;
   try {
-    fifo_seen = std::make_unique<unsigned char[]>(pool_.capacity());
-    free_seen = std::make_unique<unsigned char[]>(pool_.capacity());
+    fifo_seen = std::make_unique<unsigned char[]>(config_.max_orders);
   } catch (...) {
     return false;
   }
@@ -184,9 +181,8 @@ bool OrderBook::validate_invariants() const noexcept {
         const PriceLevel& level = segment.levels[offset];
         OrderCapacity steps = 0;
         for (OrderIndex current = level.head; current != invalid_order_index;
-             current = pool_.data()[current].next) {
-          if (current >= pool_.capacity() || !pool_.in_use(current) ||
-              steps++ > pool_.capacity()) {
+             current = pool_.get_unchecked(current).next) {
+          if (!pool_.contains(current) || steps++ > config_.max_orders) {
             return false;
           }
           ++fifo_seen[current];
@@ -201,7 +197,7 @@ bool OrderBook::validate_invariants() const noexcept {
   }
 
   OrderCapacity fifo_count = 0;
-  for (OrderIndex slot = 0; slot < pool_.capacity(); ++slot) {
+  for (OrderIndex slot = 0; slot < config_.max_orders; ++slot) {
     if (fifo_seen[slot] > 1) {
       return false;
     }
@@ -210,38 +206,25 @@ bool OrderBook::validate_invariants() const noexcept {
     }
   }
 
-  OrderCapacity free_count = 0;
-  for (OrderIndex slot = pool_.free_head(); slot != invalid_order_index;
-       slot = pool_.data()[slot].next) {
-    if (slot >= pool_.capacity() || free_seen[slot] != 0) {
-      return false;
-    }
-    free_seen[slot] = 1;
-    ++free_count;
-  }
-
-  if (free_count != pool_.free_count()) {
-    return false;
-  }
-  if (fifo_count + free_count != pool_.capacity()) {
+  if (fifo_count != active_order_count()) {
     return false;
   }
 
-  for (OrderIndex slot = 0; slot < pool_.capacity(); ++slot) {
-    if (pool_.in_use(slot)) {
-      if (fifo_seen[slot] != 1 || free_seen[slot] != 0) {
+  for (OrderIndex slot = 0; slot < config_.max_orders; ++slot) {
+    if (pool_.contains(slot)) {
+      if (fifo_seen[slot] != 1) {
         return false;
       }
-      if (index_.find(pool_[slot].id) != slot) {
+      if (index_.find(pool_.get_unchecked(slot).id) != slot) {
         return false;
       }
-    } else if (fifo_seen[slot] != 0 || free_seen[slot] != 1) {
+    } else if (fifo_seen[slot] != 0) {
       return false;
     }
   }
 
   return index_.for_each([this](OrderId id, OrderIndex slot) noexcept {
-    return slot < pool_.capacity() && pool_.in_use(slot) && pool_[slot].id == id;
+    return pool_.contains(slot) && pool_.get_unchecked(slot).id == id;
   });
 }
 
@@ -276,7 +259,7 @@ void OrderBook::mark_mutation() noexcept {
 }
 
 void OrderBook::remove_active_order(OrderIndex slot) noexcept {
-  Order& order = pool_[slot];
+  detail::Order& order = pool_.get_unchecked(slot);
   (void)index_.erase(order.id);
   if (order.side == Side::Bid) {
     bids_.remove(pool_, slot);
@@ -284,49 +267,6 @@ void OrderBook::remove_active_order(OrderIndex slot) noexcept {
     asks_.remove(pool_, slot);
   }
   pool_.release(slot);
-}
-
-bool OrderBook::slot_in_any_fifo(OrderIndex slot) const noexcept {
-  if (slot >= pool_.capacity()) {
-    return false;
-  }
-
-  const auto scan_side = [this, slot](const auto& book) noexcept {
-    for (std::size_t segment_index = 0; segment_index < book.segment_count();
-         ++segment_index) {
-      const PriceSegment& segment = book.segment(segment_index);
-      for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
-        OrderIndex current = segment.levels[offset].head;
-        OrderCapacity steps = 0;
-        while (current != invalid_order_index) {
-          if (current >= pool_.capacity() || !pool_.in_use(current) ||
-              steps++ > pool_.capacity()) {
-            return false;
-          }
-          if (current == slot) {
-            return true;
-          }
-          current = pool_.data()[current].next;
-        }
-      }
-    }
-    return false;
-  };
-
-  return scan_side(bids_) || scan_side(asks_);
-}
-
-bool OrderBook::slot_in_freelist(OrderIndex slot) const noexcept {
-  for (OrderIndex current = pool_.free_head(); current != invalid_order_index;
-       current = pool_.data()[current].next) {
-    if (current >= pool_.capacity()) {
-      return false;
-    }
-    if (current == slot) {
-      return true;
-    }
-  }
-  return false;
 }
 
 bool OrderBook::validate_side(Side side) const noexcept {
@@ -358,11 +298,11 @@ bool OrderBook::validate_side(Side side) const noexcept {
 
         if (level.head == invalid_order_index ||
             level.tail == invalid_order_index ||
-            level.head >= pool_.capacity() || level.tail >= pool_.capacity()) {
+            !pool_.contains(level.head) || !pool_.contains(level.tail)) {
           return false;
         }
-        if (pool_[level.head].prev != invalid_order_index ||
-            pool_[level.tail].next != invalid_order_index) {
+        if (pool_.get_unchecked(level.head).prev != invalid_order_index ||
+            pool_.get_unchecked(level.tail).next != invalid_order_index) {
           return false;
         }
 
@@ -370,11 +310,11 @@ bool OrderBook::validate_side(Side side) const noexcept {
         Quantity level_quantity = 0;
         OrderIndex previous = invalid_order_index;
         for (OrderIndex current = level.head; current != invalid_order_index;
-             current = pool_[current].next) {
-          if (current >= pool_.capacity() || !pool_.in_use(current)) {
+             current = pool_.get_unchecked(current).next) {
+          if (!pool_.contains(current)) {
             return false;
           }
-          const Order& order = pool_[current];
+          const detail::Order& order = pool_.get_unchecked(current);
           if (order.side != side ||
               order.price != book.price_from_local(segment_index, offset) ||
               order.prev != previous) {
@@ -383,7 +323,7 @@ bool OrderBook::validate_side(Side side) const noexcept {
           previous = current;
           ++level_count;
           level_quantity += order.remaining;
-          if (level_count > pool_.capacity()) {
+          if (level_count > config_.max_orders) {
             return false;
           }
         }

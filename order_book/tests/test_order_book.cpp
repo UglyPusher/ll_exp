@@ -345,8 +345,7 @@ int main() {
     return 26;
   }
 
-  if (alloc_book.pool_warm_up_stats().bytes == 0 ||
-      alloc_book.index_warm_up_stats().bytes == 0 ||
+  if (alloc_book.index_warm_up_stats().bytes == 0 ||
       alloc_book.bid_warm_up_stats().bytes == 0 ||
       alloc_book.ask_warm_up_stats().bytes == 0) {
     return 27;

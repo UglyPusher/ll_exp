@@ -8,8 +8,10 @@ using namespace fexma::order_book;
 
 namespace {
 
+using detail::OrderPool;
+
 OrderIndex make_order(OrderPool& pool, OrderId id, Side side, PriceTick price,
-                     Quantity quantity) {
+                      Quantity quantity) {
   return pool.emplace(id, id + 1000, price, quantity, side);
 }
 
@@ -31,7 +33,6 @@ int main() {
   }
 
   OrderPool pool(16);
-  pool.prefault_pages();
   SideBook<Side::Ask> asks(64, 191);
   asks.warm_up();
 
@@ -46,7 +47,7 @@ int main() {
     return 4;
   }
   asks.reduce(pool, ask_low_a, 5);
-  if (pool[ask_low_a].remaining != 15) {
+  if (pool.get_unchecked(ask_low_a).remaining != 15) {
     return 5;
   }
   asks.remove(pool, ask_low_a);

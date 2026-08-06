@@ -2,9 +2,9 @@
  * @file order_book.hpp
  * @brief Public facade for standalone resting-order storage.
  *
- * OrderBook owns bid/ask SideBook instances, a fixed OrderPool, and a fixed
- * OrderId index. It does not implement matching policy, trade events, WAL,
- * account state, callbacks, locks, atomics, or networking.
+ * OrderBook owns bid/ask SideBook instances, an internal fixed order pool, and
+ * a fixed OrderId index. It does not implement matching policy, trade events,
+ * WAL, account state, callbacks, locks, atomics, or networking.
  */
 #pragma once
 
@@ -115,15 +115,11 @@ public:
   }
 
   [[nodiscard]] OrderCapacity capacity() const noexcept {
-    return pool_.capacity();
+    return config_.max_orders;
   }
 
   [[nodiscard]] std::optional<PriceTick> best_bid() const noexcept;
   [[nodiscard]] std::optional<PriceTick> best_ask() const noexcept;
-
-  [[nodiscard]] WarmUpTouchStats pool_warm_up_stats() const noexcept {
-    return pool_.last_warm_up_stats();
-  }
 
   [[nodiscard]] WarmUpTouchStats index_warm_up_stats() const noexcept {
     return index_.last_warm_up_stats();
@@ -147,7 +143,7 @@ public:
 
 #ifdef FEXMA_ORDER_BOOK_ENABLE_TEST_ACCESS
   [[nodiscard]] OrderCapacity free_count_for_test() const noexcept {
-    return pool_.free_count();
+    return config_.max_orders - active_order_count();
   }
 
   [[nodiscard]] OrderIndex selected_order_for_test() const noexcept {
@@ -171,8 +167,9 @@ public:
         const PriceSegment& segment = book.segment(segment_index);
         for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
           for (OrderIndex slot = segment.levels[offset].head;
-               slot != invalid_order_index; slot = pool_[slot].next) {
-            const Order& order = pool_[slot];
+               slot != invalid_order_index;
+               slot = pool_.get_unchecked(slot).next) {
+            const detail::Order& order = pool_.get_unchecked(slot);
             if (!fn(BestOrderView{order.id, order.owner_id, order.price,
                                   order.remaining})) {
               return false;
@@ -189,8 +186,9 @@ public:
         const PriceSegment& segment = book.segment(segment_index - 1);
         for (std::uint32_t offset = prices_per_segment; offset > 0; --offset) {
           for (OrderIndex slot = segment.levels[offset - 1].head;
-               slot != invalid_order_index; slot = pool_[slot].next) {
-            const Order& order = pool_[slot];
+               slot != invalid_order_index;
+               slot = pool_.get_unchecked(slot).next) {
+            const detail::Order& order = pool_.get_unchecked(slot);
             if (!fn(BestOrderView{order.id, order.owner_id, order.price,
                                   order.remaining})) {
               return false;
@@ -213,12 +211,10 @@ private:
   void invalidate_selection() noexcept;
   void mark_mutation() noexcept;
   void remove_active_order(OrderIndex slot) noexcept;
-  [[nodiscard]] bool slot_in_any_fifo(OrderIndex slot) const noexcept;
-  [[nodiscard]] bool slot_in_freelist(OrderIndex slot) const noexcept;
   [[nodiscard]] bool validate_side(Side side) const noexcept;
 
   OrderBookConfig config_;
-  OrderPool pool_;
+  detail::OrderPool pool_;
   OrderIdIndex index_;
   BidBook bids_;
   AskBook asks_;

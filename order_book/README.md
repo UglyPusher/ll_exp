@@ -33,9 +33,11 @@ Construction allocates exactly these fixed arrays:
 - one `PriceSegment[]` array for bids;
 - one `PriceSegment[]` array for asks.
 
-After construction and `warm_up()`, runtime operations `put`, `select`,
-`decrement`, `cancel`, and `change` do not allocate. `validate_invariants()` is
-explicitly a slow debug/test helper and may allocate temporary memory.
+The internal order pool is fully ready after construction; building its freelist
+walks every `Order` slot and first-touches the pool array. After construction
+and `warm_up()`, runtime operations `put`, `select`, `decrement`, `cancel`, and
+`change` do not allocate. `validate_invariants()` is explicitly a slow
+debug/test helper and may allocate temporary memory.
 
 ## Selected-Order Protocol
 
@@ -80,21 +82,18 @@ accept `IndexProbeStats*`; normal runtime calls do not collect stats.
 
 ## Warm-Up
 
-`warm_up()` touches the pages for the order pool, index buckets, bid segments,
-and ask segments through volatile page touches. `OrderPool::prefault_pages()`
-does not change logical pool state; explicit `OrderPool::reset()` is the
-operation that rebuilds the freelist and discards contents.
-
-`OrderPool(capacity)` remains a ready-to-use constructor and therefore builds
-the freelist immediately. `OrderBook` uses the explicit
-`OrderPool::Uninitialized` construction path instead, so pool pages are not
-first-touched until `OrderBook::warm_up()` runs on the caller's chosen thread.
+`warm_up()` touches and clears index buckets, bid segments, and ask segments.
+The order pool is not reset or separately prefaulted there: `OrderPool` is an
+internal ready-to-use component, and its constructor builds the freelist in one
+sequential pass. Construct `OrderBook` on the final matcher/owner thread after
+CPU affinity and NUMA policy have already been selected if first-touch placement
+matters.
 
 `warm_up()` must be called before runtime orders are inserted because the side
 books and index still clear their fixed storage; Debug builds assert that the
 book is empty.
 The library does not call `mlockall`, `VirtualLock`, thread affinity, or NUMA
-policy APIs.
+policy APIs. OS memory locking remains a platform/runtime responsibility.
 
 ## Thread Safety
 
@@ -132,18 +131,16 @@ OrderPool_bytes=4000000 OrderIdIndex_bytes=4194304
 Bid_segments_bytes=67080 Ask_segments_bytes=67080 Total_bytes=8328464
 ```
 
-Selected `bench_order_pool` results, median of five direct `/O2 /DNDEBUG` runs:
+Selected `bench_order_pool` metric names:
 
 ```text
-pool_allocate_uninitialized median_ms=0.052 best_ms=0.0381 worst_ms=0.1201
-pool_prefault median_ms=24.5196 best_ms=17.5701 worst_ms=47.3211
-pool_reset median_ms=27.6719 best_ms=18.4878 worst_ms=43.7141
-pool_bulk_acquire_blocks block=64 median_mean=32.4688 ns/op median_p99=3600 ns/block
-pool_bulk_release_blocks block=64 median_mean=28.6712 ns/op median_p99=3000 ns/block
-pool_bulk_acquire_blocks block=4096 median_mean=33.6575 ns/op median_p99=579100 ns/block
-pool_bulk_release_blocks block=4096 median_mean=24.9241 ns/op median_p99=362900 ns/block
-pool_bulk_acquire_blocks block=65536 median_mean=30.5866 ns/op median_p99=3350800 ns/block
-pool_bulk_release_blocks block=65536 median_mean=25.58 ns/op median_p99=2473200 ns/block
+pool_construct_ready
+pool_bulk_emplace_blocks block=64
+pool_bulk_release_blocks block=64
+pool_bulk_emplace_blocks block=4096
+pool_bulk_release_blocks block=4096
+pool_bulk_emplace_blocks block=65536
+pool_bulk_release_blocks block=65536
 ```
 
 ## Known Limitations

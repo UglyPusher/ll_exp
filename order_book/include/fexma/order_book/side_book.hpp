@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <memory>
 
-#include <fexma/order_book/order_pool.hpp>
+#include <fexma/order_book/detail/order_pool.hpp>
 #include <fexma/order_book/price_segment.hpp>
 
 namespace fexma::order_book {
@@ -63,8 +63,8 @@ public:
     return price >= min_price_tick_ && price <= max_price_tick_;
   }
 
-  void append(OrderPool& pool, OrderIndex slot) noexcept {
-    Order& order = pool[slot];
+  void append(detail::OrderPool& pool, OrderIndex slot) noexcept {
+    detail::Order& order = pool.get_unchecked(slot);
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
     PriceSegment& price_segment = segments_[segment];
@@ -73,7 +73,7 @@ public:
     order.prev = level.tail;
     order.next = invalid_order_index;
     if (level.tail != invalid_order_index) {
-      pool[level.tail].next = slot;
+      pool.get_unchecked(level.tail).next = slot;
     } else {
       level.head = slot;
       // The occupancy bit must be set exactly when the FIFO transitions from
@@ -88,8 +88,8 @@ public:
     update_best_after_insert(segment);
   }
 
-  void remove(OrderPool& pool, OrderIndex slot) noexcept {
-    Order& order = pool[slot];
+  void remove(detail::OrderPool& pool, OrderIndex slot) noexcept {
+    detail::Order& order = pool.get_unchecked(slot);
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
     PriceSegment& price_segment = segments_[segment];
@@ -98,13 +98,13 @@ public:
     // Unlink in O(1) using intrusive prev/next pool indices; this is what allows
     // cancel/change-to-zero by OrderId without walking the price level.
     if (order.prev != invalid_order_index) {
-      pool[order.prev].next = order.next;
+      pool.get_unchecked(order.prev).next = order.next;
     } else {
       level.head = order.next;
     }
 
     if (order.next != invalid_order_index) {
-      pool[order.next].prev = order.prev;
+      pool.get_unchecked(order.next).prev = order.prev;
     } else {
       level.tail = order.prev;
     }
@@ -126,8 +126,9 @@ public:
     }
   }
 
-  void reduce(OrderPool& pool, OrderIndex slot, Quantity quantity) noexcept {
-    Order& order = pool[slot];
+  void reduce(detail::OrderPool& pool, OrderIndex slot,
+              Quantity quantity) noexcept {
+    detail::Order& order = pool.get_unchecked(slot);
     const std::size_t segment = local_segment(order.price);
     const std::uint32_t offset = price_offset(order.price);
     PriceLevel& level = segments_[segment].levels[offset];
@@ -136,7 +137,8 @@ public:
     total_quantity_ -= quantity;
   }
 
-  [[nodiscard]] OrderIndex best_order(const OrderPool& pool) const noexcept {
+  [[nodiscard]] OrderIndex best_order(
+      const detail::OrderPool& pool) const noexcept {
     const PriceLevel* level = best_level();
     if (level == nullptr) {
       return invalid_order_index;

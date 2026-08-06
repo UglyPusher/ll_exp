@@ -23,6 +23,8 @@ namespace {
 
 volatile std::uint64_t g_sink = 0;
 
+using detail::OrderPool;
+
 struct Stats {
   std::uint64_t operations{};
   double mean{};
@@ -108,13 +110,13 @@ void print_layout() {
   OrderBook sample({1, 4096, 100000});
   sample.warm_up();
   const std::size_t pool_bytes =
-      OrderPool::order_size() * static_cast<std::size_t>(sample.capacity());
+      sizeof(detail::Order) * static_cast<std::size_t>(sample.capacity());
   const std::size_t index_bytes =
       OrderIdIndex::bucket_size() * sample.index_bucket_count();
   const std::size_t side_bytes =
       PriceSegment::segment_size() * sample.segment_count();
-  std::cout << "layout: sizeof(Order)=" << OrderPool::order_size()
-            << " alignof(Order)=" << OrderPool::order_align()
+  std::cout << "layout: sizeof(Order)=" << sizeof(detail::Order)
+            << " alignof(Order)=" << alignof(detail::Order)
             << " sizeof(PriceLevel)=" << sizeof(PriceLevel)
             << " alignof(PriceLevel)=" << alignof(PriceLevel)
             << " sizeof(PriceSegment)=" << PriceSegment::segment_size()
@@ -159,8 +161,8 @@ void print_build_context(OrderCapacity pool_capacity,
 #else
   std::cout << "NDEBUG: not defined\n";
 #endif
-  std::cout << "pool_benchmark: sizeof(Order)=" << OrderPool::order_size()
-            << " alignof(Order)=" << OrderPool::order_align()
+  std::cout << "pool_benchmark: sizeof(Order)=" << sizeof(detail::Order)
+            << " alignof(Order)=" << alignof(detail::Order)
             << " capacity=" << pool_capacity
             << " working_set_windows=64,4096,65536"
             << " batch_count=" << batches
@@ -178,13 +180,6 @@ Stats with_probe_stats(Stats stats, const IndexProbeStats& probes,
   return stats;
 }
 
-OrderPool make_warmed_pool(OrderCapacity capacity) {
-  OrderPool pool(capacity, OrderPool::Uninitialized{});
-  pool.prefault_pages();
-  pool.reset();
-  return pool;
-}
-
 Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
                             std::uint64_t batches,
                             std::uint64_t ops_per_batch) {
@@ -193,10 +188,10 @@ Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
     std::abort();
   }
 
-  OrderPool pool = make_warmed_pool(pool_capacity);
+  OrderPool pool(pool_capacity);
   std::vector<OrderIndex> active(window);
   for (OrderCapacity i = 0; i < window; ++i) {
-    active[i] = pool.acquire_for_test();
+    active[i] = pool.emplace(i, i, i, i + 1, Side::Bid);
   }
 
   const std::size_t mask = static_cast<std::size_t>(window - 1);
@@ -204,7 +199,9 @@ Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
   const Stats stats = run_batches(
       batches, ops_per_batch, [&](std::uint64_t, std::uint64_t) {
         pool.release(active[cursor]);
-        active[cursor] = pool.acquire_for_test();
+        const auto value = static_cast<OrderIndex>(cursor);
+        active[cursor] =
+            pool.emplace(value, value, value, 1, Side::Ask);
         cursor = (cursor + 1) & mask;
       });
 
@@ -226,61 +223,49 @@ int main() {
   print_build_context(pool_bench_capacity, fast_batches, fast_ops);
 
   {
-    OrderPool pool(pool_bench_capacity, OrderPool::Uninitialized{});
-    pool.prefault_pages();
     const auto start = std::chrono::steady_clock::now();
-    pool.reset();
+    OrderPool pool(pool_bench_capacity);
     const auto stop = std::chrono::steady_clock::now();
     const auto ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
             .count();
-    std::cout << "pool_reset_1M: ns=" << ns
+    g_sink += pool.validate_freelist() ? 1 : 0;
+    std::cout << "pool_construct_ready_1M: ns=" << ns
               << " ms=" << static_cast<double>(ns) / 1'000'000.0 << '\n';
   }
 
   {
-    OrderPool pool(pool_bench_capacity, OrderPool::Uninitialized{});
-    const auto start = std::chrono::steady_clock::now();
-    pool.prefault_pages();
-    const auto stop = std::chrono::steady_clock::now();
-    const auto ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
-            .count();
-    std::cout << "pool_prefault_1M: ns=" << ns
-              << " ms=" << static_cast<double>(ns) / 1'000'000.0
-              << " bytes=" << pool.last_warm_up_stats().bytes
-              << " pages=" << pool.last_warm_up_stats().pages << '\n';
-  }
-
-  {
-    OrderPool pool = make_warmed_pool(pool_bench_capacity);
+    OrderPool pool(pool_bench_capacity);
     std::vector<OrderIndex> acquired(pool_bench_capacity);
     std::size_t position = 0;
     const Stats stats = run_batches(fast_batches, fast_ops,
                                     [&](std::uint64_t, std::uint64_t) {
+                                      const auto value =
+                                          static_cast<OrderIndex>(position);
                                       acquired[position] =
-                                          pool.acquire_for_test();
+                                          pool.emplace(value, value, value, 1,
+                                                       Side::Bid);
                                       ++position;
                                     });
     g_sink += acquired.front();
     g_sink += acquired[acquired.size() / 2];
     g_sink += acquired.back();
-    print("pool_bulk_acquire_1M", stats);
+    print("pool_bulk_emplace_1M", stats);
   }
 
   {
-    OrderPool pool = make_warmed_pool(pool_bench_capacity);
+    OrderPool pool(pool_bench_capacity);
     std::vector<OrderIndex> slots;
     slots.reserve(pool_bench_capacity);
     for (OrderCapacity i = 0; i < pool_bench_capacity; ++i) {
-      slots.push_back(pool.acquire_for_test());
+      slots.push_back(pool.emplace(i, i, i, 1, Side::Bid));
     }
     std::size_t index = 0;
     const Stats stats = run_batches(fast_batches, fast_ops,
                                     [&](std::uint64_t, std::uint64_t) {
                                       pool.release(slots[index++]);
                                     });
-    g_sink += pool.free_count();
+    g_sink += pool.validate_freelist() ? 1 : 0;
     print("pool_bulk_release_1M", stats);
   }
 
