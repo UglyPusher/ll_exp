@@ -17,14 +17,11 @@ The runtime contract is intentionally small:
 - `EraseResult erase(OrderId id) noexcept`
 - `bool validate_invariants() const noexcept`
 
-Construction and lifecycle:
+Construction allocates and initializes all fixed storage:
 
 - `OrderBook(const OrderBookConfig& config)`
-- `void warm_up() noexcept`
 
-`warm_up()` remains a pre-runtime lifecycle operation in the current
-implementation. The target roadmap removes this second phase later; until then,
-call it before inserting runtime orders.
+The book is ready for runtime operations immediately after construction.
 
 ## Operation Semantics
 
@@ -54,9 +51,9 @@ Construction allocates exactly these fixed arrays:
 - one `PriceSegment[]` array for bids;
 - one `PriceSegment[]` array for asks.
 
-After construction and `warm_up()`, runtime operations `insert`, `best`,
-`set_remaining`, and `erase` do not allocate. `validate_invariants()` is a slow
-debug/test helper and may allocate temporary memory.
+After construction, runtime operations `insert`, `best`, `set_remaining`, and
+`erase` do not allocate. `validate_invariants()` is a slow debug/test helper and
+may allocate temporary memory.
 
 ## Failure Atomicity
 
@@ -80,18 +77,12 @@ accumulation and does not allocate or runtime-rehash.
 Probe diagnostics are available for tests and benchmarks through overloads that
 accept `IndexProbeStats*`; normal runtime calls do not collect stats.
 
-## Warm-Up
+## First Touch
 
-`warm_up()` touches and clears index buckets, bid segments, and ask segments.
-The order pool is not reset or separately prefaulted there: `OrderPool` is an
-internal ready-to-use component, and its constructor builds the freelist in one
-sequential pass. Construct `OrderBook` on the final matcher/owner thread after
-CPU affinity and NUMA policy have already been selected if first-touch placement
-matters.
-
-`warm_up()` must be called before runtime orders are inserted because the side
-books and index still clear their fixed storage. Debug builds assert that the
-book is empty.
+Constructors allocate and sequentially initialize the order pool, ID index, and
+bid/ask side storage. Construct `OrderBook` on the final matcher/owner thread
+after CPU affinity and NUMA policy have already been selected if first-touch
+placement matters.
 
 The library does not call `mlockall`, `VirtualLock`, thread affinity, or NUMA
 policy APIs. OS memory locking remains a platform/runtime responsibility.
@@ -105,13 +96,12 @@ The component contains no mutexes, atomics, or lock-free structures.
 
 Benchmarks use repeated batches and report batch-normalized `ns/op`. Percentiles
 (`p50`, `p90`, `p99`, `p99.9`, `p99.99`, `max`) are percentiles of batch samples,
-not hardware-timed individual operations. Initialization and warm-up are outside
-measured sections. Benchmark does not set OS affinity or memory locking.
+not hardware-timed individual operations. Setup and construction are outside
+measured hot-path sections unless a scenario explicitly measures construction.
+Benchmark does not set OS affinity or memory locking.
 
 ## Known Limitations
 
 - No matcher, no execution policy, no event output.
-- `warm_up()` is still pre-runtime lifecycle state until the roadmap lifecycle
-  cleanup step.
 - Linux portability is expected from the C++20 code and CMake, but was not
   verified in this local environment.

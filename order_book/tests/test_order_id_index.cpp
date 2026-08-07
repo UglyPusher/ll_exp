@@ -11,7 +11,6 @@ using namespace fexma::order_book;
 
 int main() {
   OrderIdIndex index(4);
-  index.warm_up();
 
   if (index.find(10) != invalid_order_index) {
     return 1;

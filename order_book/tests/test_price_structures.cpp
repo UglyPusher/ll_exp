@@ -34,7 +34,6 @@ int main() {
 
   OrderPool pool(16);
   SideBook<Side::Ask> asks(64, 191);
-  asks.warm_up();
 
   const OrderIndex ask_high = make_order(pool, 1, Side::Ask, 130, 10);
   const OrderIndex ask_low_a = make_order(pool, 2, Side::Ask, 70, 20);
@@ -64,7 +63,6 @@ int main() {
   }
 
   SideBook<Side::Bid> bids(64, 191);
-  bids.warm_up();
   const OrderIndex bid_low = make_order(pool, 4, Side::Bid, 65, 10);
   const OrderIndex bid_high = make_order(pool, 5, Side::Bid, 190, 10);
   const OrderIndex bid_mid = make_order(pool, 6, Side::Bid, 128, 10);

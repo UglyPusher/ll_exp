@@ -65,19 +65,11 @@ foreach(test_name IN LISTS order_book_tests)
   add_executable(${test_name} tests/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE fexma::order_book)
   fexma_order_book_apply_warnings(${test_name})
-  if(test_name STREQUAL "test_order_pool")
-    target_compile_definitions(${test_name} PRIVATE
-      FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
-    )
-  endif()
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
 add_executable(bench_order_book bench/bench_order_book.cpp)
 target_link_libraries(bench_order_book PRIVATE fexma::order_book)
-target_compile_definitions(bench_order_book PRIVATE
-  FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
-)
 fexma_order_book_apply_warnings(bench_order_book)
 
 add_executable(bench_order_pool bench/bench_order_pool.cpp)
@@ -86,7 +78,4 @@ target_include_directories(bench_order_pool
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_compile_features(bench_order_pool PRIVATE cxx_std_20)
-target_compile_definitions(bench_order_pool PRIVATE
-  FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
-)
 fexma_order_book_apply_warnings(bench_order_pool)

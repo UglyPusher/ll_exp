@@ -8,7 +8,6 @@
  */
 #include <fexma/order_book/order_book.hpp>
 
-#include <cassert>
 #include <memory>
 
 namespace fexma::order_book {
@@ -19,13 +18,6 @@ OrderBook::OrderBook(const OrderBookConfig& config)
       index_(config.max_orders),
       bids_(config.min_price_tick, config.max_price_tick),
       asks_(config.min_price_tick, config.max_price_tick) {}
-
-void OrderBook::warm_up() noexcept {
-  assert(active_order_count() == 0);
-  index_.warm_up(config_.page_size);
-  bids_.warm_up(config_.page_size);
-  asks_.warm_up(config_.page_size);
-}
 
 InsertResult OrderBook::insert(const RestingOrderData& order) noexcept {
   // Failure checks happen before any mutation so rejected puts preserve the

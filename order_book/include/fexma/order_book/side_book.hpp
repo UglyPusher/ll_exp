@@ -43,13 +43,6 @@ public:
   SideBook(SideBook&&) noexcept = default;
   SideBook& operator=(SideBook&&) noexcept = default;
 
-  void warm_up(std::uint32_t page_size = 4096) noexcept {
-    last_warm_up_ =
-        touch_pages(segments_.get(), sizeof(PriceSegment) * segment_count_,
-                    page_size);
-    clear();
-  }
-
   void clear() noexcept {
     best_segment_ = invalid_segment();
     order_count_ = 0;
@@ -214,10 +207,6 @@ public:
     return best_segment_;
   }
 
-  [[nodiscard]] WarmUpTouchStats last_warm_up_stats() const noexcept {
-    return last_warm_up_;
-  }
-
   [[nodiscard]] std::size_t byte_size() const noexcept {
     return sizeof(PriceSegment) * segment_count_;
   }
@@ -284,22 +273,6 @@ private:
     return last - first + 1;
   }
 
-  static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
-                                      std::uint32_t page_size) noexcept {
-    if (memory == nullptr || bytes == 0) {
-      return {};
-    }
-    const std::size_t step = page_size == 0 ? 4096U : page_size;
-    auto* raw = static_cast<volatile std::uint8_t*>(memory);
-    std::size_t pages = 0;
-    for (std::size_t offset = 0; offset < bytes; offset += step) {
-      raw[offset] = raw[offset];
-      ++pages;
-    }
-    raw[bytes - 1] = raw[bytes - 1];
-    return {bytes, pages};
-  }
-
   PriceTick min_price_tick_{};
   PriceTick max_price_tick_{};
   std::size_t base_segment_{};
@@ -308,7 +281,6 @@ private:
   std::size_t best_segment_{invalid_segment()};
   std::uint32_t order_count_{};
   Quantity total_quantity_{};
-  WarmUpTouchStats last_warm_up_{};
 };
 
 } // namespace fexma::order_book

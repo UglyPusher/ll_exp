@@ -23,7 +23,7 @@ namespace fexma::order_book {
  * The book owns all resting orders, FIFO price levels, price segments, the
  * fixed-capacity order pool, and the OrderId index.
  *
- * Runtime mutation methods do not allocate after construction and warm-up.
+ * Runtime mutation methods do not allocate after construction.
  * validate_invariants() is a debug/test helper and may allocate.
  *
  * @note This class is not a matcher and does not implement execution policy,
@@ -39,17 +39,6 @@ public:
   OrderBook& operator=(const OrderBook&) = delete;
   OrderBook(OrderBook&&) noexcept = default;
   OrderBook& operator=(OrderBook&&) noexcept = default;
-
-  /**
-   * @brief Touches and reinitializes all owned fixed storage.
-   *
-   * @pre Must be called before runtime orders are inserted. Calling warm_up()
-   * after the book becomes active is a contract violation; Debug builds assert.
-   * @post The book is empty.
-   * @note No OS-specific memory locking or affinity is performed.
-   * @complexity O(max_orders + segment_count + index_bucket_count).
-   */
-  void warm_up() noexcept;
 
   /**
    * @brief Appends one resting order to its side/price FIFO.

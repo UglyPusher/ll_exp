@@ -117,7 +117,6 @@ int main() {
     std::mt19937 rng(seed);
     constexpr OrderCapacity max_orders = 160;
     OrderBook book({64, 255, max_orders});
-    book.warm_up();
     ReferenceOrderBook reference({64, 255, max_orders});
     std::vector<OrderId> active_ids;
     std::vector<OrderId> retired_ids;

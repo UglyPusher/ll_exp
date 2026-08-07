@@ -4,6 +4,8 @@
  */
 #include <fexma/order_book/detail/order_pool.hpp>
 
+#include "order_pool_test_access.hpp"
+
 #include <random>
 #include <stdexcept>
 #include <utility>

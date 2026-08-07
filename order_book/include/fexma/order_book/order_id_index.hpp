@@ -50,12 +50,6 @@ public:
   OrderIdIndex(OrderIdIndex&&) noexcept = default;
   OrderIdIndex& operator=(OrderIdIndex&&) noexcept = default;
 
-  void warm_up(std::uint32_t page_size = 4096) noexcept {
-    last_warm_up_ =
-        touch_pages(buckets_.get(), sizeof(Bucket) * bucket_count_, page_size);
-    clear();
-  }
-
   void clear() noexcept {
     size_ = 0;
     tombstones_ = 0;
@@ -197,10 +191,6 @@ public:
     return sizeof(Bucket) * bucket_count_;
   }
 
-  [[nodiscard]] WarmUpTouchStats last_warm_up_stats() const noexcept {
-    return last_warm_up_;
-  }
-
   template <typename Fn>
   bool for_each(Fn&& fn) const noexcept {
     for (std::size_t i = 0; i < bucket_count_; ++i) {
@@ -267,27 +257,10 @@ private:
     }
   }
 
-  static WarmUpTouchStats touch_pages(void* memory, std::size_t bytes,
-                                      std::uint32_t page_size) noexcept {
-    if (memory == nullptr || bytes == 0) {
-      return {};
-    }
-    const std::size_t step = page_size == 0 ? 4096U : page_size;
-    auto* raw = static_cast<volatile std::uint8_t*>(memory);
-    std::size_t pages = 0;
-    for (std::size_t offset = 0; offset < bytes; offset += step) {
-      raw[offset] = raw[offset];
-      ++pages;
-    }
-    raw[bytes - 1] = raw[bytes - 1];
-    return {bytes, pages};
-  }
-
   std::size_t bucket_count_{};
   std::unique_ptr<Bucket[]> buckets_;
   std::size_t size_{};
   std::size_t tombstones_{};
-  WarmUpTouchStats last_warm_up_{};
 };
 
 } // namespace fexma::order_book

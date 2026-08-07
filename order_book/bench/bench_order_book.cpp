@@ -76,6 +76,41 @@ Stats run_batches(std::uint64_t batches, std::uint64_t ops_per_batch, Fn&& fn) {
           samples.back()};
 }
 
+Stats run_order_book_construction_first_touch(std::uint64_t runs,
+                                              const OrderBookConfig& config) {
+  std::vector<double> samples;
+  samples.reserve(static_cast<std::size_t>(runs));
+  double total_ns = 0.0;
+  for (std::uint64_t run = 0; run < runs; ++run) {
+    const auto start = std::chrono::steady_clock::now();
+    OrderBook book(config);
+    const auto stop = std::chrono::steady_clock::now();
+    const double elapsed =
+        static_cast<double>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
+                .count());
+    total_ns += elapsed;
+    samples.push_back(elapsed);
+    const auto empty_bid = book.best(Side::Bid);
+    g_sink += empty_bid ? empty_bid->id : 1;
+  }
+  std::sort(samples.begin(), samples.end());
+  const auto percentile = [&samples](double p) {
+    const std::size_t index = static_cast<std::size_t>(
+        (static_cast<double>(samples.size() - 1) * p) / 100.0);
+    return samples[index];
+  };
+  return {runs,
+          total_ns / static_cast<double>(runs),
+          (static_cast<double>(runs) * 1'000'000'000.0) / total_ns,
+          percentile(50.0),
+          percentile(90.0),
+          percentile(99.0),
+          percentile(99.9),
+          percentile(99.99),
+          samples.back()};
+}
+
 void print(std::string_view name, const Stats& stats) {
   std::cout << name << ": ops=" << stats.operations << " mean_ns/op="
             << stats.mean << " ops/s=" << stats.ops_per_second
@@ -92,9 +127,7 @@ void print(std::string_view name, const Stats& stats) {
 }
 
 OrderBook make_book(OrderCapacity capacity = 300000) {
-  OrderBook book({1, 4096, capacity});
-  book.warm_up();
-  return book;
+  return OrderBook({1, 4096, capacity});
 }
 
 void insert_checked(OrderBook& book, OrderId& id, Side side, PriceTick price,
@@ -131,8 +164,6 @@ void print_layout() {
   constexpr OrderCapacity max_orders = 100000;
   constexpr PriceTick min_price_tick = 1;
   constexpr PriceTick max_price_tick = 4096;
-  OrderBook sample({min_price_tick, max_price_tick, max_orders});
-  sample.warm_up();
   const std::size_t index_bucket_count = bucket_count_for_capacity(max_orders);
   const std::size_t segment_count =
       segment_count_for_range(min_price_tick, max_price_tick);
@@ -247,6 +278,9 @@ int main() {
   constexpr std::uint64_t book_batches = 300;
   constexpr std::uint64_t book_ops = 1000;
   print_build_context(pool_bench_capacity, fast_batches, fast_ops);
+
+  print("order_book_construct_first_touch_100K",
+        run_order_book_construction_first_touch(25, {1, 4096, 100000}));
 
   {
     const auto start = std::chrono::steady_clock::now();

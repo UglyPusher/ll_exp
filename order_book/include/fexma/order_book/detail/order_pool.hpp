@@ -33,9 +33,7 @@ struct Order {
 
 private:
   friend class OrderPool;
-#ifdef FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
   friend class OrderPoolTestAccess;
-#endif
   // Kept as an O(1) pool-membership guard for release() and diagnostics.
   bool in_use;
 };
@@ -73,9 +71,7 @@ private:
  * Release builds defensively ignore them without mutating the freelist.
  */
 class OrderPool final {
-#ifdef FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
   friend class OrderPoolTestAccess;
-#endif
 
 public:
   explicit OrderPool(OrderCapacity capacity)
@@ -279,43 +275,5 @@ private:
   OrderIndex free_head_{invalid_order_index};
   OrderCapacity free_count_{};
 };
-
-#ifdef FEXMA_ORDER_POOL_ENABLE_TEST_ACCESS
-class OrderPoolTestAccess {
-public:
-  [[nodiscard]] static OrderCapacity capacity(const OrderPool& pool) noexcept {
-    return pool.capacity_;
-  }
-
-  [[nodiscard]] static OrderCapacity free_count(
-      const OrderPool& pool) noexcept {
-    return pool.free_count_;
-  }
-
-  [[nodiscard]] static OrderIndex free_head(const OrderPool& pool) noexcept {
-    return pool.free_head_;
-  }
-
-  [[nodiscard]] static OrderIndex next(const OrderPool& pool,
-                                       OrderIndex slot) noexcept {
-    return pool.orders_[slot].next;
-  }
-
-  static void set_in_use(OrderPool& pool, OrderIndex slot,
-                         bool value) noexcept {
-    pool.orders_[slot].in_use = value;
-  }
-
-  static void set_next(OrderPool& pool, OrderIndex slot,
-                       OrderIndex next) noexcept {
-    pool.orders_[slot].next = next;
-  }
-
-  static void set_free_count(OrderPool& pool,
-                             OrderCapacity free_count) noexcept {
-    pool.free_count_ = free_count;
-  }
-};
-#endif
 
 } // namespace fexma::order_book::detail

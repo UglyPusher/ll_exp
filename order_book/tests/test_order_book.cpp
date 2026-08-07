@@ -112,7 +112,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
 [[nodiscard]] bool construction_contract() {
   OrderBook empty_capacity({10, 20, 0});
-  empty_capacity.warm_up();
   if (empty_capacity.best(Side::Bid) || empty_capacity.best(Side::Ask) ||
       !empty_capacity.validate_invariants()) {
     return false;
@@ -123,7 +122,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
   }
 
   OrderBook single_capacity({10, 10, 1});
-  single_capacity.warm_up();
   return single_capacity.insert({1, 1, Side::Ask, 10, 1}).ok() &&
          single_capacity.insert({2, 2, Side::Ask, 10, 1}).status ==
              InsertStatus::CapacityExhausted &&
@@ -132,7 +130,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
 [[nodiscard]] bool insert_and_best_contract() {
   OrderBook book({64, 192, 8});
-  book.warm_up();
   if (!book.insert({1, 11, Side::Bid, 65, 10}).ok() ||
       !book.insert({2, 12, Side::Bid, 128, 20}).ok() ||
       !book.insert({3, 13, Side::Bid, 128, 30}).ok() ||
@@ -163,7 +160,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
 [[nodiscard]] bool set_remaining_contract() {
   OrderBook book({10, 20, 4});
-  book.warm_up();
   if (!book.insert({1, 11, Side::Ask, 12, 10}).ok() ||
       !book.insert({2, 12, Side::Ask, 12, 20}).ok()) {
     return false;
@@ -193,7 +189,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
 [[nodiscard]] bool erase_contract() {
   OrderBook book({10, 20, 5});
-  book.warm_up();
   if (!book.insert({1, 11, Side::Bid, 15, 10}).ok() ||
       !book.insert({2, 12, Side::Bid, 15, 20}).ok() ||
       !book.insert({3, 13, Side::Bid, 15, 30}).ok() ||
@@ -230,7 +225,6 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
 [[nodiscard]] bool runtime_operations_do_not_allocate() {
   OrderBook book({1, 128, 16});
-  book.warm_up();
   (void)book.insert({1, 1, Side::Ask, 10, 10});
   (void)book.insert({2, 1, Side::Bid, 9, 10});
 

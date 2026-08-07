@@ -9,7 +9,6 @@
 #pragma once
 
 #include <cstdint>
-#include <cstddef>
 #include <limits>
 
 namespace fexma::order_book {
@@ -44,15 +43,14 @@ inline constexpr std::uint32_t price_offset_mask = prices_per_segment - 1;
 /**
  * @brief Fixed-capacity configuration for one OrderBook instance.
  *
- * Construction allocates memory for the configured order pool, bid/ask price
- * segment arrays, and fixed OrderId index. Runtime mutation methods do not
- * allocate after construction and warm-up.
+ * Construction allocates and initializes the configured order pool, bid/ask
+ * price segment arrays, and fixed OrderId index. Runtime mutation methods do
+ * not allocate after construction.
  */
 struct OrderBookConfig {
   PriceTick min_price_tick{};
   PriceTick max_price_tick{};
   OrderCapacity max_orders{};
-  std::uint32_t page_size{4096};
 };
 
 /** @brief Input value for adding one already-resting order. */
@@ -71,12 +69,6 @@ struct OrderView {
   Side side{};
   PriceTick price{};
   Quantity remaining{};
-};
-
-/** @brief Number of bytes/pages touched by a warm-up pass. */
-struct WarmUpTouchStats {
-  std::size_t bytes{};
-  std::size_t pages{};
 };
 
 /** @brief Explicit status for insert(). */
