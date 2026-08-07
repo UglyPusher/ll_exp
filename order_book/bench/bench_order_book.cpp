@@ -1,17 +1,17 @@
 /**
  * @file bench_order_book.cpp
- * @brief Batch-normalized microbenchmarks and memory-layout report.
+ * @brief Public-API OrderBook benchmark harness.
  *
- * Percentiles are computed from batch ns/op samples, not from one timestamp per
- * individual operation. The executable performs no OS affinity or memory
- * locking; environment tuning is external.
+ * The benchmark measures only OrderBook's external five-method API. Setup is
+ * performed before timed regions, except for the explicit construction
+ * benchmark. Percentiles are computed from per-batch ns/op samples.
  */
 #include <fexma/order_book/order_book.hpp>
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -23,10 +23,9 @@ namespace {
 
 volatile std::uint64_t g_sink = 0;
 
-using detail::OrderPool;
-
 struct Stats {
-  std::uint64_t operations{};
+  std::uint64_t iterations{};
+  std::uint64_t latency_samples{};
   double mean{};
   double ops_per_second{};
   double p50{};
@@ -35,39 +34,68 @@ struct Stats {
   double p999{};
   double p9999{};
   double max{};
-  double avg_probes{};
-  std::size_t max_probes{};
-  std::size_t tombstones{};
 };
 
-template <typename Fn>
-Stats run_batches(std::uint64_t batches, std::uint64_t ops_per_batch, Fn&& fn) {
+struct BatchShape {
+  std::uint64_t batches;
+  std::uint64_t ops_per_batch;
+};
+
+constexpr OrderBookConfig default_config{1, 4096, 400000};
+constexpr BatchShape steady_shape{300, 1000};
+constexpr int benchmark_runs = 5;
+
+template <typename SetupFn, typename OperationFn>
+Stats measure_scenario(BatchShape shape, SetupFn&& setup,
+                       OperationFn&& operation) {
   std::vector<double> samples;
-  samples.reserve(static_cast<std::size_t>(batches));
+  samples.reserve(static_cast<std::size_t>(shape.batches));
   double total_ns = 0.0;
-  for (std::uint64_t batch = 0; batch < batches; ++batch) {
+
+  {
+    auto state = setup();
+    for (std::uint64_t batch = 0; batch < shape.batches; ++batch) {
+      const auto start = std::chrono::steady_clock::now();
+      for (std::uint64_t op = 0; op < shape.ops_per_batch; ++op) {
+        operation(state, batch, op);
+      }
+      const auto stop = std::chrono::steady_clock::now();
+      const double elapsed =
+          static_cast<double>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
+                  .count());
+      total_ns += elapsed;
+      samples.push_back(elapsed / static_cast<double>(shape.ops_per_batch));
+    }
+  }
+
+  const std::uint64_t iterations = shape.batches * shape.ops_per_batch;
+  double throughput_ns = 0.0;
+  {
+    auto state = setup();
     const auto start = std::chrono::steady_clock::now();
-    for (std::uint64_t op = 0; op < ops_per_batch; ++op) {
-      fn(batch, op);
+    for (std::uint64_t batch = 0; batch < shape.batches; ++batch) {
+      for (std::uint64_t op = 0; op < shape.ops_per_batch; ++op) {
+        operation(state, batch, op);
+      }
     }
     const auto stop = std::chrono::steady_clock::now();
-    const double elapsed =
+    throughput_ns =
         static_cast<double>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
                 .count());
-    total_ns += elapsed;
-    samples.push_back(elapsed / static_cast<double>(ops_per_batch));
   }
+
   std::sort(samples.begin(), samples.end());
   const auto percentile = [&samples](double p) {
     const std::size_t index = static_cast<std::size_t>(
         (static_cast<double>(samples.size() - 1) * p) / 100.0);
     return samples[index];
   };
-  const std::uint64_t operations = batches * ops_per_batch;
-  return {operations,
-          total_ns / static_cast<double>(operations),
-          (static_cast<double>(operations) * 1'000'000'000.0) / total_ns,
+  return {iterations,
+          shape.batches,
+          total_ns / static_cast<double>(iterations),
+          (static_cast<double>(iterations) * 1'000'000'000.0) / throughput_ns,
           percentile(50.0),
           percentile(90.0),
           percentile(99.0),
@@ -76,11 +104,12 @@ Stats run_batches(std::uint64_t batches, std::uint64_t ops_per_batch, Fn&& fn) {
           samples.back()};
 }
 
-Stats run_order_book_construction_first_touch(std::uint64_t runs,
-                                              const OrderBookConfig& config) {
+Stats run_construction_first_touch(std::uint64_t runs,
+                                   const OrderBookConfig& config) {
   std::vector<double> samples;
   samples.reserve(static_cast<std::size_t>(runs));
   double total_ns = 0.0;
+
   for (std::uint64_t run = 0; run < runs; ++run) {
     const auto start = std::chrono::steady_clock::now();
     OrderBook book(config);
@@ -94,6 +123,22 @@ Stats run_order_book_construction_first_touch(std::uint64_t runs,
     const auto empty_bid = book.best(Side::Bid);
     g_sink += empty_bid ? empty_bid->id : 1;
   }
+
+  double throughput_ns = 0.0;
+  {
+    const auto start = std::chrono::steady_clock::now();
+    for (std::uint64_t run = 0; run < runs; ++run) {
+      OrderBook book(config);
+      const auto empty_bid = book.best(Side::Bid);
+      g_sink += empty_bid ? empty_bid->id : 1;
+    }
+    const auto stop = std::chrono::steady_clock::now();
+    throughput_ns =
+        static_cast<double>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
+                .count());
+  }
+
   std::sort(samples.begin(), samples.end());
   const auto percentile = [&samples](double p) {
     const std::size_t index = static_cast<std::size_t>(
@@ -101,8 +146,9 @@ Stats run_order_book_construction_first_touch(std::uint64_t runs,
     return samples[index];
   };
   return {runs,
+          runs,
           total_ns / static_cast<double>(runs),
-          (static_cast<double>(runs) * 1'000'000'000.0) / total_ns,
+          (static_cast<double>(runs) * 1'000'000'000.0) / throughput_ns,
           percentile(50.0),
           percentile(90.0),
           percentile(99.0),
@@ -111,449 +157,472 @@ Stats run_order_book_construction_first_touch(std::uint64_t runs,
           samples.back()};
 }
 
-void print(std::string_view name, const Stats& stats) {
-  std::cout << name << ": ops=" << stats.operations << " mean_ns/op="
-            << stats.mean << " ops/s=" << stats.ops_per_second
-            << " p50=" << stats.p50 << " p90=" << stats.p90
-            << " p99=" << stats.p99 << " p99.9=" << stats.p999
-            << " p99.99=" << stats.p9999 << " max=" << stats.max;
-  if (stats.avg_probes != 0.0 || stats.max_probes != 0 ||
-      stats.tombstones != 0) {
-    std::cout << " avg_probes=" << stats.avg_probes
-              << " max_probes=" << stats.max_probes
-              << " tombstones=" << stats.tombstones;
+void print_stats(std::string_view name, int run, const Stats& stats) {
+  std::cout << "baseline name=" << name << " run=" << run
+            << " iterations=" << stats.iterations
+            << " latency_samples=" << stats.latency_samples
+            << " mean_ns/op=" << stats.mean
+            << " ops/s=" << stats.ops_per_second << " p50=" << stats.p50
+            << " p90=" << stats.p90 << " p99=" << stats.p99
+            << " p99.9=" << stats.p999 << " p99.99=" << stats.p9999
+            << " max=" << stats.max << '\n';
+}
+
+std::string cpu_identifier() {
+#if defined(_MSC_VER)
+  char* value = nullptr;
+  std::size_t value_size = 0;
+  if (_dupenv_s(&value, &value_size, "PROCESSOR_IDENTIFIER") == 0 &&
+      value != nullptr) {
+    std::string result(value);
+    std::free(value);
+    return result;
   }
-  std::cout << '\n';
+  return "unknown";
+#else
+  const char* const value = std::getenv("PROCESSOR_IDENTIFIER");
+  return value == nullptr ? "unknown" : value;
+#endif
 }
 
-OrderBook make_book(OrderCapacity capacity = 300000) {
-  return OrderBook({1, 4096, capacity});
+template <typename Fn>
+void run_benchmark(std::string_view name, Fn&& make_stats) {
+  for (int run = 1; run <= benchmark_runs; ++run) {
+    print_stats(name, run, make_stats());
+  }
 }
 
-void insert_checked(OrderBook& book, OrderId& id, Side side, PriceTick price,
+void print_build_context() {
+#if defined(_MSC_VER)
+  std::cout << "compiler=MSVC _MSC_VER=" << _MSC_VER
+            << " _MSC_FULL_VER=" << _MSC_FULL_VER << '\n';
+#else
+  std::cout << "compiler=unknown\n";
+#endif
+#if defined(_M_X64)
+  std::cout << "architecture=x64\n";
+#elif defined(_M_IX86)
+  std::cout << "architecture=x86\n";
+#else
+  std::cout << "architecture=unknown\n";
+#endif
+#if defined(NDEBUG)
+  std::cout << "NDEBUG=defined\n";
+  std::cout << "optimization=/O2\n";
+#else
+  std::cout << "NDEBUG=not_defined\n";
+  std::cout << "optimization=/Od\n";
+#endif
+  std::cout << "cpu_identifier=" << cpu_identifier() << '\n';
+  std::cout << "timer=std::chrono::steady_clock"
+            << " runs=" << benchmark_runs
+            << " steady_batches=" << steady_shape.batches
+            << " steady_ops_per_batch=" << steady_shape.ops_per_batch << '\n';
+  std::cout << "latency_sample_unit=batch_ns_per_op"
+            << " throughput_pass=separate_unsampled_run\n";
+  std::cout << "default_config min_price_tick="
+            << default_config.min_price_tick
+            << " max_price_tick=" << default_config.max_price_tick
+            << " max_orders=" << default_config.max_orders << '\n';
+}
+
+void insert_checked(OrderBook& book, OrderId id, Side side, PriceTick price,
                     Quantity quantity = 100) {
   const InsertResult result =
       book.insert({id, id + 1000, side, price, quantity});
   if (!result.ok()) {
     std::abort();
   }
-  ++id;
 }
 
-std::size_t bucket_count_for_capacity(OrderCapacity capacity) {
-  std::size_t count = 1;
-  const std::size_t required =
-      capacity == 0 ? 1 : static_cast<std::size_t>(capacity) * 2 + 1;
-  while (count < required) {
-    count <<= 1;
-  }
-  return count;
-}
-
-std::size_t segment_count_for_range(PriceTick min_price_tick,
-                                    PriceTick max_price_tick) {
-  if (max_price_tick < min_price_tick) {
-    return 0;
-  }
-  const std::size_t first = min_price_tick >> price_segment_shift;
-  const std::size_t last = max_price_tick >> price_segment_shift;
-  return last - first + 1;
-}
-
-void print_layout() {
-  constexpr OrderCapacity max_orders = 100000;
-  constexpr PriceTick min_price_tick = 1;
-  constexpr PriceTick max_price_tick = 4096;
-  const std::size_t index_bucket_count = bucket_count_for_capacity(max_orders);
-  const std::size_t segment_count =
-      segment_count_for_range(min_price_tick, max_price_tick);
-  const std::size_t pool_bytes =
-      sizeof(detail::Order) * static_cast<std::size_t>(max_orders);
-  const std::size_t index_bytes =
-      OrderIdIndex::bucket_size() * index_bucket_count;
-  const std::size_t side_bytes = PriceSegment::segment_size() * segment_count;
-  std::cout << "layout: sizeof(Order)=" << sizeof(detail::Order)
-            << " alignof(Order)=" << alignof(detail::Order)
-            << " sizeof(PriceLevel)=" << sizeof(PriceLevel)
-            << " alignof(PriceLevel)=" << alignof(PriceLevel)
-            << " sizeof(PriceSegment)=" << PriceSegment::segment_size()
-            << " alignof(PriceSegment)=" << PriceSegment::segment_align()
-            << " sizeof(OrderIdIndex::Bucket)=" << OrderIdIndex::bucket_size()
-            << " alignof(OrderIdIndex::Bucket)="
-            << OrderIdIndex::bucket_align() << '\n';
-  std::cout << "memory: max_orders=" << max_orders
-            << " min_price_tick=1 max_price_tick=4096"
-            << " segment_count=" << segment_count
-            << " index_capacity=" << index_bucket_count
-            << " index_load_factor="
-            << static_cast<double>(max_orders) /
-                   static_cast<double>(index_bucket_count)
-            << " OrderPool_bytes=" << pool_bytes
-            << " OrderIdIndex_bytes=" << index_bytes
-            << " Bid_segments_bytes=" << side_bytes
-            << " Ask_segments_bytes=" << side_bytes
-            << " Total_bytes=" << (pool_bytes + index_bytes + side_bytes * 2)
-            << '\n';
-}
-
-void print_build_context(OrderCapacity pool_capacity,
-                         std::uint64_t batches,
-                         std::uint64_t ops_per_batch) {
-#if defined(_MSC_VER)
-  std::cout << "compiler: MSVC _MSC_VER=" << _MSC_VER
-            << " _MSC_FULL_VER=" << _MSC_FULL_VER << '\n';
-#else
-  std::cout << "compiler: unknown\n";
-#endif
-#if defined(_M_X64)
-  std::cout << "architecture: x64\n";
-#elif defined(_M_IX86)
-  std::cout << "architecture: x86\n";
-#else
-  std::cout << "architecture: unknown\n";
-#endif
-  std::cout << "optimization: /O2\n";
-#if defined(NDEBUG)
-  std::cout << "NDEBUG: defined\n";
-#else
-  std::cout << "NDEBUG: not defined\n";
-#endif
-  std::cout << "pool_benchmark: sizeof(Order)=" << sizeof(detail::Order)
-            << " alignof(Order)=" << alignof(detail::Order)
-            << " capacity=" << pool_capacity
-            << " working_set_windows=64,4096,65536"
-            << " batch_count=" << batches
-            << " operations_per_batch=" << ops_per_batch << '\n';
-}
-
-Stats with_probe_stats(Stats stats, const IndexProbeStats& probes,
-                       std::uint64_t probe_ops, std::size_t tombstones) {
-  stats.avg_probes =
-      probe_ops == 0 ? 0.0
-                     : static_cast<double>(probes.probes) /
-                           static_cast<double>(probe_ops);
-  stats.max_probes = probes.max_probe;
-  stats.tombstones = tombstones;
-  return stats;
-}
-
-Stats run_pool_churn_window(OrderCapacity pool_capacity, OrderCapacity window,
-                            std::uint64_t batches,
-                            std::uint64_t ops_per_batch) {
-  if (window == 0 || (window & (window - 1)) != 0 ||
-      window > pool_capacity) {
-    std::abort();
-  }
-
-  OrderPool pool(pool_capacity);
-  std::vector<OrderIndex> active(window);
-  for (OrderCapacity i = 0; i < window; ++i) {
-    active[i] = pool.emplace(i, i, i, i + 1, Side::Bid);
-  }
-
-  const std::size_t mask = static_cast<std::size_t>(window - 1);
-  std::size_t cursor = 0;
-  const Stats stats = run_batches(
-      batches, ops_per_batch, [&](std::uint64_t, std::uint64_t) {
-        pool.release(active[cursor]);
-        const auto value = static_cast<OrderIndex>(cursor);
-        active[cursor] =
-            pool.emplace(value, value, value, 1, Side::Ask);
-        cursor = (cursor + 1) & mask;
+Stats bench_insert_existing_level() {
+  struct State {
+    OrderBook book;
+    OrderId next_id;
+  };
+  return measure_scenario(
+      steady_shape, [] { return State{OrderBook(default_config), 1}; },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        insert_checked(state.book, state.next_id, Side::Ask, 100);
+        g_sink += state.next_id;
+        ++state.next_id;
       });
+}
 
-  g_sink += active.front();
-  g_sink += active[active.size() / 2];
-  g_sink += active.back();
-  return stats;
+Stats bench_insert_new_level() {
+  constexpr BatchShape shape{64, 64};
+  struct State {
+    OrderBook book;
+    OrderId next_id;
+  };
+  return measure_scenario(
+      shape, [] { return State{OrderBook({1, 4096, 4096}), 1}; },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto price = static_cast<PriceTick>(state.next_id);
+        insert_checked(state.book, state.next_id, Side::Ask, price);
+        g_sink += price;
+        ++state.next_id;
+      });
+}
+
+Stats bench_best(Side side) {
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      steady_shape,
+      [side] {
+        State state{OrderBook(default_config)};
+        for (OrderId id = 1; id <= 100000; ++id) {
+          const PriceTick price =
+              side == Side::Bid ? static_cast<PriceTick>(100 + (id % 64))
+                                : static_cast<PriceTick>(200 + (id % 64));
+          insert_checked(state.book, id, side, price);
+        }
+        return state;
+      },
+      [side](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(side);
+        g_sink += best ? best->id : 0;
+      });
+}
+
+Stats bench_set_remaining_hit() {
+  struct State {
+    OrderBook book;
+    OrderId current_id;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook(default_config), 1};
+        for (OrderId id = 1;
+             id <= steady_shape.batches * steady_shape.ops_per_batch; ++id) {
+          insert_checked(state.book, id, Side::Ask, 100, 1000);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const SetRemainingResult result =
+            state.book.set_remaining(state.current_id++, 500);
+        g_sink += result.previous_remaining;
+      });
+}
+
+Stats bench_set_remaining_miss() {
+  struct State {
+    OrderBook book;
+    OrderId missing_id;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook(default_config), 10'000'000};
+        for (OrderId id = 1; id <= 100000; ++id) {
+          insert_checked(state.book, id, Side::Ask, 100);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const SetRemainingResult result =
+            state.book.set_remaining(state.missing_id++, 500);
+        g_sink += static_cast<std::uint64_t>(result.status);
+      });
+}
+
+Stats bench_erase_head() {
+  struct State {
+    OrderBook book;
+    OrderId current_id;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook(default_config), 1};
+        for (OrderId id = 1;
+             id <= steady_shape.batches * steady_shape.ops_per_batch; ++id) {
+          insert_checked(state.book, id, Side::Bid, 100);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const EraseResult result = state.book.erase(state.current_id++);
+        g_sink += result.removed.id;
+      });
+}
+
+Stats bench_erase_middle() {
+  constexpr OrderId group_count = 100000;
+  struct State {
+    OrderBook book;
+    OrderId group;
+  };
+  return measure_scenario(
+      {100, 1000},
+      [] {
+        State state{OrderBook(default_config), 0};
+        for (OrderId group = 0; group < group_count; ++group) {
+          const OrderId base = group * 3 + 1;
+          insert_checked(state.book, base, Side::Bid, 100);
+          insert_checked(state.book, base + 1, Side::Bid, 100);
+          insert_checked(state.book, base + 2, Side::Bid, 100);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const OrderId id = state.group * 3 + 2;
+        const EraseResult result = state.book.erase(id);
+        g_sink += result.removed.id;
+        ++state.group;
+      });
+}
+
+Stats bench_erase_tail() {
+  constexpr OrderId group_count = 100000;
+  struct State {
+    OrderBook book;
+    OrderId group;
+  };
+  return measure_scenario(
+      {100, 1000},
+      [] {
+        State state{OrderBook(default_config), 0};
+        for (OrderId group = 0; group < group_count; ++group) {
+          const OrderId base = group * 3 + 1;
+          insert_checked(state.book, base, Side::Bid, 100);
+          insert_checked(state.book, base + 1, Side::Bid, 100);
+          insert_checked(state.book, base + 2, Side::Bid, 100);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const OrderId id = state.group * 3 + 3;
+        const EraseResult result = state.book.erase(id);
+        g_sink += result.removed.id;
+        ++state.group;
+      });
+}
+
+Stats bench_erase_only_at_level() {
+  constexpr BatchShape shape{64, 64};
+  struct State {
+    OrderBook book;
+    OrderId current_id;
+  };
+  return measure_scenario(
+      shape,
+      [] {
+        State state{OrderBook({1, 4096, 4096}), 1};
+        for (OrderId id = 1; id <= shape.batches * shape.ops_per_batch; ++id) {
+          insert_checked(state.book, id, Side::Ask,
+                         static_cast<PriceTick>(id));
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const EraseResult result = state.book.erase(state.current_id++);
+        g_sink += result.removed.price;
+      });
+}
+
+Stats bench_best_segment_recompute_near() {
+  constexpr BatchShape shape{64, 1};
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      shape,
+      [] {
+        State state{OrderBook({1, 4096, 128})};
+        OrderId id = 1;
+        for (PriceTick price = 64; price <= 4096; price += 64) {
+          insert_checked(state.book, id++, Side::Ask, price);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(Side::Ask);
+        if (!best) {
+          std::abort();
+        }
+        const EraseResult result = state.book.erase(best->id);
+        g_sink += result.removed.id;
+      });
+}
+
+Stats bench_best_segment_recompute_far() {
+  constexpr BatchShape shape{64, 1};
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      shape,
+      [] {
+        State state{OrderBook({1, 262144, 128})};
+        OrderId id = 1;
+        for (PriceTick price = 1; price <= 262144; price += 4096) {
+          insert_checked(state.book, id++, Side::Ask, price);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(Side::Ask);
+        if (!best) {
+          std::abort();
+        }
+        const EraseResult result = state.book.erase(best->id);
+        g_sink += result.removed.id;
+      });
+}
+
+Stats bench_partial_fill_cycle() {
+  const Quantity initial_quantity =
+      static_cast<Quantity>(steady_shape.batches * steady_shape.ops_per_batch + 1);
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      steady_shape,
+      [initial_quantity] {
+        State state{OrderBook(default_config)};
+        for (OrderId id = 1;
+             id <= steady_shape.batches * steady_shape.ops_per_batch; ++id) {
+          insert_checked(state.book, id, Side::Ask, 100, initial_quantity);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(Side::Ask);
+        if (!best || best->remaining <= 1) {
+          std::abort();
+        }
+        const SetRemainingResult result =
+            state.book.set_remaining(best->id, best->remaining - 1);
+        g_sink += result.previous_remaining;
+      });
+}
+
+Stats bench_full_fill_cycle() {
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook(default_config)};
+        for (OrderId id = 1;
+             id <= steady_shape.batches * steady_shape.ops_per_batch; ++id) {
+          insert_checked(state.book, id, Side::Ask, 100);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(Side::Ask);
+        if (!best) {
+          std::abort();
+        }
+        const EraseResult result = state.book.erase(best->id);
+        g_sink += result.removed.id;
+      });
+}
+
+Stats bench_steady_state_churn_dense_fifo() {
+  constexpr OrderId active_count = 100000;
+  struct State {
+    OrderBook book;
+    std::vector<OrderId> active_ids;
+    OrderId next_id;
+    std::size_t cursor;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook(default_config), {}, active_count + 1, 0};
+        state.active_ids.reserve(active_count);
+        for (OrderId id = 1; id <= active_count; ++id) {
+          insert_checked(state.book, id, Side::Ask, 100);
+          state.active_ids.push_back(id);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const OrderId old_id = state.active_ids[state.cursor];
+        const EraseResult erased = state.book.erase(old_id);
+        insert_checked(state.book, state.next_id, Side::Ask, 100);
+        state.active_ids[state.cursor] = state.next_id;
+        g_sink += erased.removed.id + state.next_id;
+        ++state.next_id;
+        state.cursor = (state.cursor + 1) % state.active_ids.size();
+      });
+}
+
+Stats bench_steady_state_churn_mixed_occupancy_85() {
+  constexpr OrderCapacity capacity = 100000;
+  constexpr OrderId active_count = 85000;
+  struct State {
+    OrderBook book;
+    std::vector<OrderId> active_ids;
+    OrderId next_id;
+    std::size_t cursor;
+  };
+  return measure_scenario(
+      steady_shape,
+      [] {
+        State state{OrderBook({1, 4096, capacity}), {}, active_count + 1, 0};
+        state.active_ids.reserve(active_count);
+        for (OrderId id = 1; id <= active_count; ++id) {
+          const Side side = (id & 1U) == 0 ? Side::Bid : Side::Ask;
+          const PriceTick price =
+              static_cast<PriceTick>(1 + ((id * 37) % 4096));
+          insert_checked(state.book, id, side, price, 100);
+          state.active_ids.push_back(id);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const OrderId old_id = state.active_ids[state.cursor];
+        const EraseResult erased = state.book.erase(old_id);
+        const Side side = (state.next_id & 1U) == 0 ? Side::Bid : Side::Ask;
+        const PriceTick price =
+            static_cast<PriceTick>(1 + ((state.next_id * 37) % 4096));
+        insert_checked(state.book, state.next_id, side, price, 100);
+        state.active_ids[state.cursor] = state.next_id;
+        g_sink += erased.removed.id + state.next_id;
+        ++state.next_id;
+        state.cursor = (state.cursor + 1) % state.active_ids.size();
+      });
 }
 
 } // namespace
 
 int main() {
-  print_layout();
-  constexpr std::uint64_t fast_batches = 1000;
-  constexpr std::uint64_t fast_ops = 1000;
-  constexpr OrderCapacity pool_bench_capacity = 1'000'000;
-  constexpr std::uint64_t book_batches = 300;
-  constexpr std::uint64_t book_ops = 1000;
-  print_build_context(pool_bench_capacity, fast_batches, fast_ops);
+  print_build_context();
 
-  print("order_book_construct_first_touch_100K",
-        run_order_book_construction_first_touch(25, {1, 4096, 100000}));
-
-  {
-    const auto start = std::chrono::steady_clock::now();
-    OrderPool pool(pool_bench_capacity);
-    const auto stop = std::chrono::steady_clock::now();
-    const auto ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
-            .count();
-    g_sink += pool.validate_freelist() ? 1 : 0;
-    std::cout << "pool_construct_ready_1M: ns=" << ns
-              << " ms=" << static_cast<double>(ns) / 1'000'000.0 << '\n';
-  }
-
-  {
-    OrderPool pool(pool_bench_capacity);
-    std::vector<OrderIndex> acquired(pool_bench_capacity);
-    std::size_t position = 0;
-    const Stats stats = run_batches(fast_batches, fast_ops,
-                                    [&](std::uint64_t, std::uint64_t) {
-                                      const auto value =
-                                          static_cast<OrderIndex>(position);
-                                      acquired[position] =
-                                          pool.emplace(value, value, value, 1,
-                                                       Side::Bid);
-                                      ++position;
-                                    });
-    g_sink += acquired.front();
-    g_sink += acquired[acquired.size() / 2];
-    g_sink += acquired.back();
-    print("pool_bulk_emplace_1M", stats);
-  }
-
-  {
-    OrderPool pool(pool_bench_capacity);
-    std::vector<OrderIndex> slots;
-    slots.reserve(pool_bench_capacity);
-    for (OrderCapacity i = 0; i < pool_bench_capacity; ++i) {
-      slots.push_back(pool.emplace(i, i, i, 1, Side::Bid));
-    }
-    std::size_t index = 0;
-    const Stats stats = run_batches(fast_batches, fast_ops,
-                                    [&](std::uint64_t, std::uint64_t) {
-                                      pool.release(slots[index++]);
-                                    });
-    g_sink += pool.validate_freelist() ? 1 : 0;
-    print("pool_bulk_release_1M", stats);
-  }
-
-  print("pool_steady_state_churn_window_64",
-        run_pool_churn_window(pool_bench_capacity, 64, fast_batches, fast_ops));
-  print("pool_steady_state_churn_window_4096",
-        run_pool_churn_window(pool_bench_capacity, 4096, fast_batches,
-                              fast_ops));
-  print("pool_steady_state_churn_window_65536",
-        run_pool_churn_window(pool_bench_capacity, 65536, fast_batches,
-                              fast_ops));
-
-  for (double load : {0.25, 0.50, 0.70, 0.85}) {
-    OrderIdIndex index(100000);
-    const std::size_t active =
-        static_cast<std::size_t>(static_cast<double>(index.bucket_count()) *
-                                 load);
-    for (std::size_t i = 0; i < active; ++i) {
-      (void)index.insert(static_cast<OrderId>(i + 1),
-                         static_cast<OrderIndex>(i));
-    }
-    IndexProbeStats probes{};
-    const auto hit = run_batches(fast_batches, fast_ops,
-                                 [&](std::uint64_t, std::uint64_t op) {
-                                   const OrderId id =
-                                       1 + static_cast<OrderId>(op % active);
-                                   g_sink += index.find(id, &probes);
-                                 });
-    print("index_find_hit_load_" + std::to_string(static_cast<int>(load * 100)),
-          with_probe_stats(hit, probes, fast_batches * fast_ops,
-                           index.tombstone_count()));
-
-    probes = {};
-    const auto miss = run_batches(fast_batches, fast_ops,
-                                  [&](std::uint64_t, std::uint64_t op) {
-                                    g_sink += index.find(
-                                        10'000'000 + static_cast<OrderId>(op),
-                                        &probes);
-                                  });
-    print("index_find_miss_load_" + std::to_string(static_cast<int>(load * 100)),
-          with_probe_stats(miss, probes, fast_batches * fast_ops,
-                           index.tombstone_count()));
-  }
-
-  {
-    OrderIdIndex index(600000);
-    IndexProbeStats insert_probes{};
-    OrderId id = 1;
-    const auto stats = run_batches(fast_batches, fast_ops,
-                                   [&](std::uint64_t, std::uint64_t) {
-                                     (void)index.insert(id, static_cast<OrderIndex>(id),
-                                                        &insert_probes);
-                                     ++id;
-                                   });
-    print("index_insert", with_probe_stats(stats, insert_probes,
-                                           fast_batches * fast_ops,
-                                           index.tombstone_count()));
-  }
-
-  {
-    OrderIdIndex index(600000);
-    for (OrderId id = 1; id <= fast_batches * fast_ops; ++id) {
-      (void)index.insert(id, static_cast<OrderIndex>(id));
-    }
-    IndexProbeStats erase_probes{};
-    OrderId id = 1;
-    const auto stats = run_batches(fast_batches, fast_ops,
-                                   [&](std::uint64_t, std::uint64_t) {
-                                     (void)index.erase(id++, &erase_probes);
-                                   });
-    print("index_erase", with_probe_stats(stats, erase_probes,
-                                          fast_batches * fast_ops,
-                                          index.tombstone_count()));
-  }
-
-  {
-    OrderIdIndex index(128);
-    for (OrderId id = 1; id <= 100; ++id) {
-      (void)index.insert(id, static_cast<OrderIndex>(id));
-    }
-    IndexProbeStats probes{};
-    OrderId next = 1000;
-    const auto stats = run_batches(1000, 1000, [&](std::uint64_t, std::uint64_t op) {
-      const OrderId victim = 1 + static_cast<OrderId>(op % 100);
-      (void)index.erase(victim, &probes);
-      (void)index.insert(next, static_cast<OrderIndex>(next), &probes);
-      (void)index.erase(next, &probes);
-      (void)index.insert(victim, static_cast<OrderIndex>(victim), &probes);
-      ++next;
-    });
-    print("index_churn_after_1M_insert_erase",
-          with_probe_stats(stats, probes, 4'000'000, index.tombstone_count()));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (int i = 0; i < 10000; ++i) {
-      insert_checked(book, id, Side::Ask, 100);
-    }
-    print("best_ask_only", run_batches(fast_batches, fast_ops,
-                                       [&](std::uint64_t, std::uint64_t) {
-                                         const auto best = book.best(Side::Ask);
-                                         g_sink += best ? best->id : 0;
-                                       }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    const Quantity partial_fill_quantity =
-        static_cast<Quantity>(book_batches * book_ops + 1);
-    for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      insert_checked(book, id, Side::Ask, 100, partial_fill_quantity);
-    }
-    print("partial_fill_cycle",
-          run_batches(book_batches, book_ops,
-                      [&](std::uint64_t, std::uint64_t) {
-                        const auto best = book.best(Side::Ask);
-                        if (!best || best->remaining <= 1) {
-                          std::abort();
-                        }
-                        const auto result =
-                            book.set_remaining(best->id, best->remaining - 1);
-                        g_sink += static_cast<std::uint64_t>(result.status);
-                      }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      insert_checked(book, id, Side::Ask, 100, 100);
-    }
-    print("full_remove_keep_price_level_nonempty",
-          run_batches(book_batches, book_ops, [&](std::uint64_t, std::uint64_t) {
-            const auto best = book.best(Side::Ask);
-            if (!best) {
-              std::abort();
-            }
-            const auto result = book.erase(best->id);
-            g_sink += result.removed.id;
-          }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      insert_checked(book, id, Side::Ask,
-                     100 + static_cast<PriceTick>(i % prices_per_segment),
-                     100);
-    }
-    print("full_remove_empty_price_level_same_segment",
-          run_batches(book_batches, book_ops, [&](std::uint64_t, std::uint64_t) {
-            const auto best = book.best(Side::Ask);
-            if (!best) {
-              std::abort();
-            }
-            const auto result = book.erase(best->id);
-            g_sink += result.removed.id;
-          }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (PriceTick price = 64; price < 4096; price += 64) {
-      insert_checked(book, id, Side::Ask, price, 100);
-    }
-    print("full_remove_cross_segment",
-          run_batches(63, 1, [&](std::uint64_t, std::uint64_t) {
-            const auto best = book.best(Side::Ask);
-            if (!best) {
-              std::abort();
-            }
-            const auto result = book.erase(best->id);
-            g_sink += result.removed.id;
-          }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (PriceTick price = 100; price < 164; ++price) {
-      insert_checked(book, id, Side::Ask, price, 100);
-    }
-    print("find_next_active_price_inside_segment_only",
-          run_batches(64, 1, [&](std::uint64_t, std::uint64_t) {
-            const auto best = book.best(Side::Ask);
-            if (!best) {
-              std::abort();
-            }
-            const auto result = book.erase(best->id);
-            g_sink += result.removed.id;
-          }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (OrderId i = 0; i < book_batches * book_ops; ++i) {
-      insert_checked(book, id, Side::Bid, 100, 100);
-    }
-    OrderId erase_id = 1;
-    print("erase_head", run_batches(book_batches, book_ops,
-                                    [&](std::uint64_t, std::uint64_t) {
-                                      const auto result = book.erase(erase_id++);
-                                      g_sink += static_cast<std::uint64_t>(
-                                          result.status);
-                                    }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (OrderId i = 0; i < book_batches * book_ops; ++i) {
-      insert_checked(book, id, Side::Bid, 100, 100);
-    }
-    OrderId set_remaining_id = 1;
-    print("set_remaining_quantity",
-          run_batches(book_batches, book_ops,
-                      [&](std::uint64_t, std::uint64_t) {
-                        const auto result =
-                            book.set_remaining(set_remaining_id++, 50);
-                        g_sink += static_cast<std::uint64_t>(result.status);
-                      }));
-  }
+  run_benchmark("construct_first_touch_100K", [] {
+    return run_construction_first_touch(25, {1, 4096, 100000});
+  });
+  run_benchmark("insert_existing_level_dense_fifo",
+                bench_insert_existing_level);
+  run_benchmark("insert_new_level_many_levels", bench_insert_new_level);
+  run_benchmark("best_bid_mixed_levels", [] { return bench_best(Side::Bid); });
+  run_benchmark("best_ask_mixed_levels", [] { return bench_best(Side::Ask); });
+  run_benchmark("set_remaining_hit", bench_set_remaining_hit);
+  run_benchmark("set_remaining_miss", bench_set_remaining_miss);
+  run_benchmark("erase_head_dense_fifo", bench_erase_head);
+  run_benchmark("erase_middle_dense_fifo", bench_erase_middle);
+  run_benchmark("erase_tail_dense_fifo", bench_erase_tail);
+  run_benchmark("erase_only_at_level_many_levels", bench_erase_only_at_level);
+  run_benchmark("best_segment_recompute_near",
+                bench_best_segment_recompute_near);
+  run_benchmark("best_segment_recompute_far",
+                bench_best_segment_recompute_far);
+  run_benchmark("partial_fill_cycle_best_set",
+                bench_partial_fill_cycle);
+  run_benchmark("full_fill_cycle_best_erase", bench_full_fill_cycle);
+  run_benchmark("steady_state_churn_dense_fifo",
+                bench_steady_state_churn_dense_fifo);
+  run_benchmark("steady_state_churn_mixed_occupancy_85",
+                bench_steady_state_churn_mixed_occupancy_85);
 
   std::cout << "sink=" << g_sink << '\n';
   return 0;
