@@ -53,6 +53,7 @@ function(fexma_order_book_apply_warnings target_name)
 endfunction()
 
 set(order_book_tests
+  test_reference_order_book
   test_order_pool
   test_order_id_index
   test_price_structures
