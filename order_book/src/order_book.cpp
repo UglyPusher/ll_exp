@@ -100,6 +100,9 @@ bool OrderBook::validate_invariants() const noexcept {
       !validate_side(Side::Ask)) {
     return false;
   }
+  if (index_.size() != active_order_count() || index_.tombstone_count() != 0) {
+    return false;
+  }
 
   std::unique_ptr<unsigned char[]> fifo_seen;
   try {

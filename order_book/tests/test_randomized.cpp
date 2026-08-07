@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <iostream>
+#include <iomanip>
 #include <iterator>
 #include <optional>
 #include <random>
@@ -90,10 +91,22 @@ void record(std::deque<std::string>& history, std::string event) {
   }
 }
 
+std::string side_name(Side side) {
+  return side == Side::Bid ? "Bid" : "Ask";
+}
+
+std::string describe_order(const RestingOrderData& order) {
+  return "id=" + std::to_string(order.id) +
+         " owner=" + std::to_string(order.owner_id) +
+         " side=" + side_name(order.side) +
+         " price=" + std::to_string(order.price) +
+         " qty=" + std::to_string(order.quantity);
+}
+
 int fail(std::uint32_t seed, int step, int code,
          const std::deque<std::string>& history) {
-  std::cerr << "seed=" << seed << " step=" << step << " code=" << code
-            << '\n';
+  std::cerr << "seed=0x" << std::hex << seed << std::dec << " step=" << step
+            << " code=" << code << '\n';
   for (const auto& event : history) {
     std::cerr << event << '\n';
   }
@@ -111,7 +124,7 @@ void remove_active_id(std::vector<OrderId>& active_ids, OrderId id) {
 
 int main() {
   const std::uint32_t seeds[] = {0x0B00C5U, 0x12345678U, 0xC0FFEEU,
-                                 0xABCDEF01U};
+                                 0xABCDEF01U, 0xDEADBEEFU, 0x51515151U};
 
   for (std::uint32_t seed : seeds) {
     std::mt19937 rng(seed);
@@ -123,7 +136,7 @@ int main() {
     std::deque<std::string> history;
     OrderId next_id = 1;
 
-    for (int step = 0; step < 30000; ++step) {
+    for (int step = 0; step < 50000; ++step) {
       const int op = static_cast<int>(rng() % 100);
       if (op < 40 || active_ids.empty()) {
         const Side side = (rng() & 1U) == 0 ? Side::Bid : Side::Ask;
@@ -146,7 +159,7 @@ int main() {
         const RestingOrderData order{id, id + 1000, side, price, quantity};
         const InsertResult actual = book.insert(order);
         const ReferenceInsertResult expected = reference.insert(order);
-        record(history, "insert id=" + std::to_string(id));
+        record(history, "insert " + describe_order(order));
         if (!same_insert_status(actual.status, expected.status)) {
           return fail(seed, step, 1, history);
         }
@@ -171,6 +184,9 @@ int main() {
             actual.previous_remaining != expected.previous_remaining) {
           return fail(seed, step, 2, history);
         }
+        if (!same_best_prices(book, reference)) {
+          return fail(seed, step, 7, history);
+        }
       } else if (op < 90) {
         const bool use_missing = (rng() % 5) == 0;
         const OrderId id =
@@ -189,6 +205,9 @@ int main() {
           }
           retired_ids.push_back(id);
           remove_active_id(active_ids, id);
+        }
+        if (!same_best_prices(book, reference)) {
+          return fail(seed, step, 8, history);
         }
       } else {
         const Side side = (rng() & 1U) == 0 ? Side::Bid : Side::Ask;

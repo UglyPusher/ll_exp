@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <new>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <malloc.h>
@@ -34,6 +36,46 @@ inline bool g_count_allocations = false;
     return false;
   }
   return !lhs || same_order(*lhs, *rhs);
+}
+
+[[nodiscard]] std::vector<OrderView> drain_by_best(OrderBook& book,
+                                                   Side side) {
+  std::vector<OrderView> orders;
+  while (true) {
+    const auto best = book.best(side);
+    if (!best) {
+      break;
+    }
+    orders.push_back(*best);
+    const EraseResult erased = book.erase(best->id);
+    if (!erased.ok() || !same_order(erased.removed, *best)) {
+      orders.clear();
+      orders.push_back({});
+      break;
+    }
+  }
+  return orders;
+}
+
+[[nodiscard]] bool same_snapshot(std::vector<OrderView> lhs,
+                                 std::vector<OrderView> rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    if (!same_order(lhs[i], rhs[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool same_book_snapshot(OrderBook actual,
+                                      OrderBook expected) {
+  return same_snapshot(drain_by_best(actual, Side::Bid),
+                       drain_by_best(expected, Side::Bid)) &&
+         same_snapshot(drain_by_best(actual, Side::Ask),
+                       drain_by_best(expected, Side::Ask));
 }
 
 [[nodiscard]] bool unchanged_after_failed_insert(
@@ -223,6 +265,74 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
          book.validate_invariants();
 }
 
+[[nodiscard]] bool failure_atomicity_contract() {
+  const auto make_populated_book = [] {
+    OrderBook book({64, 192, 4});
+    (void)book.insert({1, 11, Side::Bid, 128, 10});
+    (void)book.insert({2, 12, Side::Bid, 128, 20});
+    (void)book.insert({3, 13, Side::Ask, 96, 30});
+    (void)book.insert({4, 14, Side::Ask, 160, 40});
+    return book;
+  };
+
+  {
+    OrderBook actual = make_populated_book();
+    OrderBook expected = make_populated_book();
+    if (actual.insert({1, 99, Side::Ask, 96, 1}).status !=
+            InsertStatus::DuplicateOrderId ||
+        !actual.validate_invariants() ||
+        !same_book_snapshot(std::move(actual), std::move(expected))) {
+      return false;
+    }
+  }
+
+  {
+    OrderBook actual = make_populated_book();
+    OrderBook expected = make_populated_book();
+    if (actual.insert({5, 15, Side::Bid, 127, 1}).status !=
+            InsertStatus::CapacityExhausted ||
+        !actual.validate_invariants() ||
+        !same_book_snapshot(std::move(actual), std::move(expected))) {
+      return false;
+    }
+  }
+
+  {
+    OrderBook actual = make_populated_book();
+    OrderBook expected = make_populated_book();
+    if (actual.insert({5, 15, Side::Bid, 63, 1}).status !=
+            InsertStatus::PriceOutOfRange ||
+        !actual.validate_invariants() ||
+        !same_book_snapshot(std::move(actual), std::move(expected))) {
+      return false;
+    }
+  }
+
+  {
+    OrderBook actual = make_populated_book();
+    OrderBook expected = make_populated_book();
+    if (actual.set_remaining(1, 0).status !=
+            SetRemainingStatus::InvalidQuantity ||
+        actual.set_remaining(99, 10).status != SetRemainingStatus::NotFound ||
+        !actual.validate_invariants() ||
+        !same_book_snapshot(std::move(actual), std::move(expected))) {
+      return false;
+    }
+  }
+
+  {
+    OrderBook actual = make_populated_book();
+    OrderBook expected = make_populated_book();
+    if (actual.erase(99).status != EraseStatus::NotFound ||
+        !actual.validate_invariants() ||
+        !same_book_snapshot(std::move(actual), std::move(expected))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 [[nodiscard]] bool runtime_operations_do_not_allocate() {
   OrderBook book({1, 128, 16});
   (void)book.insert({1, 1, Side::Ask, 10, 10});
@@ -248,6 +358,30 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 
   reset_allocation_counter();
   (void)book.erase(2);
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.insert({4, 1, Side::Ask, 0, 10});
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.insert({1, 1, Side::Ask, 10, 10});
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.set_remaining(999, 5);
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.erase(999);
   return stop_allocation_counter() == 0 && book.validate_invariants();
 }
 
@@ -330,8 +464,11 @@ int main() {
   if (!erase_contract()) {
     return 4;
   }
-  if (!runtime_operations_do_not_allocate()) {
+  if (!failure_atomicity_contract()) {
     return 5;
+  }
+  if (!runtime_operations_do_not_allocate()) {
+    return 6;
   }
   return 0;
 }
