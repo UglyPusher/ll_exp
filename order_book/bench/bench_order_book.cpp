@@ -97,24 +97,50 @@ OrderBook make_book(OrderCapacity capacity = 300000) {
   return book;
 }
 
-void put_checked(OrderBook& book, OrderId& id, Side side, PriceTick price,
-                 Quantity quantity = 100) {
-  const PutResult result = book.put({id, id + 1000, side, price, quantity});
+void insert_checked(OrderBook& book, OrderId& id, Side side, PriceTick price,
+                    Quantity quantity = 100) {
+  const InsertResult result =
+      book.insert({id, id + 1000, side, price, quantity});
   if (!result.ok()) {
     std::abort();
   }
   ++id;
 }
 
+std::size_t bucket_count_for_capacity(OrderCapacity capacity) {
+  std::size_t count = 1;
+  const std::size_t required =
+      capacity == 0 ? 1 : static_cast<std::size_t>(capacity) * 2 + 1;
+  while (count < required) {
+    count <<= 1;
+  }
+  return count;
+}
+
+std::size_t segment_count_for_range(PriceTick min_price_tick,
+                                    PriceTick max_price_tick) {
+  if (max_price_tick < min_price_tick) {
+    return 0;
+  }
+  const std::size_t first = min_price_tick >> price_segment_shift;
+  const std::size_t last = max_price_tick >> price_segment_shift;
+  return last - first + 1;
+}
+
 void print_layout() {
-  OrderBook sample({1, 4096, 100000});
+  constexpr OrderCapacity max_orders = 100000;
+  constexpr PriceTick min_price_tick = 1;
+  constexpr PriceTick max_price_tick = 4096;
+  OrderBook sample({min_price_tick, max_price_tick, max_orders});
   sample.warm_up();
+  const std::size_t index_bucket_count = bucket_count_for_capacity(max_orders);
+  const std::size_t segment_count =
+      segment_count_for_range(min_price_tick, max_price_tick);
   const std::size_t pool_bytes =
-      sizeof(detail::Order) * static_cast<std::size_t>(sample.capacity());
+      sizeof(detail::Order) * static_cast<std::size_t>(max_orders);
   const std::size_t index_bytes =
-      OrderIdIndex::bucket_size() * sample.index_bucket_count();
-  const std::size_t side_bytes =
-      PriceSegment::segment_size() * sample.segment_count();
+      OrderIdIndex::bucket_size() * index_bucket_count;
+  const std::size_t side_bytes = PriceSegment::segment_size() * segment_count;
   std::cout << "layout: sizeof(Order)=" << sizeof(detail::Order)
             << " alignof(Order)=" << alignof(detail::Order)
             << " sizeof(PriceLevel)=" << sizeof(PriceLevel)
@@ -124,13 +150,13 @@ void print_layout() {
             << " sizeof(OrderIdIndex::Bucket)=" << OrderIdIndex::bucket_size()
             << " alignof(OrderIdIndex::Bucket)="
             << OrderIdIndex::bucket_align() << '\n';
-  std::cout << "memory: max_orders=" << sample.capacity()
+  std::cout << "memory: max_orders=" << max_orders
             << " min_price_tick=1 max_price_tick=4096"
-            << " segment_count=" << sample.segment_count()
-            << " index_capacity=" << sample.index_bucket_count()
+            << " segment_count=" << segment_count
+            << " index_capacity=" << index_bucket_count
             << " index_load_factor="
-            << static_cast<double>(sample.capacity()) /
-                   static_cast<double>(sample.index_bucket_count())
+            << static_cast<double>(max_orders) /
+                   static_cast<double>(index_bucket_count)
             << " OrderPool_bytes=" << pool_bytes
             << " OrderIdIndex_bytes=" << index_bytes
             << " Bid_segments_bytes=" << side_bytes
@@ -364,40 +390,50 @@ int main() {
     auto book = make_book();
     OrderId id = 1;
     for (int i = 0; i < 10000; ++i) {
-      put_checked(book, id, Side::Ask, 100);
+      insert_checked(book, id, Side::Ask, 100);
     }
-    print("select_best_only", run_batches(fast_batches, fast_ops,
-                                          [&](std::uint64_t, std::uint64_t) {
-                                            const auto best =
-                                                book.select_best_opposite(Side::Bid);
-                                            g_sink += best ? best->id : 0;
-                                          }));
+    print("best_ask_only", run_batches(fast_batches, fast_ops,
+                                       [&](std::uint64_t, std::uint64_t) {
+                                         const auto best = book.best(Side::Ask);
+                                         g_sink += best ? best->id : 0;
+                                       }));
+  }
+
+  {
+    auto book = make_book();
+    OrderId id = 1;
+    const Quantity partial_fill_quantity =
+        static_cast<Quantity>(book_batches * book_ops + 1);
+    for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
+      insert_checked(book, id, Side::Ask, 100, partial_fill_quantity);
+    }
+    print("partial_fill_cycle",
+          run_batches(book_batches, book_ops,
+                      [&](std::uint64_t, std::uint64_t) {
+                        const auto best = book.best(Side::Ask);
+                        if (!best || best->remaining <= 1) {
+                          std::abort();
+                        }
+                        const auto result =
+                            book.set_remaining(best->id, best->remaining - 1);
+                        g_sink += static_cast<std::uint64_t>(result.status);
+                      }));
   }
 
   {
     auto book = make_book();
     OrderId id = 1;
     for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      put_checked(book, id, Side::Ask, 100, 1000);
-    }
-    print("decrement_partial_only", run_batches(book_batches, book_ops,
-                                                [&](std::uint64_t, std::uint64_t) {
-                                                  (void)book.select_best_opposite(
-                                                      Side::Bid);
-                                                  book.decrement_selected(1);
-                                                }));
-  }
-
-  {
-    auto book = make_book();
-    OrderId id = 1;
-    for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      put_checked(book, id, Side::Ask, 100, 100);
+      insert_checked(book, id, Side::Ask, 100, 100);
     }
     print("full_remove_keep_price_level_nonempty",
           run_batches(book_batches, book_ops, [&](std::uint64_t, std::uint64_t) {
-            (void)book.select_best_opposite(Side::Bid);
-            book.decrement_selected(100);
+            const auto best = book.best(Side::Ask);
+            if (!best) {
+              std::abort();
+            }
+            const auto result = book.erase(best->id);
+            g_sink += result.removed.id;
           }));
   }
 
@@ -405,13 +441,18 @@ int main() {
     auto book = make_book();
     OrderId id = 1;
     for (std::uint64_t i = 0; i < book_batches * book_ops; ++i) {
-      put_checked(book, id, Side::Ask,
-                  100 + static_cast<PriceTick>(i % prices_per_segment), 100);
+      insert_checked(book, id, Side::Ask,
+                     100 + static_cast<PriceTick>(i % prices_per_segment),
+                     100);
     }
     print("full_remove_empty_price_level_same_segment",
           run_batches(book_batches, book_ops, [&](std::uint64_t, std::uint64_t) {
-            (void)book.select_best_opposite(Side::Bid);
-            book.decrement_selected(100);
+            const auto best = book.best(Side::Ask);
+            if (!best) {
+              std::abort();
+            }
+            const auto result = book.erase(best->id);
+            g_sink += result.removed.id;
           }));
   }
 
@@ -419,12 +460,16 @@ int main() {
     auto book = make_book();
     OrderId id = 1;
     for (PriceTick price = 64; price < 4096; price += 64) {
-      put_checked(book, id, Side::Ask, price, 100);
+      insert_checked(book, id, Side::Ask, price, 100);
     }
     print("full_remove_cross_segment",
           run_batches(63, 1, [&](std::uint64_t, std::uint64_t) {
-            (void)book.select_best_opposite(Side::Bid);
-            book.decrement_selected(100);
+            const auto best = book.best(Side::Ask);
+            if (!best) {
+              std::abort();
+            }
+            const auto result = book.erase(best->id);
+            g_sink += result.removed.id;
           }));
   }
 
@@ -432,12 +477,16 @@ int main() {
     auto book = make_book();
     OrderId id = 1;
     for (PriceTick price = 100; price < 164; ++price) {
-      put_checked(book, id, Side::Ask, price, 100);
+      insert_checked(book, id, Side::Ask, price, 100);
     }
     print("find_next_active_price_inside_segment_only",
           run_batches(64, 1, [&](std::uint64_t, std::uint64_t) {
-            (void)book.select_best_opposite(Side::Bid);
-            book.decrement_selected(100);
+            const auto best = book.best(Side::Ask);
+            if (!best) {
+              std::abort();
+            }
+            const auto result = book.erase(best->id);
+            g_sink += result.removed.id;
           }));
   }
 
@@ -445,31 +494,31 @@ int main() {
     auto book = make_book();
     OrderId id = 1;
     for (OrderId i = 0; i < book_batches * book_ops; ++i) {
-      put_checked(book, id, Side::Bid, 100, 100);
+      insert_checked(book, id, Side::Bid, 100, 100);
     }
-    OrderId cancel_id = 1;
-    print("cancel_head", run_batches(book_batches, book_ops,
-                                     [&](std::uint64_t, std::uint64_t) {
-                                       const auto result = book.cancel(cancel_id++);
-                                       g_sink +=
-                                           static_cast<std::uint64_t>(result.status);
-                                     }));
+    OrderId erase_id = 1;
+    print("erase_head", run_batches(book_batches, book_ops,
+                                    [&](std::uint64_t, std::uint64_t) {
+                                      const auto result = book.erase(erase_id++);
+                                      g_sink += static_cast<std::uint64_t>(
+                                          result.status);
+                                    }));
   }
 
   {
     auto book = make_book();
     OrderId id = 1;
     for (OrderId i = 0; i < book_batches * book_ops; ++i) {
-      put_checked(book, id, Side::Bid, 100, 100);
+      insert_checked(book, id, Side::Bid, 100, 100);
     }
-    OrderId change_id = 1;
-    print("change_quantity", run_batches(book_batches, book_ops,
-                                         [&](std::uint64_t, std::uint64_t) {
-                                           const auto result =
-                                               book.change(change_id++, {50});
-                                           g_sink += static_cast<std::uint64_t>(
-                                               result.status);
-                                         }));
+    OrderId set_remaining_id = 1;
+    print("set_remaining_quantity",
+          run_batches(book_batches, book_ops,
+                      [&](std::uint64_t, std::uint64_t) {
+                        const auto result =
+                            book.set_remaining(set_remaining_id++, 50);
+                        g_sink += static_cast<std::uint64_t>(result.status);
+                      }));
   }
 
   std::cout << "sink=" << g_sink << '\n';

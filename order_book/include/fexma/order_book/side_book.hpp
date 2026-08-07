@@ -95,8 +95,8 @@ public:
     PriceSegment& price_segment = segments_[segment];
     PriceLevel& level = price_segment.levels[offset];
 
-    // Unlink in O(1) using intrusive prev/next pool indices; this is what allows
-    // cancel/change-to-zero by OrderId without walking the price level.
+    // Unlink in O(1) using intrusive prev/next pool indices; this allows erase
+    // by OrderId without walking the price level.
     if (order.prev != invalid_order_index) {
       pool.get_unchecked(order.prev).next = order.next;
     } else {
@@ -135,6 +135,24 @@ public:
     order.remaining -= quantity;
     level.total_quantity -= quantity;
     total_quantity_ -= quantity;
+  }
+
+  void set_remaining(detail::OrderPool& pool, OrderIndex slot,
+                     Quantity new_remaining) noexcept {
+    detail::Order& order = pool.get_unchecked(slot);
+    const std::size_t segment = local_segment(order.price);
+    const std::uint32_t offset = price_offset(order.price);
+    PriceLevel& level = segments_[segment].levels[offset];
+    if (new_remaining >= order.remaining) {
+      const Quantity increase = new_remaining - order.remaining;
+      level.total_quantity += increase;
+      total_quantity_ += increase;
+    } else {
+      const Quantity decrease = order.remaining - new_remaining;
+      level.total_quantity -= decrease;
+      total_quantity_ -= decrease;
+    }
+    order.remaining = new_remaining;
   }
 
   [[nodiscard]] OrderIndex best_order(

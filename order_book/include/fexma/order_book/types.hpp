@@ -14,7 +14,7 @@
 
 namespace fexma::order_book {
 
-/** @brief Opaque external order identifier used by cancel/change. */
+/** @brief Opaque external order identifier used by erase/set_remaining. */
 using OrderId = std::uint64_t;
 /** @brief Opaque owner identifier carried through snapshots. */
 using OwnerId = std::uint64_t;
@@ -64,17 +64,13 @@ struct RestingOrderData {
   Quantity quantity{};
 };
 
-/** @brief Immutable snapshot returned to a matcher after selection. */
-struct BestOrderView {
+/** @brief Immutable snapshot returned by best() and erase(). */
+struct OrderView {
   OrderId id{};
   OwnerId owner_id{};
+  Side side{};
   PriceTick price{};
   Quantity remaining{};
-};
-
-/** @brief First-version change request: reduce remaining quantity only. */
-struct OrderChange {
-  Quantity new_remaining{};
 };
 
 /** @brief Number of bytes/pages touched by a warm-up pass. */
@@ -83,53 +79,54 @@ struct WarmUpTouchStats {
   std::size_t pages{};
 };
 
-/** @brief Explicit status for put(); capacity failures are system errors. */
-enum class PutStatus : std::uint8_t {
+/** @brief Explicit status for insert(). */
+enum class InsertStatus : std::uint8_t {
   Ok,
   DuplicateOrderId,
-  PoolExhausted,
-  IndexFull,
+  CapacityExhausted,
   PriceOutOfRange,
   InvalidQuantity
 };
 
-/** @brief Explicit status for cancel(). */
-enum class CancelStatus : std::uint8_t {
-  Ok,
-  NotFound
-};
-
-/** @brief Explicit status for change(). */
-enum class ChangeStatus : std::uint8_t {
+/** @brief Explicit status for set_remaining(). */
+enum class SetRemainingStatus : std::uint8_t {
   Ok,
   NotFound,
   InvalidQuantity
 };
 
-/** @brief Small result wrapper for put(). */
-struct PutResult {
-  PutStatus status{PutStatus::Ok};
+/** @brief Explicit status for erase(). */
+enum class EraseStatus : std::uint8_t {
+  Ok,
+  NotFound
+};
+
+/** @brief Small result wrapper for insert(). */
+struct InsertResult {
+  InsertStatus status{InsertStatus::Ok};
 
   [[nodiscard]] bool ok() const noexcept {
-    return status == PutStatus::Ok;
+    return status == InsertStatus::Ok;
   }
 };
 
-/** @brief Small result wrapper for cancel(). */
-struct CancelResult {
-  CancelStatus status{CancelStatus::Ok};
+/** @brief Small result wrapper for set_remaining(). */
+struct SetRemainingResult {
+  SetRemainingStatus status{SetRemainingStatus::Ok};
+  Quantity previous_remaining{};
 
   [[nodiscard]] bool ok() const noexcept {
-    return status == CancelStatus::Ok;
+    return status == SetRemainingStatus::Ok;
   }
 };
 
-/** @brief Small result wrapper for change(). */
-struct ChangeResult {
-  ChangeStatus status{ChangeStatus::Ok};
+/** @brief Small result wrapper for erase(). */
+struct EraseResult {
+  EraseStatus status{EraseStatus::Ok};
+  OrderView removed{};
 
   [[nodiscard]] bool ok() const noexcept {
-    return status == ChangeStatus::Ok;
+    return status == EraseStatus::Ok;
   }
 };
 

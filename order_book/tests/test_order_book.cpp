@@ -1,15 +1,13 @@
 /**
  * @file test_order_book.cpp
- * @brief OrderBook API tests for atomicity, selection protocol, invariants,
- * and runtime allocation guards.
+ * @brief Black-box OrderBook API tests for the target five-method contract.
  */
 #include <fexma/order_book/order_book.hpp>
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <new>
-#include <vector>
+#include <optional>
 
 #ifdef _MSC_VER
 #include <malloc.h>
@@ -22,76 +20,60 @@ namespace {
 inline std::uint64_t g_allocations = 0;
 inline bool g_count_allocations = false;
 
-struct Snapshot {
-  std::vector<BestOrderView> bids;
-  std::vector<BestOrderView> asks;
-  std::vector<std::uint64_t> masks;
-  std::vector<std::uint32_t> counts;
-  std::vector<Quantity> quantities;
-  std::optional<PriceTick> best_bid;
-  std::optional<PriceTick> best_ask;
-  OrderCapacity free_count{};
-  OrderIndex selected{};
-  std::uint64_t generation{};
-
-  [[nodiscard]] bool operator==(const Snapshot& rhs) const {
-    const auto equal_views = [](const auto& lhs, const auto& rhs) {
-      if (lhs.size() != rhs.size()) {
-        return false;
-      }
-      for (std::size_t i = 0; i < lhs.size(); ++i) {
-        if (lhs[i].id != rhs[i].id || lhs[i].owner_id != rhs[i].owner_id ||
-            lhs[i].price != rhs[i].price ||
-            lhs[i].remaining != rhs[i].remaining) {
-          return false;
-        }
-      }
-      return true;
-    };
-    return equal_views(bids, rhs.bids) && equal_views(asks, rhs.asks) &&
-           masks == rhs.masks && counts == rhs.counts &&
-           quantities == rhs.quantities && best_bid == rhs.best_bid &&
-           best_ask == rhs.best_ask && free_count == rhs.free_count &&
-           selected == rhs.selected && generation == rhs.generation;
-  }
-};
-
-Snapshot snapshot(OrderBook& book) {
-  Snapshot snap;
-  book.for_each_order_for_test(Side::Bid, [&snap](BestOrderView view) {
-    snap.bids.push_back(view);
-    return true;
-  });
-  book.for_each_order_for_test(Side::Ask, [&snap](BestOrderView view) {
-    snap.asks.push_back(view);
-    return true;
-  });
-  for (std::size_t i = 0; i < book.segment_count(); ++i) {
-    const PriceSegment& bid = book.segment_for_test(Side::Bid, i);
-    const PriceSegment& ask = book.segment_for_test(Side::Ask, i);
-    snap.masks.push_back(bid.active_mask);
-    snap.masks.push_back(ask.active_mask);
-    for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
-      snap.counts.push_back(bid.levels[offset].order_count);
-      snap.counts.push_back(ask.levels[offset].order_count);
-      snap.quantities.push_back(bid.levels[offset].total_quantity);
-      snap.quantities.push_back(ask.levels[offset].total_quantity);
-    }
-  }
-  snap.best_bid = book.best_bid();
-  snap.best_ask = book.best_ask();
-  snap.free_count = book.free_count_for_test();
-  snap.selected = book.selected_order_for_test();
-  snap.generation = book.generation_for_test();
-  return snap;
+[[nodiscard]] bool same_order(const OrderView& lhs,
+                              const OrderView& rhs) noexcept {
+  return lhs.id == rhs.id && lhs.owner_id == rhs.owner_id &&
+         lhs.side == rhs.side && lhs.price == rhs.price &&
+         lhs.remaining == rhs.remaining;
 }
 
-bool unchanged_after_failed_put(OrderBook& book, const RestingOrderData& order,
-                                PutStatus expected) {
-  const Snapshot before = snapshot(book);
-  const PutResult result = book.put(order);
-  const Snapshot after = snapshot(book);
-  return result.status == expected && before == after &&
+[[nodiscard]] bool same_optional_order(
+    const std::optional<OrderView>& lhs,
+    const std::optional<OrderView>& rhs) noexcept {
+  if (lhs.has_value() != rhs.has_value()) {
+    return false;
+  }
+  return !lhs || same_order(*lhs, *rhs);
+}
+
+[[nodiscard]] bool unchanged_after_failed_insert(
+    OrderBook& book, const RestingOrderData& order,
+    InsertStatus expected_status) {
+  const auto best_bid_before = book.best(Side::Bid);
+  const auto best_ask_before = book.best(Side::Ask);
+
+  const InsertResult result = book.insert(order);
+
+  return result.status == expected_status &&
+         same_optional_order(book.best(Side::Bid), best_bid_before) &&
+         same_optional_order(book.best(Side::Ask), best_ask_before) &&
+         book.validate_invariants();
+}
+
+[[nodiscard]] bool unchanged_after_failed_set_remaining(
+    OrderBook& book, OrderId id, Quantity new_remaining,
+    SetRemainingStatus expected_status) {
+  const auto best_bid_before = book.best(Side::Bid);
+  const auto best_ask_before = book.best(Side::Ask);
+
+  const SetRemainingResult result = book.set_remaining(id, new_remaining);
+
+  return result.status == expected_status &&
+         same_optional_order(book.best(Side::Bid), best_bid_before) &&
+         same_optional_order(book.best(Side::Ask), best_ask_before) &&
+         book.validate_invariants();
+}
+
+[[nodiscard]] bool unchanged_after_failed_erase(
+    OrderBook& book, OrderId id, EraseStatus expected_status) {
+  const auto best_bid_before = book.best(Side::Bid);
+  const auto best_ask_before = book.best(Side::Ask);
+
+  const EraseResult result = book.erase(id);
+
+  return result.status == expected_status &&
+         same_optional_order(book.best(Side::Bid), best_bid_before) &&
+         same_optional_order(book.best(Side::Ask), best_ask_before) &&
          book.validate_invariants();
 }
 
@@ -126,6 +108,153 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
 #endif
   }
   throw std::bad_alloc();
+}
+
+[[nodiscard]] bool construction_contract() {
+  OrderBook empty_capacity({10, 20, 0});
+  empty_capacity.warm_up();
+  if (empty_capacity.best(Side::Bid) || empty_capacity.best(Side::Ask) ||
+      !empty_capacity.validate_invariants()) {
+    return false;
+  }
+  if (empty_capacity.insert({1, 1, Side::Bid, 10, 1}).status !=
+      InsertStatus::CapacityExhausted) {
+    return false;
+  }
+
+  OrderBook single_capacity({10, 10, 1});
+  single_capacity.warm_up();
+  return single_capacity.insert({1, 1, Side::Ask, 10, 1}).ok() &&
+         single_capacity.insert({2, 2, Side::Ask, 10, 1}).status ==
+             InsertStatus::CapacityExhausted &&
+         single_capacity.validate_invariants();
+}
+
+[[nodiscard]] bool insert_and_best_contract() {
+  OrderBook book({64, 192, 8});
+  book.warm_up();
+  if (!book.insert({1, 11, Side::Bid, 65, 10}).ok() ||
+      !book.insert({2, 12, Side::Bid, 128, 20}).ok() ||
+      !book.insert({3, 13, Side::Bid, 128, 30}).ok() ||
+      !book.insert({4, 14, Side::Bid, 191, 40}).ok() ||
+      !book.insert({5, 15, Side::Ask, 191, 50}).ok() ||
+      !book.insert({6, 16, Side::Ask, 129, 60}).ok() ||
+      !book.insert({7, 17, Side::Ask, 129, 70}).ok() ||
+      !book.insert({8, 18, Side::Ask, 64, 80}).ok()) {
+    return false;
+  }
+
+  const auto best_bid = book.best(Side::Bid);
+  const auto best_ask = book.best(Side::Ask);
+  if (!best_bid || !same_order(*best_bid, {4, 14, Side::Bid, 191, 40}) ||
+      !best_ask || !same_order(*best_ask, {8, 18, Side::Ask, 64, 80})) {
+    return false;
+  }
+
+  return unchanged_after_failed_insert(book, {1, 99, Side::Ask, 150, 1},
+                                       InsertStatus::DuplicateOrderId) &&
+         unchanged_after_failed_insert(book, {9, 19, Side::Bid, 63, 1},
+                                       InsertStatus::PriceOutOfRange) &&
+         unchanged_after_failed_insert(book, {9, 19, Side::Ask, 193, 1},
+                                       InsertStatus::PriceOutOfRange) &&
+         unchanged_after_failed_insert(book, {9, 19, Side::Bid, 100, 0},
+                                       InsertStatus::InvalidQuantity);
+}
+
+[[nodiscard]] bool set_remaining_contract() {
+  OrderBook book({10, 20, 4});
+  book.warm_up();
+  if (!book.insert({1, 11, Side::Ask, 12, 10}).ok() ||
+      !book.insert({2, 12, Side::Ask, 12, 20}).ok()) {
+    return false;
+  }
+
+  const SetRemainingResult lower = book.set_remaining(1, 5);
+  if (!lower.ok() || lower.previous_remaining != 10 ||
+      book.best(Side::Ask)->id != 1 ||
+      book.best(Side::Ask)->remaining != 5) {
+    return false;
+  }
+
+  const SetRemainingResult higher = book.set_remaining(1, 30);
+  if (!higher.ok() || higher.previous_remaining != 5 ||
+      book.best(Side::Ask)->id != 1 ||
+      book.best(Side::Ask)->remaining != 30) {
+    return false;
+  }
+
+  const SetRemainingResult same = book.set_remaining(1, 30);
+  return same.ok() && same.previous_remaining == 30 &&
+         unchanged_after_failed_set_remaining(
+             book, 999, 1, SetRemainingStatus::NotFound) &&
+         unchanged_after_failed_set_remaining(
+             book, 1, 0, SetRemainingStatus::InvalidQuantity);
+}
+
+[[nodiscard]] bool erase_contract() {
+  OrderBook book({10, 20, 5});
+  book.warm_up();
+  if (!book.insert({1, 11, Side::Bid, 15, 10}).ok() ||
+      !book.insert({2, 12, Side::Bid, 15, 20}).ok() ||
+      !book.insert({3, 13, Side::Bid, 15, 30}).ok() ||
+      !book.insert({4, 14, Side::Bid, 10, 40}).ok()) {
+    return false;
+  }
+
+  const EraseResult middle = book.erase(2);
+  if (!middle.ok() ||
+      !same_order(middle.removed, {2, 12, Side::Bid, 15, 20}) ||
+      book.best(Side::Bid)->id != 1) {
+    return false;
+  }
+
+  const EraseResult head = book.erase(1);
+  if (!head.ok() || book.best(Side::Bid)->id != 3) {
+    return false;
+  }
+
+  const EraseResult tail = book.erase(3);
+  if (!tail.ok() || book.best(Side::Bid)->id != 4) {
+    return false;
+  }
+
+  if (!unchanged_after_failed_erase(book, 999, EraseStatus::NotFound) ||
+      !unchanged_after_failed_erase(book, 3, EraseStatus::NotFound) ||
+      !book.erase(4).ok() || book.best(Side::Bid)) {
+    return false;
+  }
+
+  return book.insert({1, 11, Side::Ask, 20, 10}).ok() &&
+         book.validate_invariants();
+}
+
+[[nodiscard]] bool runtime_operations_do_not_allocate() {
+  OrderBook book({1, 128, 16});
+  book.warm_up();
+  (void)book.insert({1, 1, Side::Ask, 10, 10});
+  (void)book.insert({2, 1, Side::Bid, 9, 10});
+
+  reset_allocation_counter();
+  (void)book.insert({3, 1, Side::Ask, 10, 10});
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  const auto best_ask = book.best(Side::Ask);
+  if (stop_allocation_counter() != 0 || !best_ask) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.set_remaining(best_ask->id, 5);
+  if (stop_allocation_counter() != 0) {
+    return false;
+  }
+
+  reset_allocation_counter();
+  (void)book.erase(2);
+  return stop_allocation_counter() == 0 && book.validate_invariants();
 }
 
 } // namespace
@@ -195,200 +324,20 @@ void operator delete[](void* ptr, std::size_t, std::align_val_t) noexcept {
 }
 
 int main() {
-  OrderBook book({64, 191, 8});
-  book.warm_up();
-  OrderBook small({10, 12, 1});
-  small.warm_up();
-
-  if (!book.put({1, 11, Side::Ask, 100, 10}).ok() ||
-      !book.put({2, 12, Side::Ask, 100, 20}).ok() ||
-      !book.put({3, 13, Side::Ask, 128, 30}).ok() ||
-      !book.put({4, 14, Side::Bid, 90, 40}).ok()) {
+  if (!construction_contract()) {
     return 1;
   }
-
-  if (!unchanged_after_failed_put(book, {1, 99, Side::Bid, 91, 1},
-                                  PutStatus::DuplicateOrderId) ||
-      !unchanged_after_failed_put(book, {5, 15, Side::Bid, 200, 1},
-                                  PutStatus::PriceOutOfRange) ||
-      !unchanged_after_failed_put(book, {5, 15, Side::Bid, 90, 0},
-                                  PutStatus::InvalidQuantity)) {
+  if (!insert_and_best_contract()) {
     return 2;
   }
-
-  auto selected = book.select_best_opposite(Side::Bid);
-  if (!selected || selected->id != 1) {
+  if (!set_remaining_contract()) {
     return 3;
   }
-  const Snapshot before_cancel_miss = snapshot(book);
-  if (book.cancel(999).status != CancelStatus::NotFound ||
-      !(before_cancel_miss == snapshot(book))) {
+  if (!erase_contract()) {
     return 4;
   }
-  const Snapshot before_change_invalid = snapshot(book);
-  if (book.change(1, {10}).status != ChangeStatus::InvalidQuantity ||
-      !(before_change_invalid == snapshot(book))) {
+  if (!runtime_operations_do_not_allocate()) {
     return 5;
   }
-  if (book.change(1, {11}).status != ChangeStatus::InvalidQuantity ||
-      !(before_change_invalid == snapshot(book))) {
-    return 6;
-  }
-
-  selected = book.select_best_opposite(Side::Bid);
-  book.decrement_selected(4);
-  selected = book.select_best_opposite(Side::Bid);
-  if (!selected || selected->id != 1 || selected->remaining != 6) {
-    return 7;
-  }
-  book.decrement_selected(6);
-  selected = book.select_best_opposite(Side::Bid);
-  if (!selected || selected->id != 2 || selected->remaining != 20) {
-    return 8;
-  }
-
-  if (!book.change(2, {5}).ok()) {
-    return 9;
-  }
-  selected = book.select_best_opposite(Side::Bid);
-  if (!selected || selected->id != 2 || selected->remaining != 5) {
-    return 10;
-  }
-
-  OrderBook cancel_equiv_a({64, 191, 4});
-  OrderBook cancel_equiv_b({64, 191, 4});
-  cancel_equiv_a.warm_up();
-  cancel_equiv_b.warm_up();
-  (void)cancel_equiv_a.put({100, 1, Side::Ask, 100, 10});
-  (void)cancel_equiv_a.put({101, 1, Side::Ask, 100, 10});
-  (void)cancel_equiv_b.put({100, 1, Side::Ask, 100, 10});
-  (void)cancel_equiv_b.put({101, 1, Side::Ask, 100, 10});
-  if (!cancel_equiv_a.cancel(100).ok() ||
-      !cancel_equiv_b.change(100, {0}).ok() ||
-      !(snapshot(cancel_equiv_a) == snapshot(cancel_equiv_b))) {
-    return 11;
-  }
-
-  if (!book.cancel(2).ok()) {
-    return 12;
-  }
-  selected = book.select_best_opposite(Side::Bid);
-  if (!selected || selected->id != 3 || selected->price != 128) {
-    return 13;
-  }
-  if (!book.cancel(3).ok() || book.best_ask().has_value()) {
-    return 14;
-  }
-  if (!book.cancel(4).ok() || !book.empty()) {
-    return 15;
-  }
-
-  selected = cancel_equiv_a.select_best_opposite(Side::Bid);
-  const auto first_selection = cancel_equiv_a.selected_order_for_test();
-  selected = cancel_equiv_a.select_best_opposite(Side::Bid);
-  if (!selected || cancel_equiv_a.selected_order_for_test() != first_selection) {
-    return 16;
-  }
-  (void)cancel_equiv_a.put({102, 1, Side::Ask, 110, 1});
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
-    return 17;
-  }
-  selected = cancel_equiv_a.select_best_opposite(Side::Bid);
-  (void)cancel_equiv_a.cancel(102);
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
-    return 18;
-  }
-  selected = cancel_equiv_a.select_best_opposite(Side::Bid);
-  (void)cancel_equiv_a.change(101, {1});
-  if (cancel_equiv_a.selected_order_for_test() != invalid_order_index) {
-    return 19;
-  }
-
-  if (!small.put({100, 1, Side::Bid, 10, 1}).ok() ||
-      !unchanged_after_failed_put(small, {101, 1, Side::Bid, 11, 1},
-                                  PutStatus::PoolExhausted)) {
-    return 20;
-  }
-
-  OrderBook alloc_book({1, 128, 16});
-  alloc_book.warm_up();
-  (void)alloc_book.put({1, 1, Side::Ask, 10, 10});
-  (void)alloc_book.put({2, 1, Side::Bid, 9, 10});
-  reset_allocation_counter();
-  (void)alloc_book.put({3, 1, Side::Ask, 10, 10});
-  if (stop_allocation_counter() != 0) {
-    return 21;
-  }
-  reset_allocation_counter();
-  selected = alloc_book.select_best_opposite(Side::Bid);
-  if (stop_allocation_counter() != 0 || !selected) {
-    return 22;
-  }
-  reset_allocation_counter();
-  alloc_book.decrement_selected(1);
-  if (stop_allocation_counter() != 0) {
-    return 23;
-  }
-  reset_allocation_counter();
-  (void)alloc_book.cancel(2);
-  if (stop_allocation_counter() != 0) {
-    return 24;
-  }
-  reset_allocation_counter();
-  (void)alloc_book.change(1, {1});
-  if (stop_allocation_counter() != 0) {
-    return 25;
-  }
-
-  if (!book.validate_invariants() || !small.validate_invariants() ||
-      !alloc_book.validate_invariants()) {
-    return 26;
-  }
-
-  if (alloc_book.index_warm_up_stats().bytes == 0 ||
-      alloc_book.bid_warm_up_stats().bytes == 0 ||
-      alloc_book.ask_warm_up_stats().bytes == 0) {
-    return 27;
-  }
-
-  OrderBook empty({1, 2, 1});
-  empty.warm_up();
-  if (empty.select_best_opposite(Side::Bid).has_value() ||
-      empty.selected_order_for_test() != invalid_order_index) {
-    return 28;
-  }
-
-  OrderBook reuse_book({1, 200, 2});
-  reuse_book.warm_up();
-  if (!reuse_book.put({1001, 1, Side::Ask, 100, 10}).ok() ||
-      !reuse_book.put({1002, 2, Side::Ask, 100, 20}).ok()) {
-    return 29;
-  }
-  if (!reuse_book.cancel(1001).ok() ||
-      !reuse_book.put({1003, 3, Side::Bid, 90, 30}).ok()) {
-    return 30;
-  }
-  if (!reuse_book.best_bid().has_value() || *reuse_book.best_bid() != 90 ||
-      !reuse_book.best_ask().has_value() || *reuse_book.best_ask() != 100 ||
-      !reuse_book.validate_invariants()) {
-    return 31;
-  }
-  std::vector<OrderId> bid_ids;
-  std::vector<OrderId> ask_ids;
-  (void)reuse_book.for_each_order_for_test(
-      Side::Bid, [&bid_ids](const BestOrderView& order) {
-        bid_ids.push_back(order.id);
-        return true;
-      });
-  (void)reuse_book.for_each_order_for_test(
-      Side::Ask, [&ask_ids](const BestOrderView& order) {
-        ask_ids.push_back(order.id);
-        return true;
-      });
-  if (bid_ids.size() != 1 || bid_ids[0] != 1003 || ask_ids.size() != 1 ||
-      ask_ids[0] != 1002) {
-    return 32;
-  }
-
   return 0;
 }

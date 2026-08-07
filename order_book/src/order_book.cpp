@@ -21,31 +21,29 @@ OrderBook::OrderBook(const OrderBookConfig& config)
       asks_(config.min_price_tick, config.max_price_tick) {}
 
 void OrderBook::warm_up() noexcept {
-  assert(empty());
+  assert(active_order_count() == 0);
   index_.warm_up(config_.page_size);
   bids_.warm_up(config_.page_size);
   asks_.warm_up(config_.page_size);
-  selected_order_ = invalid_order_index;
-  selected_generation_ = generation_;
 }
 
-PutResult OrderBook::put(const RestingOrderData& order) noexcept {
+InsertResult OrderBook::insert(const RestingOrderData& order) noexcept {
   // Failure checks happen before any mutation so rejected puts preserve the
-  // logical book, including the selected-order protocol state.
+  // logical book state.
   if (order.quantity == 0) {
-    return {PutStatus::InvalidQuantity};
+    return {InsertStatus::InvalidQuantity};
   }
   if (!price_in_range(order.price)) {
-    return {PutStatus::PriceOutOfRange};
+    return {InsertStatus::PriceOutOfRange};
   }
   if (index_.find(order.id) != invalid_order_index) {
-    return {PutStatus::DuplicateOrderId};
+    return {InsertStatus::DuplicateOrderId};
   }
 
   const OrderIndex slot = pool_.emplace(order.id, order.owner_id, order.price,
                                         order.quantity, order.side);
   if (slot == invalid_order_index) {
-    return {PutStatus::PoolExhausted};
+    return {InsertStatus::CapacityExhausted};
   }
 
   const IndexInsertStatus insert_status = index_.insert(order.id, slot);
@@ -53,8 +51,8 @@ PutResult OrderBook::put(const RestingOrderData& order) noexcept {
     // Roll back the acquired pool index before any FIFO/aggregate mutation.
     pool_.release(slot);
     return {insert_status == IndexInsertStatus::Duplicate
-                ? PutStatus::DuplicateOrderId
-                : PutStatus::IndexFull};
+                ? InsertStatus::DuplicateOrderId
+                : InsertStatus::CapacityExhausted};
   }
 
   if (order.side == Side::Bid) {
@@ -62,105 +60,50 @@ PutResult OrderBook::put(const RestingOrderData& order) noexcept {
   } else {
     asks_.append(pool_, slot);
   }
-  // Selection is invalidated only after the FIFO/index/pool mutation commits.
-  mark_mutation();
-  return {PutStatus::Ok};
+  return {InsertStatus::Ok};
 }
 
-std::optional<BestOrderView>
-OrderBook::select_best_opposite(Side incoming_side) noexcept {
-  const OrderIndex slot = incoming_side == Side::Bid ? asks_.best_order(pool_)
-                                                    : bids_.best_order(pool_);
-  selected_order_ = slot;
+std::optional<OrderView> OrderBook::best(Side side) const noexcept {
+  const OrderIndex slot =
+      side == Side::Bid ? bids_.best_order(pool_) : asks_.best_order(pool_);
   if (slot == invalid_order_index) {
-    selected_generation_ = generation_;
     return std::nullopt;
   }
-
-  const detail::Order& order = pool_.get_unchecked(slot);
-  selected_generation_ = generation_;
-  return BestOrderView{order.id, order.owner_id, order.price, order.remaining};
+  return view_for(slot);
 }
 
-void OrderBook::decrement_selected(Quantity quantity) noexcept {
-  assert(selected_order_ != invalid_order_index);
-  assert(selected_generation_ == generation_);
-  assert(quantity > 0);
-
-  const OrderIndex slot = selected_order_;
-  selected_order_ = invalid_order_index;
-  detail::Order& order = pool_.get_unchecked(slot);
-  assert(pool_.contains(slot));
-  assert(quantity <= order.remaining);
-
-  // Release builds trust the selected order index and avoid an index lookup. Debug
-  // assertions guard stale selection through the generation check above.
-  if (order.side == Side::Bid) {
-    bids_.reduce(pool_, slot, quantity);
-  } else {
-    asks_.reduce(pool_, slot, quantity);
-  }
-
-  if (order.remaining == 0) {
-    (void)index_.erase(order.id);
-    if (order.side == Side::Bid) {
-      bids_.remove(pool_, slot);
-    } else {
-      asks_.remove(pool_, slot);
-    }
-    pool_.release(slot);
-  }
-  ++generation_;
-  selected_generation_ = generation_;
-}
-
-CancelResult OrderBook::cancel(OrderId id) noexcept {
+EraseResult OrderBook::erase(OrderId id) noexcept {
   const OrderIndex slot = index_.find(id);
   if (slot == invalid_order_index) {
-    return {CancelStatus::NotFound};
+    return {EraseStatus::NotFound, {}};
   }
 
-  // NotFound is non-mutating. A successful cancel invalidates any selection
-  // before unlinking so stale-index access cannot survive the call.
-  mark_mutation();
-  remove_active_order(slot);
-  return {CancelStatus::Ok};
+  return {EraseStatus::Ok, remove_active_order(slot)};
 }
 
-ChangeResult OrderBook::change(OrderId id, const OrderChange& change) noexcept {
+SetRemainingResult OrderBook::set_remaining(OrderId id,
+                                             Quantity new_remaining) noexcept {
+  if (new_remaining == 0) {
+    return {SetRemainingStatus::InvalidQuantity, {}};
+  }
+
   const OrderIndex slot = index_.find(id);
   if (slot == invalid_order_index) {
-    return {ChangeStatus::NotFound};
+    return {SetRemainingStatus::NotFound, {}};
   }
 
   detail::Order& order = pool_.get_unchecked(slot);
-  if (change.new_remaining >= order.remaining) {
-    return {ChangeStatus::InvalidQuantity};
-  }
-  // Invalid reductions are non-mutating; successful reductions invalidate
-  // selection because the cached snapshot may no longer match the index.
-  mark_mutation();
-  if (change.new_remaining == 0) {
-    remove_active_order(slot);
-    return {ChangeStatus::Ok};
-  }
+  const Quantity previous_remaining = order.remaining;
 
-  const Quantity delta = order.remaining - change.new_remaining;
   if (order.side == Side::Bid) {
-    bids_.reduce(pool_, slot, delta);
+    bids_.set_remaining(pool_, slot, new_remaining);
   } else {
-    asks_.reduce(pool_, slot, delta);
+    asks_.set_remaining(pool_, slot, new_remaining);
   }
-  return {ChangeStatus::Ok};
+  return {SetRemainingStatus::Ok, previous_remaining};
 }
 
 bool OrderBook::validate_invariants() const noexcept {
-  if (selected_order_ != invalid_order_index &&
-      (!pool_.contains(selected_order_) ||
-       selected_generation_ != generation_)) {
-    return false;
-  }
-
   if (!pool_.validate_freelist() || !validate_side(Side::Bid) ||
       !validate_side(Side::Ask)) {
     return false;
@@ -228,38 +171,23 @@ bool OrderBook::validate_invariants() const noexcept {
   });
 }
 
-std::optional<PriceTick> OrderBook::best_bid() const noexcept {
-  if (bids_.empty()) {
-    return std::nullopt;
-  }
-  return bids_.best_price();
-}
-
-std::optional<PriceTick> OrderBook::best_ask() const noexcept {
-  if (asks_.empty()) {
-    return std::nullopt;
-  }
-  return asks_.best_price();
+std::uint32_t OrderBook::active_order_count() const noexcept {
+  return bids_.order_count() + asks_.order_count();
 }
 
 bool OrderBook::price_in_range(PriceTick price) const noexcept {
   return price >= config_.min_price_tick && price <= config_.max_price_tick;
 }
 
-void OrderBook::invalidate_selection() noexcept {
-  selected_order_ = invalid_order_index;
-  selected_generation_ = generation_;
+OrderView OrderBook::view_for(OrderIndex slot) const noexcept {
+  const detail::Order& order = pool_.get_unchecked(slot);
+  return {order.id, order.owner_id, order.side, order.price, order.remaining};
 }
 
-void OrderBook::mark_mutation() noexcept {
-  ++generation_;
-  // Generation moves before clearing selection so validate_invariants() can
-  // detect any stale selected index accidentally left behind by future edits.
-  invalidate_selection();
-}
-
-void OrderBook::remove_active_order(OrderIndex slot) noexcept {
+OrderView OrderBook::remove_active_order(OrderIndex slot) noexcept {
   detail::Order& order = pool_.get_unchecked(slot);
+  const OrderView removed{order.id, order.owner_id, order.side, order.price,
+                          order.remaining};
   (void)index_.erase(order.id);
   if (order.side == Side::Bid) {
     bids_.remove(pool_, slot);
@@ -267,6 +195,7 @@ void OrderBook::remove_active_order(OrderIndex slot) noexcept {
     asks_.remove(pool_, slot);
   }
   pool_.release(slot);
+  return removed;
 }
 
 bool OrderBook::validate_side(Side side) const noexcept {
