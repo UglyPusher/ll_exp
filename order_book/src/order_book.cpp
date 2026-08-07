@@ -270,6 +270,32 @@ bool OrderBook::validate_side(Side side) const noexcept {
       if (segment.active_mask != expected_mask) {
         return false;
       }
+
+      const std::size_t occupancy_word = segment_index >> 6U;
+      const std::uint64_t occupancy_bit =
+          std::uint64_t{1} << (segment_index & 63U);
+      const bool bitmap_says_occupied =
+          (book.segment_occupancy_word(occupancy_word) & occupancy_bit) != 0;
+      if (bitmap_says_occupied != !segment.empty()) {
+        return false;
+      }
+    }
+
+    if (book.segment_occupancy_word_count() !=
+        (book.segment_count() + 63U) / 64U) {
+      return false;
+    }
+    if (book.segment_occupancy_word_count() != 0) {
+      const std::size_t used_bits_in_last_word = book.segment_count() & 63U;
+      if (used_bits_in_last_word != 0) {
+        const std::uint64_t valid_bits =
+            (std::uint64_t{1} << used_bits_in_last_word) - 1U;
+        const std::uint64_t last_word = book.segment_occupancy_word(
+            book.segment_occupancy_word_count() - 1U);
+        if ((last_word & ~valid_bits) != 0) {
+          return false;
+        }
+      }
     }
 
     if (counted_orders != book.order_count() ||

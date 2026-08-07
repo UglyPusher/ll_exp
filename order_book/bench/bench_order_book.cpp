@@ -168,6 +168,21 @@ void print_stats(std::string_view name, int run, const Stats& stats) {
             << " max=" << stats.max << '\n';
 }
 
+void print_sweep_stats(std::string_view name, int run,
+                       std::size_t segment_count, std::size_t segment_gap,
+                       const Stats& stats) {
+  std::cout << "baseline name=" << name << " run=" << run
+            << " segment_count=" << segment_count
+            << " segment_gap=" << segment_gap
+            << " iterations=" << stats.iterations
+            << " latency_samples=" << stats.latency_samples
+            << " mean_ns/op=" << stats.mean
+            << " ops/s=" << stats.ops_per_second << " p50=" << stats.p50
+            << " p90=" << stats.p90 << " p99=" << stats.p99
+            << " p99.9=" << stats.p999 << " p99.99=" << stats.p9999
+            << " max=" << stats.max << '\n';
+}
+
 std::string cpu_identifier() {
 #if defined(_MSC_VER)
   char* value = nullptr;
@@ -189,6 +204,14 @@ template <typename Fn>
 void run_benchmark(std::string_view name, Fn&& make_stats) {
   for (int run = 1; run <= benchmark_runs; ++run) {
     print_stats(name, run, make_stats());
+  }
+}
+
+template <typename Fn>
+void run_sweep_benchmark(std::string_view name, std::size_t segment_count,
+                         std::size_t segment_gap, Fn&& make_stats) {
+  for (int run = 1; run <= benchmark_runs; ++run) {
+    print_sweep_stats(name, run, segment_count, segment_gap, make_stats());
   }
 }
 
@@ -475,6 +498,39 @@ Stats bench_best_segment_recompute_far() {
       });
 }
 
+Stats bench_best_segment_recompute_sweep(std::size_t segment_gap) {
+  constexpr std::size_t segment_count = 4096;
+  const PriceTick max_price =
+      static_cast<PriceTick>((segment_count * prices_per_segment) - 1);
+  const std::uint64_t occupied_segments =
+      (segment_count + segment_gap - 1) / segment_gap;
+  const BatchShape shape{occupied_segments, 1};
+  struct State {
+    OrderBook book;
+  };
+  return measure_scenario(
+      shape,
+      [max_price, segment_gap] {
+        State state{OrderBook({0, max_price, 4096})};
+        OrderId id = 1;
+        for (std::size_t segment = 0; segment < segment_count;
+             segment += segment_gap) {
+          const PriceTick price =
+              static_cast<PriceTick>(segment * prices_per_segment);
+          insert_checked(state.book, id++, Side::Ask, price);
+        }
+        return state;
+      },
+      [](State& state, std::uint64_t, std::uint64_t) {
+        const auto best = state.book.best(Side::Ask);
+        if (!best) {
+          std::abort();
+        }
+        const EraseResult result = state.book.erase(best->id);
+        g_sink += result.removed.id;
+      });
+}
+
 Stats bench_partial_fill_cycle() {
   const Quantity initial_quantity =
       static_cast<Quantity>(steady_shape.batches * steady_shape.ops_per_batch + 1);
@@ -616,6 +672,13 @@ int main() {
                 bench_best_segment_recompute_near);
   run_benchmark("best_segment_recompute_far",
                 bench_best_segment_recompute_far);
+  for (const std::size_t segment_gap : {1U, 2U, 4U, 8U, 16U, 32U, 64U}) {
+    run_sweep_benchmark("best_segment_recompute_sweep", 4096, segment_gap,
+                        [segment_gap] {
+                          return bench_best_segment_recompute_sweep(
+                              segment_gap);
+                        });
+  }
   run_benchmark("partial_fill_cycle_best_set",
                 bench_partial_fill_cycle);
   run_benchmark("full_fill_cycle_best_erase", bench_full_fill_cycle);

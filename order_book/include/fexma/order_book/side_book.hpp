@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -32,9 +33,14 @@ public:
         max_price_tick_(max_price_tick),
         base_segment_(min_price_tick >> price_segment_shift),
         segment_count_(segment_count_for(min_price_tick, max_price_tick)),
+        segment_occupancy_word_count_(word_count_for(segment_count_)),
         segments_(segment_count_ == 0
                       ? nullptr
-                      : std::make_unique<PriceSegment[]>(segment_count_)) {
+                      : std::make_unique<PriceSegment[]>(segment_count_)),
+        segment_occupancy_(segment_occupancy_word_count_ == 0
+                               ? nullptr
+                               : std::make_unique<std::uint64_t[]>(
+                                     segment_occupancy_word_count_)) {
     clear();
   }
 
@@ -50,6 +56,9 @@ public:
     for (std::size_t i = 0; i < segment_count_; ++i) {
       segments_[i] = PriceSegment{};
     }
+    for (std::size_t i = 0; i < segment_occupancy_word_count_; ++i) {
+      segment_occupancy_[i] = 0;
+    }
   }
 
   [[nodiscard]] bool contains_price(PriceTick price) const noexcept {
@@ -62,6 +71,7 @@ public:
     const std::uint32_t offset = price_offset(order.price);
     PriceSegment& price_segment = segments_[segment];
     PriceLevel& level = price_segment.levels[offset];
+    const bool segment_was_empty = price_segment.empty();
 
     order.prev = level.tail;
     order.next = invalid_order_index;
@@ -72,6 +82,9 @@ public:
       // The occupancy bit must be set exactly when the FIFO transitions from
       // empty to non-empty; validate_invariants() mirrors this relation.
       price_segment.active_mask |= (std::uint64_t{1} << offset);
+    }
+    if (segment_was_empty) {
+      set_segment_occupied(segment);
     }
     level.tail = slot;
     level.total_quantity += order.remaining;
@@ -113,8 +126,11 @@ public:
       // Clearing the bit is coupled with the last-order removal from a price.
       price_segment.active_mask &= ~(std::uint64_t{1} << offset);
       if (segment == best_segment_ && price_segment.empty()) {
-        // Only removal of the current best segment can require a segment scan.
+        clear_segment_occupied(segment);
+        // Only removal of the current best segment can require a best update.
         recompute_best();
+      } else if (price_segment.empty()) {
+        clear_segment_occupied(segment);
       }
     }
   }
@@ -208,26 +224,22 @@ public:
   }
 
   [[nodiscard]] std::size_t byte_size() const noexcept {
-    return sizeof(PriceSegment) * segment_count_;
+    return sizeof(PriceSegment) * segment_count_ +
+           sizeof(std::uint64_t) * segment_occupancy_word_count_;
+  }
+
+  [[nodiscard]] std::size_t segment_occupancy_word_count() const noexcept {
+    return segment_occupancy_word_count_;
+  }
+
+  [[nodiscard]] std::uint64_t
+  segment_occupancy_word(std::size_t index) const noexcept {
+    return segment_occupancy_[index];
   }
 
   void recompute_best() noexcept {
-    best_segment_ = invalid_segment();
-    if constexpr (BookSide == Side::Ask) {
-      for (std::size_t i = 0; i < segment_count_; ++i) {
-        if (!segments_[i].empty()) {
-          best_segment_ = i;
-          return;
-        }
-      }
-    } else {
-      for (std::size_t i = segment_count_; i > 0; --i) {
-        if (!segments_[i - 1].empty()) {
-          best_segment_ = i - 1;
-          return;
-        }
-      }
-    }
+    best_segment_ = BookSide == Side::Ask ? first_occupied_segment()
+                                          : last_occupied_segment();
   }
 
 private:
@@ -263,6 +275,11 @@ private:
     return static_cast<std::size_t>(-1);
   }
 
+  [[nodiscard]] static constexpr std::size_t
+  word_count_for(std::size_t bit_count) noexcept {
+    return (bit_count + 63U) / 64U;
+  }
+
   static std::size_t segment_count_for(PriceTick min_price_tick,
                                        PriceTick max_price_tick) noexcept {
     if (max_price_tick < min_price_tick) {
@@ -273,11 +290,47 @@ private:
     return last - first + 1;
   }
 
+  void set_segment_occupied(std::size_t segment) noexcept {
+    segment_occupancy_[segment >> 6U] |=
+        std::uint64_t{1} << (segment & 63U);
+  }
+
+  void clear_segment_occupied(std::size_t segment) noexcept {
+    segment_occupancy_[segment >> 6U] &=
+        ~(std::uint64_t{1} << (segment & 63U));
+  }
+
+  [[nodiscard]] std::size_t first_occupied_segment() const noexcept {
+    for (std::size_t word_index = 0; word_index < segment_occupancy_word_count_;
+         ++word_index) {
+      const std::uint64_t word = segment_occupancy_[word_index];
+      if (word != 0) {
+        return word_index * 64U +
+               static_cast<std::size_t>(std::countr_zero(word));
+      }
+    }
+    return invalid_segment();
+  }
+
+  [[nodiscard]] std::size_t last_occupied_segment() const noexcept {
+    for (std::size_t word_index = segment_occupancy_word_count_; word_index > 0;
+         --word_index) {
+      const std::uint64_t word = segment_occupancy_[word_index - 1U];
+      if (word != 0) {
+        return (word_index - 1U) * 64U + 63U -
+               static_cast<std::size_t>(std::countl_zero(word));
+      }
+    }
+    return invalid_segment();
+  }
+
   PriceTick min_price_tick_{};
   PriceTick max_price_tick_{};
   std::size_t base_segment_{};
   std::size_t segment_count_{};
+  std::size_t segment_occupancy_word_count_{};
   std::unique_ptr<PriceSegment[]> segments_;
+  std::unique_ptr<std::uint64_t[]> segment_occupancy_;
   std::size_t best_segment_{invalid_segment()};
   std::uint32_t order_count_{};
   Quantity total_quantity_{};
