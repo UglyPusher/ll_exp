@@ -68,6 +68,16 @@ foreach(test_name IN LISTS order_book_tests)
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
+add_executable(test_order_book_soak tests/test_order_book_soak.cpp)
+target_link_libraries(test_order_book_soak PRIVATE fexma::order_book)
+if(WIN32)
+  target_link_libraries(test_order_book_soak PRIVATE psapi)
+endif()
+fexma_order_book_apply_warnings(test_order_book_soak)
+add_test(NAME test_order_book_soak_quick
+  COMMAND test_order_book_soak --mode quick
+)
+
 add_executable(bench_order_book bench/bench_order_book.cpp)
 target_link_libraries(bench_order_book PRIVATE fexma::order_book)
 fexma_order_book_apply_warnings(bench_order_book)

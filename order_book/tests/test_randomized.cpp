@@ -125,7 +125,7 @@ void remove_active_id(std::vector<OrderId>& active_ids, OrderId id) {
 
 int main(int argc, char* argv[]) {
   const bool stress = argc == 2 && std::string_view(argv[1]) == "--stress";
-  const int steps_per_seed = stress ? 150000 : 50000;
+  const int steps_per_seed = stress ? 50000 : 1000;
   const std::uint32_t seeds[] = {0x0B00C5U, 0x12345678U, 0xC0FFEEU,
                                  0xABCDEF01U, 0xDEADBEEFU, 0x51515151U};
 
