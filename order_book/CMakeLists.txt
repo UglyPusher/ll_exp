@@ -79,3 +79,11 @@ target_include_directories(bench_order_pool
 )
 target_compile_features(bench_order_pool PRIVATE cxx_std_20)
 fexma_order_book_apply_warnings(bench_order_pool)
+
+add_executable(bench_order_id_index bench/bench_order_id_index.cpp)
+target_include_directories(bench_order_id_index
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_compile_features(bench_order_id_index PRIVATE cxx_std_20)
+fexma_order_book_apply_warnings(bench_order_id_index)

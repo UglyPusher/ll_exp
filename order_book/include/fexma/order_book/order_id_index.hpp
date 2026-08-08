@@ -3,8 +3,8 @@
  * @brief Fixed-capacity OrderId -> OrderIndex index.
  *
  * The index uses open addressing over one preallocated bucket array. Deletion
- * clears and reinserts the following probe cluster so lookup can terminate at
- * the first Empty bucket without runtime rehash/allocation.
+ * uses backward-shift repair so lookup can terminate at the first Empty bucket
+ * without tombstones, runtime rehash, or allocation.
  */
 #pragma once
 
@@ -24,8 +24,11 @@ enum class IndexInsertStatus : std::uint8_t {
 
 /** @brief Probe diagnostics for tests and benchmarks. */
 struct IndexProbeStats {
-  std::size_t probes{};
-  std::size_t max_probe{};
+  std::size_t lookup_probes{};
+  std::size_t repair_buckets_scanned{};
+  std::size_t repair_buckets_moved{};
+  std::size_t max_lookup_probe{};
+  std::size_t max_repair_scan{};
 };
 
 /**
@@ -115,12 +118,21 @@ public:
   }
 
   [[nodiscard]] bool erase(OrderId id) noexcept {
-    return erase(id, nullptr);
+    return erase_and_get(id, nullptr) != invalid_order_index;
   }
 
   [[nodiscard]] bool erase(OrderId id, IndexProbeStats* stats) noexcept {
+    return erase_and_get(id, stats) != invalid_order_index;
+  }
+
+  [[nodiscard]] OrderIndex erase_and_get(OrderId id) noexcept {
+    return erase_and_get(id, nullptr);
+  }
+
+  [[nodiscard]] OrderIndex erase_and_get(OrderId id,
+                                         IndexProbeStats* stats) noexcept {
     if (bucket_count_ == 0) {
-      return false;
+      return invalid_order_index;
     }
 
     std::size_t pos = hash(id) & (bucket_count_ - 1);
@@ -128,16 +140,17 @@ public:
       record_probe(stats, probe + 1);
       Bucket& bucket = buckets_[pos];
       if (bucket.state == State::Empty) {
-        return false;
+        return invalid_order_index;
       }
       if (bucket.state == State::Occupied && bucket.id == id) {
+        const OrderIndex erased_slot = bucket.slot;
         --size_;
-        erase_at(pos);
-        return true;
+        erase_at(pos, stats);
+        return erased_slot;
       }
       pos = (pos + 1) & (bucket_count_ - 1);
     }
-    return false;
+    return invalid_order_index;
   }
 
   [[nodiscard]] std::size_t size() const noexcept {
@@ -213,21 +226,41 @@ private:
     if (stats == nullptr) {
       return;
     }
-    ++stats->probes;
-    if (probes > stats->max_probe) {
-      stats->max_probe = probes;
+    ++stats->lookup_probes;
+    if (probes > stats->max_lookup_probe) {
+      stats->max_lookup_probe = probes;
     }
   }
 
-  void erase_at(std::size_t erased_pos) noexcept {
-    buckets_[erased_pos] = Bucket{};
-    std::size_t candidate_pos = (erased_pos + 1) & (bucket_count_ - 1);
-    while (buckets_[candidate_pos].state == State::Occupied) {
-      const Bucket saved = buckets_[candidate_pos];
-      buckets_[candidate_pos] = Bucket{};
-      --size_;
-      (void)insert(saved.id, saved.slot);
-      candidate_pos = (candidate_pos + 1) & (bucket_count_ - 1);
+  void erase_at(std::size_t erased_pos, IndexProbeStats* stats) noexcept {
+    const std::size_t mask = bucket_count_ - 1U;
+    std::size_t hole_pos = erased_pos;
+    buckets_[hole_pos] = Bucket{};
+    std::size_t candidate_pos = (erased_pos + 1U) & mask;
+    std::size_t repair_scan = 0;
+    while (repair_scan + 1U < bucket_count_ &&
+           buckets_[candidate_pos].state == State::Occupied) {
+      ++repair_scan;
+      if (stats != nullptr) {
+        ++stats->repair_buckets_scanned;
+      }
+
+      const std::size_t home_pos = hash(buckets_[candidate_pos].id) & mask;
+      const std::size_t hole_distance = (hole_pos - home_pos) & mask;
+      const std::size_t candidate_distance =
+          (candidate_pos - home_pos) & mask;
+      if (hole_distance < candidate_distance) {
+        buckets_[hole_pos] = buckets_[candidate_pos];
+        buckets_[candidate_pos] = Bucket{};
+        hole_pos = candidate_pos;
+        if (stats != nullptr) {
+          ++stats->repair_buckets_moved;
+        }
+      }
+      candidate_pos = (candidate_pos + 1U) & mask;
+    }
+    if (stats != nullptr && repair_scan > stats->max_repair_scan) {
+      stats->max_repair_scan = repair_scan;
     }
   }
 

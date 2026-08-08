@@ -336,6 +336,23 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
   return true;
 }
 
+[[nodiscard]] bool duplicate_rollback_preserves_next_pool_slot() {
+  OrderBook book({10, 20, 3});
+  if (!book.insert({1, 11, Side::Bid, 15, 10}).ok() ||
+      OrderBookTestAccess::slot_for(book, 1) != 0) {
+    return false;
+  }
+  if (book.insert({1, 99, Side::Ask, 16, 20}).status !=
+          InsertStatus::DuplicateOrderId ||
+      !book.validate_invariants()) {
+    return false;
+  }
+  return book.insert({2, 12, Side::Ask, 16, 20}).ok() &&
+         OrderBookTestAccess::slot_for(book, 2) == 1 &&
+         book.best(Side::Bid)->id == 1 && book.best(Side::Ask)->id == 2 &&
+         book.validate_invariants();
+}
+
 [[nodiscard]] bool runtime_operations_do_not_allocate() {
   OrderBook book({1, 128, 16});
   (void)book.insert({1, 1, Side::Ask, 10, 10});
@@ -506,17 +523,20 @@ int main() {
   if (!failure_atomicity_contract()) {
     return 5;
   }
-  if (!runtime_operations_do_not_allocate()) {
+  if (!duplicate_rollback_preserves_next_pool_slot()) {
     return 6;
   }
-  if (!validator_rejects_zero_remaining()) {
+  if (!runtime_operations_do_not_allocate()) {
     return 7;
   }
-  if (!validator_rejects_price_outside_configured_range()) {
+  if (!validator_rejects_zero_remaining()) {
     return 8;
   }
-  if (!validator_rejects_invalid_cached_best()) {
+  if (!validator_rejects_price_outside_configured_range()) {
     return 9;
+  }
+  if (!validator_rejects_invalid_cached_best()) {
+    return 10;
   }
   return 0;
 }

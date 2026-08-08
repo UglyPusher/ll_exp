@@ -21,22 +21,18 @@ OrderBook::OrderBook(const OrderBookConfig& config)
       asks_(config.min_price_tick, config.max_price_tick) {}
 
 InsertResult OrderBook::insert(const RestingOrderData& order) noexcept {
-  // Failure checks happen before any mutation so rejected puts preserve the
-  // logical book state.
   if (order.quantity == 0) {
     return {InsertStatus::InvalidQuantity};
   }
   if (!price_in_range(order.price)) {
     return {InsertStatus::PriceOutOfRange};
   }
-  if (index_.find(order.id) != invalid_order_index) {
-    return {InsertStatus::DuplicateOrderId};
-  }
-
   const OrderIndex slot = pool_.emplace(order.id, order.owner_id, order.price,
                                         order.quantity, order.side);
   if (slot == invalid_order_index) {
-    return {InsertStatus::CapacityExhausted};
+    return {index_.find(order.id) != invalid_order_index
+                ? InsertStatus::DuplicateOrderId
+                : InsertStatus::CapacityExhausted};
   }
 
   const IndexInsertStatus insert_status = index_.insert(order.id, slot);
@@ -66,7 +62,7 @@ std::optional<OrderView> OrderBook::best(Side side) const noexcept {
 }
 
 EraseResult OrderBook::erase(OrderId id) noexcept {
-  const OrderIndex slot = index_.find(id);
+  const OrderIndex slot = index_.erase_and_get(id);
   if (slot == invalid_order_index) {
     return {EraseStatus::NotFound, {}};
   }
@@ -185,7 +181,6 @@ OrderView OrderBook::remove_active_order(OrderIndex slot) noexcept {
   detail::Order& order = pool_.get_unchecked(slot);
   const OrderView removed{order.id, order.owner_id, order.side, order.price,
                           order.remaining};
-  (void)index_.erase(order.id);
   if (order.side == Side::Bid) {
     bids_.remove(pool_, slot);
   } else {

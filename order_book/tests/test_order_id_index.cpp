@@ -1,23 +1,29 @@
 /**
  * @file test_order_id_index.cpp
- * @brief Autonomous tests for fixed OrderIdIndex probing, deletion, and churn.
+ * @brief Deterministic and differential tests for fixed OrderIdIndex probing.
  */
 #include <fexma/order_book/order_id_index.hpp>
 
 #include "order_id_index_test_access.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <random>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace fexma::order_book;
 
 namespace {
 
-std::vector<OrderId> ids_for_home_bucket(const OrderIdIndex& index,
-                                         std::size_t home_bucket,
-                                         std::size_t count) {
+using Entry = std::pair<OrderId, OrderIndex>;
+
+[[nodiscard]] std::vector<OrderId>
+ids_for_home_bucket(const OrderIdIndex& index, std::size_t home_bucket,
+                    std::size_t count, OrderId first_id = 1) {
   std::vector<OrderId> ids;
-  for (OrderId id = 1; ids.size() < count; ++id) {
+  for (OrderId id = first_id; ids.size() < count; ++id) {
     if (OrderIdIndexTestAccess::home_bucket(index, id) == home_bucket) {
       ids.push_back(id);
     }
@@ -25,129 +31,280 @@ std::vector<OrderId> ids_for_home_bucket(const OrderIdIndex& index,
   return ids;
 }
 
+[[nodiscard]] std::vector<Entry> entries(const OrderIdIndex& index) {
+  std::vector<Entry> result;
+  (void)index.for_each([&result](OrderId id, OrderIndex slot) {
+    result.emplace_back(id, slot);
+    return true;
+  });
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
+[[nodiscard]] bool valid(const OrderIdIndex& index) {
+  return OrderIdIndexTestAccess::validate_invariants(index);
+}
+
+[[nodiscard]] bool erase_single_bucket() {
+  OrderIdIndex index(4);
+  return index.insert(10, 7) == IndexInsertStatus::Ok && valid(index) &&
+         index.erase_and_get(10) == 7 && index.size() == 0 && valid(index) &&
+         index.find(10) == invalid_order_index;
+}
+
+[[nodiscard]] bool insert_duplicate_and_full_table_erase() {
+  OrderIdIndex index(1);
+  std::vector<OrderId> ids;
+  for (OrderId id = 1; ids.size() < index.bucket_count(); ++id) {
+    if (index.insert(id, static_cast<OrderIndex>(id)) !=
+        IndexInsertStatus::Ok) {
+      return false;
+    }
+    ids.push_back(id);
+    if (ids.size() == 1U &&
+        index.insert(id, 999) != IndexInsertStatus::Duplicate) {
+      return false;
+    }
+    if (!valid(index)) {
+      return false;
+    }
+  }
+  if (index.insert(999999, 999) != IndexInsertStatus::Full) {
+    return false;
+  }
+  const std::size_t before_size = index.size();
+  if (index.erase_and_get(ids[ids.size() / 2U]) == invalid_order_index ||
+      index.size() + 1U != before_size || !valid(index)) {
+    return false;
+  }
+  for (const OrderId id : ids) {
+    if (id != ids[ids.size() / 2U] && index.find(id) == invalid_order_index) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool erase_cluster_position(std::size_t erased_offset) {
+  OrderIdIndex index(8);
+  const std::vector<OrderId> ids = ids_for_home_bucket(index, 3, 6);
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (index.insert(ids[i], static_cast<OrderIndex>(100U + i)) !=
+            IndexInsertStatus::Ok ||
+        !valid(index)) {
+      return false;
+    }
+  }
+
+  IndexProbeStats stats{};
+  if (index.erase_and_get(ids[erased_offset], &stats) !=
+          static_cast<OrderIndex>(100U + erased_offset) ||
+      index.size() != ids.size() - 1U || !valid(index)) {
+    return false;
+  }
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    const OrderIndex expected =
+        i == erased_offset ? invalid_order_index
+                           : static_cast<OrderIndex>(100U + i);
+    if (index.find(ids[i]) != expected) {
+      return false;
+    }
+  }
+  return stats.lookup_probes == erased_offset + 1U;
+}
+
+[[nodiscard]] bool consecutive_cluster_erases_and_refill() {
+  OrderIdIndex index(16);
+  const std::vector<OrderId> ids = ids_for_home_bucket(index, 5, 10);
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (index.insert(ids[i], static_cast<OrderIndex>(i + 1U)) !=
+            IndexInsertStatus::Ok ||
+        !valid(index)) {
+      return false;
+    }
+  }
+  for (const std::size_t erased : {std::size_t{4}, std::size_t{0},
+                                   std::size_t{8}, std::size_t{2}}) {
+    const std::size_t before_size = index.size();
+    if (index.erase_and_get(ids[erased]) !=
+            static_cast<OrderIndex>(erased + 1U) ||
+        index.size() + 1U != before_size || !valid(index)) {
+      return false;
+    }
+  }
+
+  for (const std::size_t erased : {std::size_t{4}, std::size_t{0},
+                                   std::size_t{8}, std::size_t{2}}) {
+    if (index.insert(ids[erased], static_cast<OrderIndex>(erased + 1U)) !=
+            IndexInsertStatus::Ok ||
+        !valid(index)) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (index.find(ids[i]) != static_cast<OrderIndex>(i + 1U)) {
+      return false;
+    }
+  }
+  return index.size() == ids.size();
+}
+
+[[nodiscard]] bool mixed_home_positions_skip_ineligible_bucket() {
+  OrderIdIndex index(8);
+  const OrderId home_zero = ids_for_home_bucket(index, 0, 1)[0];
+  const OrderId home_one = ids_for_home_bucket(index, 1, 1)[0];
+  const OrderId second_home_zero =
+      ids_for_home_bucket(index, 0, 1, home_zero + 1U)[0];
+
+  if (index.insert(home_zero, 10) != IndexInsertStatus::Ok ||
+      index.insert(home_one, 11) != IndexInsertStatus::Ok ||
+      index.insert(second_home_zero, 12) != IndexInsertStatus::Ok) {
+    return false;
+  }
+  const std::size_t home_one_position =
+      OrderIdIndexTestAccess::bucket_position(index, home_one);
+  if (index.erase_and_get(home_zero) != 10 || !valid(index)) {
+    return false;
+  }
+
+  return OrderIdIndexTestAccess::bucket_position(index, home_one) ==
+             home_one_position &&
+         OrderIdIndexTestAccess::bucket_position(index, second_home_zero) == 0 &&
+         index.find(home_one) == 11 && index.find(second_home_zero) == 12;
+}
+
+[[nodiscard]] bool wrap_around_cluster_repair() {
+  OrderIdIndex index(8);
+  const std::size_t last_bucket = index.bucket_count() - 1U;
+  const std::vector<OrderId> ids =
+      ids_for_home_bucket(index, last_bucket, 8);
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (index.insert(ids[i], static_cast<OrderIndex>(i + 20U)) !=
+            IndexInsertStatus::Ok ||
+        !valid(index)) {
+      return false;
+    }
+  }
+  for (const std::size_t erased : {std::size_t{0}, std::size_t{4},
+                                   std::size_t{7}}) {
+    if (index.erase_and_get(ids[erased]) !=
+            static_cast<OrderIndex>(erased + 20U) ||
+        !valid(index)) {
+      return false;
+    }
+  }
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    const bool was_erased = i == 0 || i == 4 || i == 7;
+    if (index.find(ids[i]) !=
+        (was_erased ? invalid_order_index
+                    : static_cast<OrderIndex>(i + 20U))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool missing_erase_is_atomic() {
+  OrderIdIndex index(8);
+  for (OrderId id = 1; id <= 6; ++id) {
+    if (index.insert(id * 17U, static_cast<OrderIndex>(id)) !=
+        IndexInsertStatus::Ok) {
+      return false;
+    }
+  }
+  const std::vector<Entry> before = entries(index);
+  const std::size_t before_size = index.size();
+  IndexProbeStats stats{};
+  return index.erase_and_get(999999, &stats) == invalid_order_index &&
+         index.size() == before_size && entries(index) == before &&
+         stats.repair_buckets_scanned == 0 && valid(index);
+}
+
+[[nodiscard]] bool randomized_differential() {
+  OrderIdIndex index(64);
+  std::unordered_map<OrderId, OrderIndex> model;
+  std::mt19937_64 random(0x5EED1234ULL);
+
+  for (std::size_t step = 0; step < 100000; ++step) {
+    const OrderId id = 1U + random() % 500U;
+    const int operation = static_cast<int>(random() % 100U);
+    if (operation < 45 && model.size() < 100U) {
+      const OrderIndex slot = static_cast<OrderIndex>(1U + random() % 100000U);
+      const bool duplicate = model.contains(id);
+      const IndexInsertStatus status = index.insert(id, slot);
+      if (status != (duplicate ? IndexInsertStatus::Duplicate
+                               : IndexInsertStatus::Ok)) {
+        return false;
+      }
+      if (!duplicate) {
+        model.emplace(id, slot);
+      }
+      if (!valid(index)) {
+        return false;
+      }
+    } else if (operation < 80) {
+      const auto found = model.find(id);
+      const OrderIndex expected =
+          found == model.end() ? invalid_order_index : found->second;
+      if (index.erase_and_get(id) != expected) {
+        return false;
+      }
+      if (found != model.end()) {
+        model.erase(found);
+      }
+      if (!valid(index)) {
+        return false;
+      }
+    } else {
+      const auto found = model.find(id);
+      const OrderIndex expected =
+          found == model.end() ? invalid_order_index : found->second;
+      if (index.find(id) != expected) {
+        return false;
+      }
+    }
+
+    if (index.size() != model.size()) {
+      return false;
+    }
+    if ((step % 1000U) == 0) {
+      for (const auto& [active_id, slot] : model) {
+        if (index.find(active_id) != slot) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
-  OrderIdIndex index(4);
-
-  if (index.find(10) != invalid_order_index) {
+  if (!erase_single_bucket()) {
     return 1;
   }
-  if (index.insert(10, 1) != IndexInsertStatus::Ok ||
-      index.insert(20, 2) != IndexInsertStatus::Ok ||
-      index.insert(30, 3) != IndexInsertStatus::Ok) {
+  if (!insert_duplicate_and_full_table_erase()) {
     return 2;
   }
-  if (index.insert(10, 4) != IndexInsertStatus::Duplicate) {
+  if (!erase_cluster_position(0) || !erase_cluster_position(3) ||
+      !erase_cluster_position(5)) {
     return 3;
   }
-  if (index.find(20) != 2) {
+  if (!consecutive_cluster_erases_and_refill()) {
     return 4;
   }
-  if (!index.erase(20) || index.find(20) != invalid_order_index) {
+  if (!mixed_home_positions_skip_ineligible_bucket()) {
     return 5;
   }
-  if (index.insert(40, 2) != IndexInsertStatus::Ok ||
-      index.find(40) != 2) {
+  if (!wrap_around_cluster_repair()) {
     return 6;
   }
-
-  OrderIdIndex small(1);
-  std::uint32_t inserted = 0;
-  for (OrderId id = 1; id < 100; ++id) {
-    const IndexInsertStatus status = small.insert(id, static_cast<OrderIndex>(id));
-    if (status == IndexInsertStatus::Full) {
-      break;
-    }
-    if (status != IndexInsertStatus::Ok) {
-      return 7;
-    }
-    ++inserted;
+  if (!missing_erase_is_atomic()) {
+    return 7;
   }
-  if (inserted == 0 || small.insert(1000, 1) != IndexInsertStatus::Full) {
+  if (!randomized_differential()) {
     return 8;
   }
-
-  OrderIdIndex churn(64);
-  std::vector<OrderId> active;
-  for (OrderId id = 1; id <= 32; ++id) {
-    IndexProbeStats stats{};
-    if (churn.insert(id * 129, static_cast<OrderIndex>(id), &stats) !=
-            IndexInsertStatus::Ok ||
-        stats.probes == 0) {
-      return 9;
-    }
-    active.push_back(id * 129);
-  }
-
-  std::size_t max_probe = 0;
-  std::uint64_t total_probe = 0;
-  std::uint64_t probe_ops = 0;
-  for (OrderId cycle = 0; cycle < 200000; ++cycle) {
-    const std::size_t victim = static_cast<std::size_t>(cycle % active.size());
-    IndexProbeStats erase_stats{};
-    if (!churn.erase(active[victim], &erase_stats)) {
-      return 10;
-    }
-    total_probe += erase_stats.probes;
-    max_probe = (std::max)(max_probe, erase_stats.max_probe);
-    ++probe_ops;
-
-    const OrderId next = 1000000 + cycle * 129;
-    IndexProbeStats insert_stats{};
-    if (churn.insert(next, static_cast<OrderIndex>(victim), &insert_stats) !=
-        IndexInsertStatus::Ok) {
-      return 11;
-    }
-    total_probe += insert_stats.probes;
-    max_probe = (std::max)(max_probe, insert_stats.max_probe);
-    ++probe_ops;
-    active[victim] = next;
-
-    if ((cycle % 10000) == 0) {
-      for (OrderId id : active) {
-        IndexProbeStats find_stats{};
-        if (churn.find(id, &find_stats) == invalid_order_index ||
-            find_stats.probes == 0) {
-          return 12;
-        }
-      }
-      if (max_probe > churn.bucket_count()) {
-        return 13;
-      }
-    }
-  }
-
-  if (probe_ops == 0 || total_probe == 0) {
-    return 14;
-  }
-
-  OrderIdIndex wrap_around(4);
-  const std::size_t last_bucket = wrap_around.bucket_count() - 1U;
-  const std::vector<OrderId> colliding_ids =
-      ids_for_home_bucket(wrap_around, last_bucket, 4);
-  for (std::size_t i = 0; i < colliding_ids.size(); ++i) {
-    if (wrap_around.insert(colliding_ids[i], static_cast<OrderIndex>(i + 1U)) !=
-        IndexInsertStatus::Ok) {
-      return 15;
-    }
-  }
-  if (!wrap_around.erase(colliding_ids[0])) {
-    return 16;
-  }
-  for (std::size_t i = 1; i < colliding_ids.size(); ++i) {
-    if (wrap_around.find(colliding_ids[i]) !=
-        static_cast<OrderIndex>(i + 1U)) {
-      return 17;
-    }
-  }
-  if (!wrap_around.erase(colliding_ids[2]) ||
-      wrap_around.find(colliding_ids[1]) != 2 ||
-      wrap_around.find(colliding_ids[3]) != 4 ||
-      wrap_around.insert(colliding_ids[0], 9) != IndexInsertStatus::Ok ||
-      wrap_around.find(colliding_ids[0]) != 9) {
-    return 18;
-  }
-
   return 0;
 }

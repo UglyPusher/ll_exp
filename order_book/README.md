@@ -70,9 +70,9 @@ also leave the logical book unchanged.
 ## Index Strategy
 
 `OrderIdIndex` uses fixed open addressing over a preallocated power-of-two bucket
-array. Deletion compacts the affected probe cluster in-place by reinserting
-following occupied buckets into the same array. The index has only Empty and
-Occupied states and does not allocate or runtime-rehash.
+array. Deletion repairs the affected probe cluster with an in-place
+backward-shift pass. The index has only Empty and Occupied states and does not
+allocate or runtime-rehash.
 
 Probe diagnostics are available for tests and benchmarks through overloads that
 accept `IndexProbeStats*`; normal runtime calls do not collect stats.

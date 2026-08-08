@@ -10,6 +10,11 @@ namespace fexma::order_book {
 
 class OrderBookTestAccess {
 public:
+  [[nodiscard]] static OrderIndex slot_for(const OrderBook& book,
+                                           OrderId id) noexcept {
+    return book.index_.find(id);
+  }
+
   static void set_remaining(OrderBook& book, OrderId id,
                             Quantity remaining) noexcept {
     const OrderIndex slot = book.index_.find(id);
