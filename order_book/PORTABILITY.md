@@ -1,31 +1,28 @@
-# OrderBook portability validation
+# OrderBook Portability
 
-## Supported validation targets
+## Verified
 
-The intended validation matrix is Windows x64 and Linux x86-64 with a 64-bit
-`std::size_t`. A 32-bit platform contract has not been established. In
-particular, `OrderIdIndex::bucket_count_for()` can overflow its power-of-two
-growth for large `OrderCapacity` values when `std::size_t` is 32 bits.
+The following matrix has been built and tested:
 
-The public scalar domains permit `OrderCapacity == UINT32_MAX` and the full
-`PriceTick` range, but those are type limits, not practical construction
-limits. On a 64-bit target:
+| Platform | Compiler | Configurations | Result |
+|---|---|---|---|
+| Windows x64 | MSVC 19.44 | `/W4` Debug and Release `/O2` | Component tests, randomized tests, quick/stress/100M soak passed. |
+| Windows x64 | MSVC 19.44 AddressSanitizer | Release | Component tests and quick differential soak passed without ASan diagnostics. |
 
-- `OrderCapacity == UINT32_MAX` requests `2^33` index buckets;
-- the full price range contains `2^26` price segments per side;
-- construction is limited by address space and allocator success and may throw
-  `std::bad_alloc`.
+MSVC AddressSanitizer on this platform does not support leak detection. The
+normal soak harness records process working set, while all runtime tracking
+containers are explicitly bounded by capacity or a fixed trace size.
 
-Capacity arithmetic is exact on the supported 64-bit targets. Index bucket
-counts are powers of two, and probing uses a mask. Price segmentation uses
-shifts and masks. The implementation does not serialize object representations
-or reinterpret bytes, so it has no little-endian dependency.
+## Documented, Not Yet Verified
 
-`std::countr_zero` and `std::countl_zero` require C++20 `<bit>`. No compiler
-intrinsics are called directly; instruction selection and fallback code are the
-responsibility of MSVC, GCC, or Clang.
+The code and CMake configuration are intended to be tested next on:
 
-## Reproducible Linux commands
+- Linux x86-64 with GCC;
+- Linux x86-64 with Clang;
+- Linux x86-64 with Clang ASan and UBSan.
+
+These platforms are not claimed as supported until their builds and tests have
+actually run. Reproducible commands are provided below.
 
 GCC Debug and Release:
 
@@ -70,8 +67,30 @@ ASAN_OPTIONS=detect_leaks=1 \
   --mode quick --seed 0xC0FFEE
 ```
 
-The soak executable accepts `--mode quick|stress|soak`, `--operations N`,
-repeatable `--seed N`, `--validation-interval N`, and
-`--duration-seconds N`. `--scenario NAME` runs one named matrix entry and is
-included in failure reproduction commands. Its throughput is diagnostic only
-and is not a benchmark result.
+## Platform Contract
+
+- The implementation requires C++20. It uses standard `<bit>` operations such
+  as `std::countl_zero` and `std::countr_zero`, not compiler intrinsics.
+- A 64-bit `std::size_t` is the current effective requirement.
+- 32-bit targets are not claimed as supported. Large `OrderCapacity` values can
+  overflow power-of-two index sizing on a 32-bit `std::size_t`.
+- There is no little-endian dependency. The implementation does not serialize
+  object representations or reinterpret fields as byte sequences.
+- TSan is not required for the stated contract: `OrderBook` is a single-writer
+  component whose calls must be externally serialized. This is not a claim that
+  concurrent unsynchronized access is safe.
+
+## Configuration Limits
+
+On a 64-bit target, capacity and price-range arithmetic is exact for the public
+32-bit scalar domains:
+
+- `OrderCapacity == UINT32_MAX` would request `2^33` index buckets;
+- the full `PriceTick` range would request `2^26` segments per side.
+
+Those values imply impractical allocations. They are type limits, not supported
+deployment sizes. Construction is bounded by address space and available
+memory and can throw `std::bad_alloc`.
+
+The complete memory formulas and concrete x64 layout example are in
+[DESIGN.md](DESIGN.md#memory-model).

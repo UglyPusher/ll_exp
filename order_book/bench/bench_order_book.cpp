@@ -17,6 +17,15 @@
 #include <string_view>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#elif defined(__linux__)
+#include <sched.h>
+#include <sys/resource.h>
+#endif
+
 using namespace fexma::order_book;
 
 namespace {
@@ -200,6 +209,41 @@ std::string cpu_identifier() {
 #endif
 }
 
+void print_scheduler_context() {
+#ifdef _WIN32
+  DWORD_PTR process_affinity = 0;
+  DWORD_PTR system_affinity = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process_affinity,
+                             &system_affinity) != FALSE) {
+    std::cout << "process_affinity_mask=0x" << std::hex << process_affinity
+              << " system_affinity_mask=0x" << system_affinity << std::dec
+              << '\n';
+  } else {
+    std::cout << "process_affinity_mask=unavailable\n";
+  }
+  std::cout << "process_priority_class="
+            << GetPriorityClass(GetCurrentProcess()) << '\n';
+#elif defined(__linux__)
+  cpu_set_t affinity;
+  CPU_ZERO(&affinity);
+  if (sched_getaffinity(0, sizeof(affinity), &affinity) == 0) {
+    std::size_t cpu_count = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+      if (CPU_ISSET(cpu, &affinity)) {
+        ++cpu_count;
+      }
+    }
+    std::cout << "process_affinity_cpu_count=" << cpu_count << '\n';
+  } else {
+    std::cout << "process_affinity_cpu_count=unavailable\n";
+  }
+  std::cout << "process_nice=" << getpriority(PRIO_PROCESS, 0) << '\n';
+#else
+  std::cout << "process_affinity=unavailable\n"
+            << "process_priority=unavailable\n";
+#endif
+}
+
 template <typename Fn>
 void run_benchmark(std::string_view name, Fn&& make_stats) {
   for (int run = 1; run <= benchmark_runs; ++run) {
@@ -237,6 +281,7 @@ void print_build_context() {
   std::cout << "optimization=/Od\n";
 #endif
   std::cout << "cpu_identifier=" << cpu_identifier() << '\n';
+  print_scheduler_context();
   std::cout << "timer=std::chrono::steady_clock"
             << " runs=" << benchmark_runs
             << " steady_batches=" << steady_shape.batches

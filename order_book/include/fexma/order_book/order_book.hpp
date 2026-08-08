@@ -46,14 +46,15 @@ public:
    * @brief Appends one resting order to its side/price FIFO.
    *
    * @return Explicit status. On failure, logical book state remains unchanged.
-   * @complexity Expected O(1), bounded by fixed index probe length.
+   * @complexity O(p), where p is the fixed-table index probe length.
    */
   [[nodiscard]] InsertResult insert(const RestingOrderData& order) noexcept;
   /**
    * @brief Returns the best resting order on one side.
    *
    * @return Snapshot of the best resting order, or std::nullopt if the side is
-   * empty. The operation does not create hidden selection state.
+   * empty.
+   * @complexity O(1) using cached segment and level occupancy masks.
    */
   [[nodiscard]] std::optional<OrderView> best(Side side) const noexcept;
   /**
@@ -61,6 +62,8 @@ public:
    *
    * @return Ok includes a snapshot of the removed order. NotFound leaves book
    * state unchanged.
+   * @complexity O(p + c + w) worst case, where p is index probe length, c is
+   * repair-cluster length, and w is the side's segment-bitmap word count.
    */
   [[nodiscard]] EraseResult erase(OrderId id) noexcept;
   /**
@@ -68,6 +71,7 @@ public:
    *
    * @return Ok includes the previous quantity. InvalidQuantity and NotFound
    * leave book state unchanged.
+   * @complexity O(p), where p is the fixed-table index probe length.
    */
   [[nodiscard]] SetRemainingResult
   set_remaining(OrderId id, Quantity new_remaining) noexcept;

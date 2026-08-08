@@ -4,7 +4,7 @@
  *
  * The index uses open addressing over one preallocated bucket array. Deletion
  * uses backward-shift repair so lookup can terminate at the first Empty bucket
- * without tombstones, runtime rehash, or allocation.
+ * without runtime rehash or allocation.
  */
 #pragma once
 

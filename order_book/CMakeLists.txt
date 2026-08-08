@@ -78,8 +78,15 @@ add_test(NAME test_order_book_soak_quick
   COMMAND test_order_book_soak --mode quick
 )
 
+add_executable(order_book_basic_usage examples/basic_usage.cpp)
+target_link_libraries(order_book_basic_usage PRIVATE fexma::order_book)
+fexma_order_book_apply_warnings(order_book_basic_usage)
+
 add_executable(bench_order_book bench/bench_order_book.cpp)
 target_link_libraries(bench_order_book PRIVATE fexma::order_book)
+if(UNIX AND NOT APPLE)
+  target_compile_definitions(bench_order_book PRIVATE _GNU_SOURCE)
+endif()
 fexma_order_book_apply_warnings(bench_order_book)
 
 add_executable(bench_order_pool bench/bench_order_pool.cpp)
