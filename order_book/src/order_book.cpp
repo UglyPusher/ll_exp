@@ -8,6 +8,7 @@
  */
 #include <fexma/order_book/order_book.hpp>
 
+#include <limits>
 #include <memory>
 
 namespace fexma::order_book {
@@ -57,7 +58,7 @@ InsertResult OrderBook::insert(const RestingOrderData& order) noexcept {
 
 std::optional<OrderView> OrderBook::best(Side side) const noexcept {
   const OrderIndex slot =
-      side == Side::Bid ? bids_.best_order(pool_) : asks_.best_order(pool_);
+      side == Side::Bid ? bids_.best_order() : asks_.best_order();
   if (slot == invalid_order_index) {
     return std::nullopt;
   }
@@ -100,7 +101,7 @@ bool OrderBook::validate_invariants() const noexcept {
       !validate_side(Side::Ask)) {
     return false;
   }
-  if (index_.size() != active_order_count() || index_.tombstone_count() != 0) {
+  if (index_.size() != active_order_count()) {
     return false;
   }
 
@@ -120,9 +121,10 @@ bool OrderBook::validate_invariants() const noexcept {
         OrderCapacity steps = 0;
         for (OrderIndex current = level.head; current != invalid_order_index;
              current = pool_.get_unchecked(current).next) {
-          if (!pool_.contains(current) || steps++ > config_.max_orders) {
+          if (!pool_.contains(current) || steps >= config_.max_orders) {
             return false;
           }
+          ++steps;
           ++fifo_seen[current];
         }
       }
@@ -196,7 +198,7 @@ OrderView OrderBook::remove_active_order(OrderIndex slot) noexcept {
 bool OrderBook::validate_side(Side side) const noexcept {
   const auto validate = [this, side](const auto& book) noexcept {
     std::uint32_t counted_orders = 0;
-    Quantity counted_quantity = 0;
+    AggregateQuantity counted_quantity = 0;
     bool has_best = false;
     PriceTick expected_best{};
 
@@ -231,7 +233,7 @@ bool OrderBook::validate_side(Side side) const noexcept {
         }
 
         std::uint32_t level_count = 0;
-        Quantity level_quantity = 0;
+        AggregateQuantity level_quantity = 0;
         OrderIndex previous = invalid_order_index;
         for (OrderIndex current = level.head; current != invalid_order_index;
              current = pool_.get_unchecked(current).next) {
@@ -239,7 +241,8 @@ bool OrderBook::validate_side(Side side) const noexcept {
             return false;
           }
           const detail::Order& order = pool_.get_unchecked(current);
-          if (order.side != side ||
+          if (order.remaining == 0 || !price_in_range(order.price) ||
+              order.side != side ||
               order.price != book.price_from_local(segment_index, offset) ||
               order.prev != previous) {
             return false;
@@ -300,6 +303,15 @@ bool OrderBook::validate_side(Side side) const noexcept {
 
     if (counted_orders != book.order_count() ||
         counted_quantity != book.total_quantity()) {
+      return false;
+    }
+    const std::size_t invalid_best = (std::numeric_limits<std::size_t>::max)();
+    if (book.empty()) {
+      if (book.best_segment() != invalid_best) {
+        return false;
+      }
+    } else if (book.best_segment() >= book.segment_count() ||
+               book.segment(book.best_segment()).empty()) {
       return false;
     }
     if (has_best != !book.empty()) {

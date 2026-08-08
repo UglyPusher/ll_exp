@@ -3,8 +3,8 @@
  * @brief Fixed-capacity OrderId -> OrderIndex index.
  *
  * The index uses open addressing over one preallocated bucket array. Deletion
- * uses backward-shift compaction so long-running churn does not accumulate
- * tombstones or require runtime rehash/allocation.
+ * clears and reinserts the following probe cluster so lookup can terminate at
+ * the first Empty bucket without runtime rehash/allocation.
  */
 #pragma once
 
@@ -35,6 +35,8 @@ struct IndexProbeStats {
  * @note Capacity is fixed at construction; no runtime rehash is performed.
  */
 class OrderIdIndex {
+  friend class OrderIdIndexTestAccess;
+
 public:
   OrderIdIndex() = default;
 
@@ -52,7 +54,6 @@ public:
 
   void clear() noexcept {
     size_ = 0;
-    tombstones_ = 0;
     for (std::size_t i = 0; i < bucket_count_; ++i) {
       buckets_[i] = Bucket{};
     }
@@ -72,8 +73,6 @@ public:
     for (std::size_t probe = 0; probe < bucket_count_; ++probe) {
       record_probe(stats, probe + 1);
       const Bucket& bucket = buckets_[pos];
-      // A truly empty bucket terminates a linear-probe chain. Deleted buckets
-      // cannot terminate lookup because matching keys may be further ahead.
       if (bucket.state == State::Empty) {
         return invalid_order_index;
       }
@@ -95,7 +94,6 @@ public:
       return IndexInsertStatus::Full;
     }
 
-    std::size_t first_tombstone = bucket_count_;
     std::size_t pos = hash(id) & (bucket_count_ - 1);
     for (std::size_t probe = 0; probe < bucket_count_; ++probe) {
       record_probe(stats, probe + 1);
@@ -104,33 +102,14 @@ public:
         if (bucket.id == id) {
           return IndexInsertStatus::Duplicate;
         }
-      } else if (bucket.state == State::Deleted) {
-        if (first_tombstone == bucket_count_) {
-          first_tombstone = pos;
-        }
       } else {
-        Bucket& target =
-            first_tombstone == bucket_count_ ? bucket : buckets_[first_tombstone];
-        if (target.state == State::Deleted) {
-          --tombstones_;
-        }
-        target.id = id;
-        target.slot = slot;
-        target.state = State::Occupied;
+        bucket.id = id;
+        bucket.slot = slot;
+        bucket.state = State::Occupied;
         ++size_;
         return IndexInsertStatus::Ok;
       }
       pos = (pos + 1) & (bucket_count_ - 1);
-    }
-
-    if (first_tombstone != bucket_count_) {
-      Bucket& target = buckets_[first_tombstone];
-      target.id = id;
-      target.slot = slot;
-      target.state = State::Occupied;
-      ++size_;
-      --tombstones_;
-      return IndexInsertStatus::Ok;
     }
     return IndexInsertStatus::Full;
   }
@@ -169,10 +148,6 @@ public:
     return bucket_count_;
   }
 
-  [[nodiscard]] std::size_t tombstone_count() const noexcept {
-    return tombstones_;
-  }
-
   [[nodiscard]] double load_factor() const noexcept {
     return bucket_count_ == 0 ? 0.0
                               : static_cast<double>(size_) /
@@ -205,8 +180,7 @@ public:
 private:
   enum class State : std::uint8_t {
     Empty,
-    Occupied,
-    Deleted
+    Occupied
   };
 
   struct Bucket {
@@ -260,7 +234,6 @@ private:
   std::size_t bucket_count_{};
   std::unique_ptr<Bucket[]> buckets_;
   std::size_t size_{};
-  std::size_t tombstones_{};
 };
 
 } // namespace fexma::order_book

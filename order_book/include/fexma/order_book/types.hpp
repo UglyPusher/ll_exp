@@ -21,6 +21,8 @@ using OwnerId = std::uint64_t;
 using PriceTick = std::uint32_t;
 /** @brief Integer quantity in the instrument's minimum quantity step. */
 using Quantity = std::uint32_t;
+/** @brief Exact aggregate of quantities across a level or book side. */
+using AggregateQuantity = std::uint64_t;
 /** @brief Index into the fixed order pool; never exposed by OrderBook API. */
 using OrderIndex = std::uint32_t;
 /** @brief Fixed order-pool capacity/count domain. */

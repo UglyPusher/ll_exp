@@ -3,6 +3,8 @@
  * @brief Focused OrderPool and intrusive FIFO component benchmarks.
  */
 #include <fexma/order_book/detail/order_pool.hpp>
+#include <fexma/order_book/order_book.hpp>
+#include <fexma/order_book/order_id_index.hpp>
 #include <fexma/order_book/side_book.hpp>
 
 #include <algorithm>
@@ -109,6 +111,10 @@ void print_build_context(OrderCapacity capacity) {
             << " alignof(PriceLevel)=" << alignof(PriceLevel)
             << " sizeof(PriceSegment)=" << sizeof(PriceSegment)
             << " alignof(PriceSegment)=" << alignof(PriceSegment)
+            << " sizeof(OrderIdIndex)=" << sizeof(OrderIdIndex)
+            << " index_bucket_size=" << OrderIdIndex::bucket_size()
+            << " sizeof(SideBook)=" << sizeof(SideBook<Side::Ask>)
+            << " sizeof(OrderBook)=" << sizeof(OrderBook)
             << " capacity=" << capacity
             << " block_sizes=64,4096,65536" << '\n';
 }
@@ -209,7 +215,7 @@ void bench_fifo_append_existing_level(OrderCapacity capacity,
     }
   });
 
-  g_sink += asks.best_order(pool);
+  g_sink += asks.best_order();
   g_sink += asks.order_count();
   g_sink += asks.total_quantity();
   print_runtime("fifo_append_existing_level_blocks", block_size, stats);
@@ -264,7 +270,7 @@ void bench_fifo_unlink(OrderCapacity capacity, OrderCapacity block_size,
     }
   });
 
-  g_sink += bids.best_order(pool);
+  g_sink += bids.best_order();
   g_sink += bids.order_count();
   g_sink += bids.total_quantity();
 

@@ -15,6 +15,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fexma::order_book;
@@ -122,7 +123,9 @@ void remove_active_id(std::vector<OrderId>& active_ids, OrderId id) {
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+  const bool stress = argc == 2 && std::string_view(argv[1]) == "--stress";
+  const int steps_per_seed = stress ? 150000 : 50000;
   const std::uint32_t seeds[] = {0x0B00C5U, 0x12345678U, 0xC0FFEEU,
                                  0xABCDEF01U, 0xDEADBEEFU, 0x51515151U};
 
@@ -136,7 +139,7 @@ int main() {
     std::deque<std::string> history;
     OrderId next_id = 1;
 
-    for (int step = 0; step < 50000; ++step) {
+    for (int step = 0; step < steps_per_seed; ++step) {
       const int op = static_cast<int>(rng() % 100);
       if (op < 40 || active_ids.empty()) {
         const Side side = (rng() & 1U) == 0 ? Side::Bid : Side::Ask;

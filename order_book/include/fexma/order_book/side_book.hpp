@@ -25,9 +25,9 @@ namespace fexma::order_book {
  */
 template <Side BookSide>
 class SideBook {
-public:
-  SideBook() = default;
+  friend class OrderBookTestAccess;
 
+public:
   SideBook(PriceTick min_price_tick, PriceTick max_price_tick)
       : min_price_tick_(min_price_tick),
         max_price_tick_(max_price_tick),
@@ -135,17 +135,6 @@ public:
     }
   }
 
-  void reduce(detail::OrderPool& pool, OrderIndex slot,
-              Quantity quantity) noexcept {
-    detail::Order& order = pool.get_unchecked(slot);
-    const std::size_t segment = local_segment(order.price);
-    const std::uint32_t offset = price_offset(order.price);
-    PriceLevel& level = segments_[segment].levels[offset];
-    order.remaining -= quantity;
-    level.total_quantity -= quantity;
-    total_quantity_ -= quantity;
-  }
-
   void set_remaining(detail::OrderPool& pool, OrderIndex slot,
                      Quantity new_remaining) noexcept {
     detail::Order& order = pool.get_unchecked(slot);
@@ -164,13 +153,11 @@ public:
     order.remaining = new_remaining;
   }
 
-  [[nodiscard]] OrderIndex best_order(
-      const detail::OrderPool& pool) const noexcept {
+  [[nodiscard]] OrderIndex best_order() const noexcept {
     const PriceLevel* level = best_level();
     if (level == nullptr) {
       return invalid_order_index;
     }
-    (void)pool;
     return level->head;
   }
 
@@ -193,7 +180,7 @@ public:
     return order_count_;
   }
 
-  [[nodiscard]] Quantity total_quantity() const noexcept {
+  [[nodiscard]] AggregateQuantity total_quantity() const noexcept {
     return total_quantity_;
   }
 
@@ -237,12 +224,12 @@ public:
     return segment_occupancy_[index];
   }
 
+private:
   void recompute_best() noexcept {
     best_segment_ = BookSide == Side::Ask ? first_occupied_segment()
                                           : last_occupied_segment();
   }
 
-private:
   [[nodiscard]] const PriceLevel* best_level() const noexcept {
     if (best_segment_ == invalid_segment()) {
       return nullptr;
@@ -333,7 +320,7 @@ private:
   std::unique_ptr<std::uint64_t[]> segment_occupancy_;
   std::size_t best_segment_{invalid_segment()};
   std::uint32_t order_count_{};
-  Quantity total_quantity_{};
+  AggregateQuantity total_quantity_{};
 };
 
 } // namespace fexma::order_book

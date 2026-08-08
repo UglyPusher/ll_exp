@@ -31,6 +31,8 @@ namespace fexma::order_book {
  * @warning Not thread-safe. All access must be externally serialized.
  */
 class OrderBook final {
+  friend class OrderBookTestAccess;
+
 public:
   /** @brief Allocates all fixed storage for the configured range/capacity. */
   explicit OrderBook(const OrderBookConfig& config);

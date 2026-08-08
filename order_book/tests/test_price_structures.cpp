@@ -4,11 +4,17 @@
  */
 #include <fexma/order_book/side_book.hpp>
 
+#include <limits>
+#include <type_traits>
+
 using namespace fexma::order_book;
 
 namespace {
 
 using detail::OrderPool;
+
+static_assert(!std::is_default_constructible_v<SideBook<Side::Ask>>);
+static_assert(!std::is_default_constructible_v<SideBook<Side::Bid>>);
 
 OrderIndex make_order(OrderPool& pool, OrderId id, Side side, PriceTick price,
                       Quantity quantity) {
@@ -42,7 +48,7 @@ bool segment_occupancy_tracks_empty_transitions() {
 
   asks.remove(pool, high);
   return !segment_occupied(asks, 0) && asks.empty() &&
-         asks.best_order(pool) == invalid_order_index;
+         asks.best_order() == invalid_order_index;
 }
 
 bool segment_occupancy_crosses_word_boundaries() {
@@ -122,13 +128,13 @@ bool removing_only_level_clears_segment() {
 
   bids.remove(pool, order);
   return !segment_occupied(bids, 1) && bids.empty() &&
-         bids.best_order(pool) == invalid_order_index;
+         bids.best_order() == invalid_order_index;
 }
 
 bool empty_side_has_empty_segment_bitmap() {
   OrderPool pool(1);
   SideBook<Side::Ask> asks(0, 127);
-  return asks.best_order(pool) == invalid_order_index &&
+  return asks.best_order() == invalid_order_index &&
          asks.segment_occupancy_word_count() == 1 &&
          asks.segment_occupancy_word(0) == 0;
 }
@@ -202,9 +208,33 @@ bool released_slot_reuse_has_fresh_fifo_links() {
   }
 
   bids.append(pool, reused);
-  return asks.empty() && bids.best_order(pool) == reused &&
+  return asks.empty() && bids.best_order() == reused &&
          bids.best_price() == 90 && bids.order_count() == 1 &&
          bids.total_quantity() == 25;
+}
+
+bool aggregate_quantity_exceeds_uint32_without_overflow() {
+  OrderPool pool(2);
+  SideBook<Side::Ask> asks(0, 127);
+  constexpr Quantity maximum_quantity =
+      (std::numeric_limits<Quantity>::max)();
+  const OrderIndex first =
+      make_order(pool, 80, Side::Ask, 42, maximum_quantity);
+  const OrderIndex second =
+      make_order(pool, 81, Side::Ask, 42, maximum_quantity);
+
+  asks.append(pool, first);
+  asks.append(pool, second);
+  const AggregateQuantity expected =
+      static_cast<AggregateQuantity>(maximum_quantity) * 2U;
+  const PriceLevel& level = asks.segment(0).levels[42];
+  if (asks.total_quantity() != expected || level.total_quantity != expected) {
+    return false;
+  }
+
+  asks.set_remaining(pool, first, maximum_quantity - 1U);
+  return asks.total_quantity() == expected - 1U &&
+         level.total_quantity == expected - 1U;
 }
 
 } // namespace
@@ -234,15 +264,15 @@ int main() {
   asks.append(pool, ask_low_a);
   asks.append(pool, ask_low_b);
 
-  if (asks.best_price() != 70 || asks.best_order(pool) != ask_low_a) {
+  if (asks.best_price() != 70 || asks.best_order() != ask_low_a) {
     return 4;
   }
-  asks.reduce(pool, ask_low_a, 5);
+  asks.set_remaining(pool, ask_low_a, 15);
   if (pool.get_unchecked(ask_low_a).remaining != 15) {
     return 5;
   }
   asks.remove(pool, ask_low_a);
-  if (asks.best_order(pool) != ask_low_b) {
+  if (asks.best_order() != ask_low_b) {
     return 6;
   }
   asks.remove(pool, ask_low_b);
@@ -261,7 +291,7 @@ int main() {
   bids.append(pool, bid_low);
   bids.append(pool, bid_high);
   bids.append(pool, bid_mid);
-  if (bids.best_price() != 190 || bids.best_order(pool) != bid_high) {
+  if (bids.best_price() != 190 || bids.best_order() != bid_high) {
     return 9;
   }
   bids.remove(pool, bid_high);
@@ -296,6 +326,9 @@ int main() {
   }
   if (!released_slot_reuse_has_fresh_fifo_links()) {
     return 19;
+  }
+  if (!aggregate_quantity_exceeds_uint32_without_overflow()) {
+    return 20;
   }
 
   return 0;

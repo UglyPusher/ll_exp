@@ -4,9 +4,12 @@
  */
 #include <fexma/order_book/order_book.hpp>
 
+#include "order_book_test_access.hpp"
+
 #include <cstddef>
 #include <cstdlib>
 #include <new>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -385,6 +388,42 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
   return stop_allocation_counter() == 0 && book.validate_invariants();
 }
 
+[[nodiscard]] bool validator_rejects_zero_remaining() {
+  OrderBook book({64, 127, 2});
+  if (!book.insert({1, 11, Side::Ask, 65, 10}).ok()) {
+    return false;
+  }
+  OrderBookTestAccess::set_remaining(book, 1, 0);
+  return !book.validate_invariants();
+}
+
+[[nodiscard]] bool validator_rejects_price_outside_configured_range() {
+  OrderBook book({65, 130, 2});
+  if (!book.insert({1, 11, Side::Ask, 65, 10}).ok()) {
+    return false;
+  }
+  OrderBookTestAccess::set_price(book, 1, 64);
+  return !book.validate_invariants();
+}
+
+[[nodiscard]] bool validator_rejects_invalid_cached_best() {
+  const std::size_t invalid_segment =
+      (std::numeric_limits<std::size_t>::max)();
+
+  OrderBook non_empty({64, 191, 2});
+  if (!non_empty.insert({1, 11, Side::Bid, 128, 10}).ok()) {
+    return false;
+  }
+  OrderBookTestAccess::set_best_segment(non_empty, Side::Bid, invalid_segment);
+  if (non_empty.validate_invariants()) {
+    return false;
+  }
+
+  OrderBook empty({64, 191, 2});
+  OrderBookTestAccess::set_best_segment(empty, Side::Ask, 0);
+  return !empty.validate_invariants();
+}
+
 } // namespace
 
 void* operator new(std::size_t size) {
@@ -469,6 +508,15 @@ int main() {
   }
   if (!runtime_operations_do_not_allocate()) {
     return 6;
+  }
+  if (!validator_rejects_zero_remaining()) {
+    return 7;
+  }
+  if (!validator_rejects_price_outside_configured_range()) {
+    return 8;
+  }
+  if (!validator_rejects_invalid_cached_best()) {
+    return 9;
   }
   return 0;
 }

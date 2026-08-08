@@ -17,7 +17,7 @@ namespace fexma::order_book {
 struct PriceLevel {
   OrderIndex head{invalid_order_index};
   OrderIndex tail{invalid_order_index};
-  Quantity total_quantity{};
+  AggregateQuantity total_quantity{};
   std::uint32_t order_count{};
 
   [[nodiscard]] bool empty() const noexcept {

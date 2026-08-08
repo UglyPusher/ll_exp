@@ -9,6 +9,7 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 
@@ -26,10 +27,12 @@ struct PriceSegment {
   }
 
   [[nodiscard]] std::uint32_t best_ask_offset() const noexcept {
+    assert(active_mask != 0);
     return static_cast<std::uint32_t>(std::countr_zero(active_mask));
   }
 
   [[nodiscard]] std::uint32_t best_bid_offset() const noexcept {
+    assert(active_mask != 0);
     return 63U - static_cast<std::uint32_t>(std::countl_zero(active_mask));
   }
 

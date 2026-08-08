@@ -4,10 +4,28 @@
  */
 #include <fexma/order_book/order_id_index.hpp>
 
+#include "order_id_index_test_access.hpp"
+
 #include <algorithm>
 #include <vector>
 
 using namespace fexma::order_book;
+
+namespace {
+
+std::vector<OrderId> ids_for_home_bucket(const OrderIdIndex& index,
+                                         std::size_t home_bucket,
+                                         std::size_t count) {
+  std::vector<OrderId> ids;
+  for (OrderId id = 1; ids.size() < count; ++id) {
+    if (OrderIdIndexTestAccess::home_bucket(index, id) == home_bucket) {
+      ids.push_back(id);
+    }
+  }
+  return ids;
+}
+
+} // namespace
 
 int main() {
   OrderIdIndex index(4);
@@ -94,14 +112,41 @@ int main() {
           return 12;
         }
       }
-      if (churn.tombstone_count() != 0 || max_probe > churn.bucket_count()) {
+      if (max_probe > churn.bucket_count()) {
         return 13;
       }
     }
   }
 
-  if (probe_ops == 0 || total_probe == 0 || churn.tombstone_count() != 0) {
+  if (probe_ops == 0 || total_probe == 0) {
     return 14;
+  }
+
+  OrderIdIndex wrap_around(4);
+  const std::size_t last_bucket = wrap_around.bucket_count() - 1U;
+  const std::vector<OrderId> colliding_ids =
+      ids_for_home_bucket(wrap_around, last_bucket, 4);
+  for (std::size_t i = 0; i < colliding_ids.size(); ++i) {
+    if (wrap_around.insert(colliding_ids[i], static_cast<OrderIndex>(i + 1U)) !=
+        IndexInsertStatus::Ok) {
+      return 15;
+    }
+  }
+  if (!wrap_around.erase(colliding_ids[0])) {
+    return 16;
+  }
+  for (std::size_t i = 1; i < colliding_ids.size(); ++i) {
+    if (wrap_around.find(colliding_ids[i]) !=
+        static_cast<OrderIndex>(i + 1U)) {
+      return 17;
+    }
+  }
+  if (!wrap_around.erase(colliding_ids[2]) ||
+      wrap_around.find(colliding_ids[1]) != 2 ||
+      wrap_around.find(colliding_ids[3]) != 4 ||
+      wrap_around.insert(colliding_ids[0], 9) != IndexInsertStatus::Ok ||
+      wrap_around.find(colliding_ids[0]) != 9) {
+    return 18;
   }
 
   return 0;
