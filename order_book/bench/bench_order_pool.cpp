@@ -1,8 +1,9 @@
 /**
  * @file bench_order_pool.cpp
- * @brief Focused OrderPool construction and block emplace/release benchmarks.
+ * @brief Focused OrderPool and intrusive FIFO component benchmarks.
  */
 #include <fexma/order_book/detail/order_pool.hpp>
+#include <fexma/order_book/side_book.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -104,6 +105,10 @@ void print_build_context(OrderCapacity capacity) {
 #endif
   std::cout << "layout: sizeof(Order)=" << sizeof(detail::Order)
             << " alignof(Order)=" << alignof(detail::Order)
+            << " sizeof(PriceLevel)=" << sizeof(PriceLevel)
+            << " alignof(PriceLevel)=" << alignof(PriceLevel)
+            << " sizeof(PriceSegment)=" << sizeof(PriceSegment)
+            << " alignof(PriceSegment)=" << alignof(PriceSegment)
             << " capacity=" << capacity
             << " block_sizes=64,4096,65536" << '\n';
 }
@@ -184,12 +189,108 @@ void bench_bulk_release(OrderCapacity capacity, OrderCapacity block_size) {
   print_runtime("pool_bulk_release_blocks", block_size, stats);
 }
 
+void bench_fifo_append_existing_level(OrderCapacity capacity,
+                                      OrderCapacity block_size) {
+  const std::uint64_t blocks = capacity / block_size;
+  const std::uint64_t operations =
+      blocks * static_cast<std::uint64_t>(block_size);
+
+  OrderPool pool(capacity);
+  SideBook<Side::Ask> asks(0, 127);
+  std::vector<OrderIndex> acquired(static_cast<std::size_t>(operations));
+  std::size_t position = 0;
+
+  const Stats stats = run_blocks(blocks, block_size, [&](std::uint64_t) {
+    for (OrderCapacity i = 0; i < block_size; ++i) {
+      const auto id = static_cast<OrderId>(position + 1U);
+      const OrderIndex slot = pool.emplace(id, id + 1000U, 42, 100, Side::Ask);
+      asks.append(pool, slot);
+      acquired[position++] = slot;
+    }
+  });
+
+  g_sink += asks.best_order(pool);
+  g_sink += asks.order_count();
+  g_sink += asks.total_quantity();
+  print_runtime("fifo_append_existing_level_blocks", block_size, stats);
+}
+
+enum class FifoPosition : std::uint8_t {
+  Head,
+  Middle,
+  Tail
+};
+
+void bench_fifo_unlink(OrderCapacity capacity, OrderCapacity block_size,
+                       FifoPosition position_to_remove) {
+  const OrderCapacity group_capacity = capacity / 3U;
+  const std::uint64_t blocks = group_capacity / block_size;
+  const std::uint64_t operations =
+      blocks * static_cast<std::uint64_t>(block_size);
+
+  OrderPool pool(capacity);
+  SideBook<Side::Bid> bids(0, 127);
+  std::vector<OrderIndex> victims(static_cast<std::size_t>(operations));
+
+  for (std::uint64_t group = 0; group < operations; ++group) {
+    const auto id_base = static_cast<OrderId>(group * 3U + 1U);
+    const OrderIndex head =
+        pool.emplace(id_base, id_base + 1000U, 42, 10, Side::Bid);
+    const OrderIndex middle =
+        pool.emplace(id_base + 1U, id_base + 1001U, 42, 20, Side::Bid);
+    const OrderIndex tail =
+        pool.emplace(id_base + 2U, id_base + 1002U, 42, 30, Side::Bid);
+    bids.append(pool, head);
+    bids.append(pool, middle);
+    bids.append(pool, tail);
+
+    switch (position_to_remove) {
+    case FifoPosition::Head:
+      victims[static_cast<std::size_t>(group)] = head;
+      break;
+    case FifoPosition::Middle:
+      victims[static_cast<std::size_t>(group)] = middle;
+      break;
+    case FifoPosition::Tail:
+      victims[static_cast<std::size_t>(group)] = tail;
+      break;
+    }
+  }
+
+  std::size_t victim_index = 0;
+  const Stats stats = run_blocks(blocks, block_size, [&](std::uint64_t) {
+    for (OrderCapacity i = 0; i < block_size; ++i) {
+      bids.remove(pool, victims[victim_index++]);
+    }
+  });
+
+  g_sink += bids.best_order(pool);
+  g_sink += bids.order_count();
+  g_sink += bids.total_quantity();
+
+  switch (position_to_remove) {
+  case FifoPosition::Head:
+    print_runtime("fifo_unlink_head_blocks", block_size, stats);
+    break;
+  case FifoPosition::Middle:
+    print_runtime("fifo_unlink_middle_blocks", block_size, stats);
+    break;
+  case FifoPosition::Tail:
+    print_runtime("fifo_unlink_tail_blocks", block_size, stats);
+    break;
+  }
+}
+
 void bench_runtime(OrderCapacity capacity) {
   std::cout << "[runtime]\n";
   for (OrderCapacity block_size : {OrderCapacity{64}, OrderCapacity{4096},
                                    OrderCapacity{65536}}) {
     bench_bulk_emplace(capacity, block_size);
     bench_bulk_release(capacity, block_size);
+    bench_fifo_append_existing_level(capacity, block_size);
+    bench_fifo_unlink(capacity, block_size, FifoPosition::Head);
+    bench_fifo_unlink(capacity, block_size, FifoPosition::Middle);
+    bench_fifo_unlink(capacity, block_size, FifoPosition::Tail);
   }
 }
 

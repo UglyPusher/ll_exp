@@ -133,6 +133,80 @@ bool empty_side_has_empty_segment_bitmap() {
          asks.segment_occupancy_word(0) == 0;
 }
 
+bool fifo_unlink_updates_aggregates_once() {
+  OrderPool pool(8);
+  SideBook<Side::Ask> asks(0, 127);
+  const OrderIndex head = make_order(pool, 60, Side::Ask, 42, 10);
+  const OrderIndex middle = make_order(pool, 61, Side::Ask, 42, 20);
+  const OrderIndex tail = make_order(pool, 62, Side::Ask, 42, 30);
+
+  asks.append(pool, head);
+  asks.append(pool, middle);
+  asks.append(pool, tail);
+
+  const PriceLevel& level = asks.segment(0).levels[42];
+  if (asks.order_count() != 3 || asks.total_quantity() != 60 ||
+      level.order_count != 3 || level.total_quantity != 60 ||
+      level.head != head || level.tail != tail) {
+    return false;
+  }
+
+  asks.remove(pool, middle);
+  if (asks.order_count() != 2 || asks.total_quantity() != 40 ||
+      level.order_count != 2 || level.total_quantity != 40 ||
+      level.head != head || level.tail != tail ||
+      pool.get_unchecked(head).next != tail ||
+      pool.get_unchecked(tail).prev != head) {
+    return false;
+  }
+
+  asks.remove(pool, head);
+  if (asks.order_count() != 1 || asks.total_quantity() != 30 ||
+      level.order_count != 1 || level.total_quantity != 30 ||
+      level.head != tail || level.tail != tail ||
+      pool.get_unchecked(tail).prev != invalid_order_index) {
+    return false;
+  }
+
+  asks.remove(pool, tail);
+  return asks.empty() && asks.total_quantity() == 0 &&
+         level.order_count == 0 && level.total_quantity == 0 &&
+         level.head == invalid_order_index &&
+         level.tail == invalid_order_index &&
+         asks.segment(0).active_mask == 0 &&
+         !segment_occupied(asks, 0);
+}
+
+bool released_slot_reuse_has_fresh_fifo_links() {
+  OrderPool pool(2);
+  SideBook<Side::Ask> asks(0, 127);
+  SideBook<Side::Bid> bids(0, 127);
+
+  const OrderIndex first = make_order(pool, 70, Side::Ask, 10, 15);
+  asks.append(pool, first);
+  asks.remove(pool, first);
+  pool.release(first);
+
+  const OrderIndex reused = make_order(pool, 71, Side::Bid, 90, 25);
+  if (reused != first) {
+    return false;
+  }
+
+  const detail::Order& reused_order = pool.get_unchecked(reused);
+  if (reused_order.id != 71 || reused_order.owner_id != 1071 ||
+      reused_order.price != 90 || reused_order.remaining != 25 ||
+      reused_order.side != Side::Bid ||
+      reused_order.prev != invalid_order_index ||
+      reused_order.next != invalid_order_index) {
+    return false;
+  }
+
+  bids.append(pool, reused);
+  return asks.empty() && bids.best_order(pool) == reused &&
+         bids.best_price() == 90 && bids.order_count() == 1 &&
+         bids.total_quantity() == 25;
+}
+
 } // namespace
 
 int main() {
@@ -216,6 +290,12 @@ int main() {
   }
   if (!empty_side_has_empty_segment_bitmap()) {
     return 17;
+  }
+  if (!fifo_unlink_updates_aggregates_once()) {
+    return 18;
+  }
+  if (!released_slot_reuse_has_fresh_fifo_links()) {
+    return 19;
   }
 
   return 0;
