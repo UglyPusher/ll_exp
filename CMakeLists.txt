@@ -13,6 +13,7 @@ add_executable(numa numa.cpp)
 add_executable(affinity affinity.cpp)
 add_executable(cache_locality cache_locality.cpp)
 add_subdirectory(order_book)
+add_subdirectory(matcher)
 
 find_package(Threads REQUIRED)
 target_link_libraries(affinity PRIVATE Threads::Threads)
