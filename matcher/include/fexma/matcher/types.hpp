@@ -38,7 +38,6 @@ struct Command {
 enum class CommandReadStatus : std::uint8_t {
   Ok,
   Empty,
-  Shutdown,
   Fatal
 };
 
@@ -56,6 +55,13 @@ enum class PublishStatus : std::uint8_t {
   Fatal
 };
 
+/**
+ * @brief Result of publishing one matcher event.
+ *
+ * Fatal means the writer can no longer provide its publication contract. The
+ * event may be definitely not accepted or its acceptance may be unknown; after
+ * Fatal the matcher instance is terminal and recovery is external.
+ */
 struct PublishResult {
   PublishStatus status{PublishStatus::Ok};
 
@@ -92,12 +98,12 @@ struct ProcessResult {
 };
 
 enum class EventType : std::uint8_t {
+  None,
   OrderAccepted,
   OrderRejected,
   Trade,
   OrderRested,
-  OrderDone,
-  MatcherFatal
+  OrderDone
 };
 
 enum class RejectReason : std::uint8_t {
@@ -138,7 +144,7 @@ struct OrderRejectedEvent {
 };
 
 struct Event {
-  EventType type{EventType::MatcherFatal};
+  EventType type{EventType::None};
   OrderAcceptedEvent accepted{};
   TradeEvent trade{};
   OrderRestedEvent rested{};

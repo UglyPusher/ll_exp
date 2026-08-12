@@ -4,16 +4,18 @@ This file tracks open design issues for the minimal `matcher` sample.
 
 ## CommandReader
 
-- Decide whether `CommandReadStatus::Shutdown` is enough, or whether shutdown
-  should exist only as an ordered `CommandType::Shutdown` command.
-- Define what `Empty` means for production readers. The matcher currently does
-  no spin-wait policy, pause instruction, sleep, yield, idle callback, or batch
-  drain.
+- Graceful shutdown is now only an ordered `CommandType::Shutdown` command.
+- `CommandReadStatus` is limited to `Ok`, `Empty`, and `Fatal`.
+- `Empty` means polling: the matcher remains in `run()`, performs no state
+  transition, and reads again. The current sample does no pause instruction,
+  sleep, yield, idle callback, or batch drain.
+- Define the concrete production idle strategy: pure spin, pause/backoff,
+  metrics hook, or reader-owned wait policy.
 - Decide whether `read_batch()` is useful. It may help amortize reader overhead
   or drain a ring/WAL page, but it is intentionally not part of the first
   contract.
-- Specify whether `CommandReadStatus::Fatal` should publish a fatal event. The
-  current sample attempts to publish `MatcherFatal`, but ignores the result.
+- `CommandReadStatus::Fatal` returns `RunStatus::Fatal`. Fatal diagnostics are
+  out-of-band runtime/executor responsibility, not matcher event-stream output.
 
 ## EventWriter
 
@@ -22,6 +24,10 @@ This file tracks open design issues for the minimal `matcher` sample.
 - Define the exact meaning of `Ok` for each writer: accepted into an in-memory
   queue, written into mmap, made durable, or made visible to a downstream
   consumer.
+- `Fatal` means the writer can no longer provide its publication contract. The
+  failing event may be definitely not accepted or may have unknown publication
+  status; recovery code must tolerate a valid prefix plus a possibly ambiguous
+  tail.
 - Confirm that a blocking `publish()` is acceptable in the synchronous matcher
   path.
 - After `Fatal`, the matcher is terminal and state recovery is external via

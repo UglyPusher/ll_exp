@@ -10,15 +10,17 @@ on the same machine. They are not a source of portable latency promises.
 | `bench_order_book` | Public API operations, fill cycles, best recompute, churn, and construction/first-touch. |
 | `bench_order_id_index` | Probe behavior, hit/miss paths, clustered deletion, wrap-around, and long churn. |
 | `bench_order_pool` | Pool construction, acquire/release blocks, FIFO append, and FIFO unlink positions. |
+| `bench_matcher` | Minimal matcher command processing over the public OrderBook API. |
 
 Build and run on Windows:
 
 ```powershell
 cmake --preset windows-msvc
-cmake --build --preset windows-msvc-release --target bench_order_book bench_order_id_index bench_order_pool
+cmake --build --preset windows-msvc-release --target bench_order_book bench_order_id_index bench_order_pool bench_matcher
 ..\build\windows-msvc\order_book\Release\bench_order_book.exe
 ..\build\windows-msvc\order_book\Release\bench_order_id_index.exe
 ..\build\windows-msvc\order_book\Release\bench_order_pool.exe
+..\build\windows-msvc\matcher\Release\bench_matcher.exe
 ```
 
 Use Release `/O2` results. Debug numbers do not describe hot-path behavior.
@@ -61,6 +63,19 @@ different machine.
 The segment-distance sweep prints both `segment_count` and `segment_gap`, so a
 change in lookup behavior can be distinguished from setup or configuration
 changes.
+
+## Matcher Scenarios
+
+`bench_matcher` covers the current minimal matcher sample:
+
+- non-crossing limit orders that enter the book as resting liquidity;
+- aggressive limit orders that fully fill one resting maker;
+- aggressive limit orders that partially fill one resting maker;
+- `Matcher::run()` over a reader-backed full-fill command stream.
+
+The harness reports batch-normalized `ns/command` and a separate throughput
+pass. It measures the sample contract, including event publication calls into a
+counting writer, not a durable WAL or network publisher.
 
 ## Index Scenarios
 

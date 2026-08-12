@@ -4,6 +4,8 @@
 
 `Matcher` — это stateful-компонент matching engine, который последовательно читает входные команды через абстрактный интерфейс источника команд, применяет их к своему внутреннему состоянию и публикует результирующие события через абстрактный интерфейс получателя событий.
 
+Документ описывает целевую архитектурную границу компонента. Текущий минимальный sample намеренно реализует только базовую модель `running / stopped / fatal`, один `OrderBook`, limit-order matching и ordered shutdown command; полноценные `MatcherFSM`, auction/halt/resume и несколько книг являются target architecture, а не требованием к первому образцу.
+
 `Matcher` является владельцем **matching state**, но не владельцем **execution infrastructure**.
 
 Он не создаёт поток, не закрепляет его за CPU, не настраивает scheduler, IRQ affinity, isolation, NUMA policy и другие параметры среды исполнения.
@@ -171,11 +173,22 @@ Matcher exclusively owns mutable matching state
 Он получает интерфейс примерно следующего уровня:
 
 ```cpp
+enum class CommandReadStatus : std::uint8_t {
+    Ok,
+    Empty,
+    Fatal
+};
+
+struct CommandReadResult {
+    CommandReadStatus status;
+    Command command;
+};
+
 class ICommandReader {
 public:
     virtual ~ICommandReader() = default;
 
-    virtual Command read_next() = 0;
+    virtual CommandReadResult read_next() = 0;
 };
 ```
 
@@ -212,6 +225,10 @@ Matcher does NOT know:
     "read record N from Command WAL"
 ```
 
+Graceful shutdown не является отдельным статусом reader. Остановка Matcher должна приходить как ordered `CommandType::Shutdown` внутри общего command stream. Это сохраняет ordering относительно всех предыдущих business/control commands.
+
+`Empty` означает polling: команда сейчас недоступна, `Matcher::run()` остаётся активным, не делает state transition и продолжает цикл чтения. Конкретная idle-стратегия — pure spin, pause/backoff, метрики или reader-owned wait policy — задаётся отдельно и не является частью текущего минимального sample.
+
 ---
 
 ## Event output
@@ -225,7 +242,7 @@ class IEventWriter {
 public:
     virtual ~IEventWriter() = default;
 
-    virtual void publish(const Event&) = 0;
+    virtual PublishResult publish(const Event&) noexcept = 0;
 };
 ```
 
@@ -241,6 +258,10 @@ Network publisher
 
 Матчер формирует **семантику событий**, но не владеет механизмом их durability или transport.
 
+`EventWriter::publish()` имеет только два наблюдаемых результата: `Ok` и `Fatal`. Временная нехватка capacity не является ошибкой: writer применяет backpressure и ждёт освобождения места. Поэтому в контракте нет `WouldBlock`, `Retry` или похожих состояний.
+
+`PublishStatus::Fatal` означает, что writer больше не может предоставить свой publication contract. Для конкретного failing event возможны обе ситуации: событие гарантированно не принято или результат публикации неизвестен. После `Fatal` matcher немедленно прекращает дальнейшую обработку команд и `Matcher::run()` возвращает fatal-статус. Откат уже изменённого состояния matcher не требуется: текущий экземпляр считается непригодным для продолжения, а восстановление выполняется внешним runtime через replay от последнего валидного snapshot. Fatal diagnostics являются out-of-band обязанностью runtime/executor, а не частью matcher event stream.
+
 ---
 
 ## Processing loop
@@ -248,17 +269,26 @@ Network publisher
 Концептуально `Matcher::run()` выглядит так:
 
 ```cpp
-void Matcher::run()
+RunResult Matcher::run()
 {
     initialize();
 
-    while (!shutdown_requested()) {
-        Command command = commands_.read_next();
+    while (running()) {
+        CommandReadResult read = commands_.read_next();
 
-        process(command);
+        switch (read.status) {
+            case CommandReadStatus::Ok:
+                process(read.command);
+                break;
+            case CommandReadStatus::Empty:
+                break;
+            case CommandReadStatus::Fatal:
+                return {RunStatus::Fatal};
+        }
     }
 
     finalize();
+    return {RunStatus::Stopped};
 }
 ```
 

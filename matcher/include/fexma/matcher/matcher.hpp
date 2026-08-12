@@ -44,9 +44,6 @@ public:
       }
       case CommandReadStatus::Empty:
         break;
-      case CommandReadStatus::Shutdown:
-        running_ = false;
-        return {RunStatus::Stopped};
       case CommandReadStatus::Fatal:
         return enter_fatal();
       }
@@ -227,9 +224,6 @@ private:
   [[nodiscard]] RunResult enter_fatal() noexcept {
     fatal_ = true;
     running_ = false;
-    Event event{};
-    event.type = EventType::MatcherFatal;
-    (void)events_.publish(event);
     return {RunStatus::Fatal};
   }
 

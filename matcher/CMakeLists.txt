@@ -35,3 +35,7 @@ add_test(NAME test_matcher COMMAND test_matcher)
 add_executable(matcher_basic_usage examples/basic_usage.cpp)
 target_link_libraries(matcher_basic_usage PRIVATE fexma::matcher)
 fexma_matcher_apply_warnings(matcher_basic_usage)
+
+add_executable(bench_matcher bench/bench_matcher.cpp)
+target_link_libraries(bench_matcher PRIVATE fexma::matcher)
+fexma_matcher_apply_warnings(bench_matcher)

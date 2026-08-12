@@ -12,10 +12,10 @@ using namespace fexma::matcher;
 
 namespace {
 
-class EmptyCommandReader {
+class ShutdownCommandReader {
 public:
   [[nodiscard]] CommandReadResult read_next() noexcept {
-    return {CommandReadStatus::Shutdown, {}};
+    return {CommandReadStatus::Ok, {CommandType::Shutdown, {}}};
   }
 };
 
@@ -52,7 +52,7 @@ public:
 }
 
 [[nodiscard]] bool rests_non_crossing_limit() {
-  EmptyCommandReader reader;
+  ShutdownCommandReader reader;
   CollectingEventWriter writer;
   Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
 
@@ -68,7 +68,7 @@ public:
 }
 
 [[nodiscard]] bool matches_fifo_at_resting_price() {
-  EmptyCommandReader reader;
+  ShutdownCommandReader reader;
   CollectingEventWriter writer;
   Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
 
@@ -108,7 +108,7 @@ public:
 }
 
 [[nodiscard]] bool rejects_zero_quantity() {
-  EmptyCommandReader reader;
+  ShutdownCommandReader reader;
   CollectingEventWriter writer;
   Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
 
@@ -123,7 +123,7 @@ public:
 }
 
 [[nodiscard]] bool fatal_publish_stops_matcher() {
-  EmptyCommandReader reader;
+  ShutdownCommandReader reader;
   CollectingEventWriter writer;
   writer.fail_after = 1;
   Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});

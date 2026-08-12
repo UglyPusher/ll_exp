@@ -19,7 +19,7 @@ public:
 
   [[nodiscard]] CommandReadResult read_next() noexcept {
     if (next_ == commands_.size()) {
-      return {CommandReadStatus::Shutdown, {}};
+      return {CommandReadStatus::Ok, {CommandType::Shutdown, {}}};
     }
     return {CommandReadStatus::Ok, commands_[next_++]};
   }
