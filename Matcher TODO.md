@@ -14,8 +14,10 @@ This file tracks open design issues for the minimal `matcher` sample.
 - Decide whether `read_batch()` is useful. It may help amortize reader overhead
   or drain a ring/WAL page, but it is intentionally not part of the first
   contract.
-- `CommandReadStatus::Fatal` returns `RunStatus::Fatal`. Fatal diagnostics are
-  out-of-band runtime/executor responsibility, not matcher event-stream output.
+- `CommandReadStatus::Fatal` makes the matcher terminal and returns
+  `RunStatus::Fatal`. While the event writer remains healthy, the matcher may
+  publish a terminal `MatcherFatal`; runtime/executor reporting remains
+  available out-of-band.
 
 ## EventWriter
 
@@ -30,8 +32,12 @@ This file tracks open design issues for the minimal `matcher` sample.
   tail.
 - Confirm that a blocking `publish()` is acceptable in the synchronous matcher
   path.
-- After `Fatal`, the matcher is terminal and state recovery is external via
-  snapshot plus replay. Diagnostics after fatal still need a policy.
+- After `Fatal`, the matcher is terminal. Recovery is external via the last
+  valid snapshot plus replay of the valid ordered command stream.
+- The high-level diagnostics routing policy is defined: a healthy writer may
+  receive terminal `MatcherFatal`, while `EventWriterFatal` is reported through
+  `RunResult` and out-of-band runtime/executor channels. The exact diagnostic
+  payload, logging, metrics, and runtime reporting format remain open.
 
 ## Order identity and preflight
 
@@ -79,6 +85,9 @@ This file tracks open design issues for the minimal `matcher` sample.
 
 ## Lifecycle and FSM
 
+- `Matcher::run()` is synchronous and blocking. It executes in the
+  caller-prepared thread; matcher creates, configures, pins, and stops no
+  threads. Executor/main/runtime owns that execution infrastructure.
 - The sample has no real market FSM beyond running/stopped/fatal.
 - Auction, halt, resume, warmup, snapshot load, and controlled drain are open.
 - `process()` is public for tests and simple harnesses. Decide whether the

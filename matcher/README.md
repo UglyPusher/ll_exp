@@ -6,6 +6,8 @@
 It owns an `OrderBook`, consumes commands from a caller-provided reader, and
 publishes events through a caller-provided writer. The matcher does not create
 threads, configure CPU affinity, know about WAL files, or own transport.
+`Matcher::run()` is synchronous and blocking; it executes in the caller's
+already-prepared thread.
 
 The hot-path contract is intentionally small:
 
@@ -26,9 +28,11 @@ this sample.
 
 `PublishStatus::Fatal` means the writer can no longer provide its publication
 contract. The failing event may be definitely not accepted or may have unknown
-publication status. The matcher stops immediately; diagnostics are an
-out-of-band responsibility of the runtime/executor, and recovery is performed by
-loading the last valid snapshot and replaying the valid command/event stream.
+publication status. The matcher stops immediately. Because the publication
+channel is no longer reliable, `EventWriterFatal` diagnostics are available
+through `RunResult` and out-of-band runtime/executor reporting, not through a
+`MatcherFatal` event sent to the same writer. Recovery is performed by loading
+the last valid snapshot and replaying the valid ordered command stream.
 
 `OrderId` is assigned upstream before a command reaches the matcher. Within one
 matcher epoch, each new-order command must satisfy `order_id > last_order_id_`.
@@ -36,8 +40,10 @@ After this check passes, the ID is consumed even if the order is later rejected
 for business reasons. A stale, duplicate, or out-of-order `OrderId` is a fatal
 ordered-stream invariant violation, not an `OrderRejected` event. The matcher
 publishes a terminal `MatcherFatal` event for this case because the event writer
-is still considered healthy. `(EpochId, OrderId)` identifies an order globally;
-epoch infrastructure is outside this sample.
+is still considered healthy. The matcher performs no active-book duplicate
+lookup for a new order; the monotonicity check is the duplicate/stale guard.
+`(EpochId, OrderId)` identifies an order globally; epoch infrastructure is
+outside this sample.
 
 `EventWriterFatal` is different: if publishing itself fails, the matcher cannot
 reliably publish a fatal marker through the same writer, so diagnostics are only
@@ -68,8 +74,10 @@ Build and run on Windows:
 
 ```powershell
 cmake --build --preset windows-msvc-release --target bench_matcher
-..\build\windows-msvc\matcher\Release\bench_matcher.exe --cpu 6
+..\build\windows-msvc\matcher\Release\bench_matcher.exe --cpu 2
 ```
+
+Replace `2` with a logical CPU that is present in the process affinity mask.
 
 Useful options:
 

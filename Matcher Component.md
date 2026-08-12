@@ -199,9 +199,11 @@ template<class CommandReader, class EventWriter>
 class Matcher {
 public:
     Matcher(CommandReader& commands,
-            EventWriter& events);
+            EventWriter& events,
+            const OrderBookConfig& book_config);
 
-    void run();
+    [[nodiscard]] RunResult run() noexcept;
+    [[nodiscard]] ProcessResult process(const Command& command) noexcept;
 };
 ```
 
@@ -260,7 +262,9 @@ Network publisher
 
 `EventWriter::publish()` имеет только два наблюдаемых результата: `Ok` и `Fatal`. Временная нехватка capacity не является ошибкой: writer применяет backpressure и ждёт освобождения места. Поэтому в контракте нет `WouldBlock`, `Retry` или похожих состояний.
 
-`PublishStatus::Fatal` означает, что writer больше не может предоставить свой publication contract. Для конкретного failing event возможны обе ситуации: событие гарантированно не принято или результат публикации неизвестен. После `Fatal` matcher немедленно прекращает дальнейшую обработку команд и `Matcher::run()` возвращает fatal-статус. Откат уже изменённого состояния matcher не требуется: текущий экземпляр считается непригодным для продолжения, а восстановление выполняется внешним runtime через replay от последнего валидного snapshot. Fatal diagnostics являются out-of-band обязанностью runtime/executor, а не частью matcher event stream.
+`PublishStatus::Fatal` означает, что writer больше не может предоставить свой publication contract. Для конкретного failing event возможны обе ситуации: событие гарантированно не принято или результат публикации неизвестен. После `Fatal` matcher немедленно прекращает дальнейшую обработку команд и `Matcher::run()` возвращает fatal-статус. Откат уже изменённого состояния matcher не требуется: текущий экземпляр считается непригодным для продолжения, а восстановление выполняется внешним runtime через загрузку последнего валидного snapshot и replay валидного ordered command stream.
+
+Для stream/system invariant failures, включая `NonMonotonicOrderId`, `EventWriter` считается исправным. Matcher может сначала опубликовать terminal `MatcherFatal`, а затем перейти в terminal/fatal state. При `EventWriterFatal` publication channel уже ненадёжен, поэтому Matcher не пытается публиковать `MatcherFatal` через тот же writer. В этом случае причина доступна через `RunResult`, а diagnostics передаются out-of-band средствами runtime/executor.
 
 ---
 
@@ -269,7 +273,7 @@ Network publisher
 Концептуально `Matcher::run()` выглядит так:
 
 ```cpp
-RunResult Matcher::run()
+RunResult Matcher::run() noexcept
 {
     initialize();
 
@@ -277,13 +281,20 @@ RunResult Matcher::run()
         CommandReadResult read = commands_.read_next();
 
         switch (read.status) {
-            case CommandReadStatus::Ok:
-                process(read.command);
+            case CommandReadStatus::Ok: {
+                ProcessResult result = process(read.command);
+                if (result.status == ProcessStatus::Stop) {
+                    return {RunStatus::Stopped};
+                }
+                if (result.status == ProcessStatus::Fatal) {
+                    return {RunStatus::Fatal, result.fatal_reason};
+                }
                 break;
+            }
             case CommandReadStatus::Empty:
                 break;
             case CommandReadStatus::Fatal:
-                return {RunStatus::Fatal};
+                return {RunStatus::Fatal, FatalReason::CommandReaderFatal};
         }
     }
 
@@ -295,21 +306,20 @@ RunResult Matcher::run()
 При этом:
 
 ```cpp
-void Matcher::process(const Command& command)
+ProcessResult Matcher::process(const Command& command) noexcept
 {
     switch (fsm_.state()) {
         case State::Continuous:
-            process_continuous(command);
-            break;
+            return process_continuous(command);
 
         case State::Auction:
-            process_auction(command);
-            break;
+            return process_auction(command);
 
         case State::Halted:
-            process_halted(command);
-            break;
+            return process_halted(command);
     }
+
+    return {ProcessStatus::Fatal};
 }
 ```
 
@@ -345,6 +355,11 @@ writer, потому что publication channel уже ненадёжен.
 После успешной проверки ID считается потреблённым независимо от дальнейшего
 результата обработки: accepted, rejected, fully filled, partially filled или
 rested. Business rejection не откатывает `last_order_id_`.
+
+Для нового ордера Matcher не выполняет дополнительный duplicate lookup по
+активной книге. Проверка монотонности является hot-path guard для duplicate,
+stale и out-of-order ID. Lookup/index по `OrderId`, необходимый операциям над
+существующим ордером, остаётся обязанностью `OrderBook`.
 
 ---
 
@@ -460,17 +475,16 @@ public:
     Matcher(
         CommandReader& command_reader,
         EventWriter& event_writer,
-        const MatcherConfig& config
+        const OrderBookConfig& book_config
     );
 
     Matcher(const Matcher&) = delete;
     Matcher& operator=(const Matcher&) = delete;
 
-    void run();
+    [[nodiscard]] RunResult run() noexcept;
+    [[nodiscard]] ProcessResult process(const Command& command) noexcept;
 
 private:
-    void process(const Command& command);
-
     CommandReader& commands_;
     EventWriter& events_;
 
@@ -484,7 +498,7 @@ private:
 При необходимости можно отдельно оставить primitive для тестирования:
 
 ```cpp
-void process(const Command&);
+[[nodiscard]] ProcessResult process(const Command& command) noexcept;
 ```
 
 Однако production execution path остаётся:
