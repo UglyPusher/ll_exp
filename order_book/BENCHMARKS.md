@@ -68,14 +68,20 @@ changes.
 
 `bench_matcher` covers the current minimal matcher sample:
 
+- OrderBook-only equivalents;
+- `Matcher::process()` with a null writer and with a counting writer;
+- `Matcher::run()` over a reader-backed command stream;
+- a sink writer that performs volatile `g_sink` writes inside `publish()` to
+  estimate instrumentation cost;
 - non-crossing limit orders that enter the book as resting liquidity;
 - aggressive limit orders that fully fill one resting maker;
 - aggressive limit orders that partially fill one resting maker;
 - `Matcher::run()` over a reader-backed full-fill command stream.
 
 The harness reports batch-normalized `ns/command` and a separate throughput
-pass. It measures the sample contract, including event publication calls into a
-counting writer, not a durable WAL or network publisher.
+pass. State is consumed after timed regions for dead-code elimination guards;
+the null writer performs no volatile writes in `publish()`. It measures the
+sample contract, not a durable WAL or network publisher.
 
 ## Index Scenarios
 

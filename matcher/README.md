@@ -35,6 +35,12 @@ items are tracked in [Matcher TODO.md](../Matcher%20TODO.md).
 
 `bench_matcher` measures the current sample contract over prebuilt state:
 
+- OrderBook-only equivalents;
+- `Matcher::process()` with `NullEventWriter`;
+- `Matcher::process()` with `CountingEventWriter`;
+- `Matcher::run()` with reader-backed streams;
+- `SinkEventWriter`, which keeps the old volatile `g_sink` writes inside
+  `publish()` to expose instrumentation cost;
 - non-crossing limit orders that rest;
 - aggressive limit orders that fully fill one maker;
 - aggressive limit orders that partially fill one maker;
