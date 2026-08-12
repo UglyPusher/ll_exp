@@ -1,11 +1,6 @@
 /**
  * @file bench_matcher.cpp
- * @brief Matcher cost-decomposition benchmark harness.
- *
- * The benchmark separates OrderBook-only work, Matcher::process orchestration,
- * EventWriter behavior, and Matcher::run reader-loop overhead. Setup,
- * allocation, command generation, and liquidity preload are outside timed
- * regions. Percentiles are computed from per-batch ns/command samples.
+ * @brief Stabilized matcher cost-decomposition benchmark harness.
  */
 #include <fexma/matcher/matcher.hpp>
 #include <fexma/order_book/order_book.hpp>
@@ -14,10 +9,18 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#endif
 
 using namespace fexma::matcher;
 
@@ -37,14 +40,25 @@ struct Stats {
   double max{};
 };
 
+struct Summary {
+  std::string name;
+  std::vector<Stats> runs;
+};
+
 struct BatchShape {
   std::uint64_t batches;
   std::uint64_t commands_per_batch;
 };
 
+struct Config {
+  BatchShape shape{300, 1000};
+  std::uint64_t warmup_commands{100000};
+  int runs{5};
+  int requested_cpu{-1};
+};
+
 constexpr OrderBookConfig default_config{1, 4096, 400000};
-constexpr BatchShape steady_shape{300, 1000};
-constexpr int benchmark_runs = 5;
+constexpr OrderBookConfig run_batch_config{1, 4096, 2048};
 
 class ShutdownCommandReader {
 public:
@@ -98,6 +112,8 @@ public:
     case EventType::OrderDone:
       ++done;
       break;
+    case EventType::MatcherFatal:
+      break;
     }
     return {PublishStatus::Ok};
   }
@@ -135,6 +151,10 @@ public:
       ++done;
       g_sink += event.done.id;
       break;
+    case EventType::MatcherFatal:
+      g_sink += event.fatal.offending_order_id + event.fatal.last_order_id +
+                static_cast<std::uint64_t>(event.fatal.reason);
+      break;
     }
     return {PublishStatus::Ok};
   }
@@ -151,30 +171,42 @@ public:
   return {CommandType::NewLimit, {id, owner_id, side, price, quantity}};
 }
 
-void print_stats(std::string_view name, int run, const Stats& stats) {
-  std::cout << "matcher name=" << name << " run=" << run
-            << " iterations=" << stats.iterations
-            << " latency_samples=" << stats.latency_samples
-            << " mean_ns/command=" << stats.mean
-            << " commands/s=" << stats.commands_per_second
-            << " p50=" << stats.p50 << " p90=" << stats.p90
-            << " p99=" << stats.p99 << " p99.9=" << stats.p999
-            << " max=" << stats.max << '\n';
+[[nodiscard]] double median(std::vector<double> values) {
+  std::sort(values.begin(), values.end());
+  return values[values.size() / 2U];
+}
+
+[[nodiscard]] double percentile(const std::vector<double>& samples, double p) {
+  const std::size_t index = static_cast<std::size_t>(
+      (static_cast<double>(samples.size() - 1U) * p) / 100.0);
+  return samples[index];
+}
+
+template <typename SetupFn, typename OperationFn>
+void warmup(Config config, SetupFn&& setup, OperationFn&& operation) {
+  auto state = setup();
+  for (std::uint64_t command = 0; command < config.warmup_commands;
+       ++command) {
+    operation(*state, command / config.shape.commands_per_batch,
+              command % config.shape.commands_per_batch);
+  }
 }
 
 template <typename SetupFn, typename OperationFn, typename ConsumeFn>
-Stats measure_scenario(BatchShape shape, SetupFn&& setup,
-                       OperationFn&& operation, ConsumeFn&& consume) {
+Stats measure_scenario(Config config, SetupFn&& setup, OperationFn&& operation,
+                       ConsumeFn&& consume) {
+  warmup(config, setup, operation);
+
   std::vector<double> samples;
-  samples.reserve(static_cast<std::size_t>(shape.batches));
+  samples.reserve(static_cast<std::size_t>(config.shape.batches));
   double total_ns = 0.0;
 
   {
     auto state = setup();
-    for (std::uint64_t batch = 0; batch < shape.batches; ++batch) {
+    for (std::uint64_t batch = 0; batch < config.shape.batches; ++batch) {
       const auto start = std::chrono::steady_clock::now();
-      for (std::uint64_t command = 0; command < shape.commands_per_batch;
-           ++command) {
+      for (std::uint64_t command = 0;
+           command < config.shape.commands_per_batch; ++command) {
         operation(*state, batch, command);
       }
       const auto stop = std::chrono::steady_clock::now();
@@ -182,21 +214,21 @@ Stats measure_scenario(BatchShape shape, SetupFn&& setup,
           std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
               .count());
       total_ns += elapsed;
-      samples.push_back(
-          elapsed / static_cast<double>(shape.commands_per_batch));
+      samples.push_back(elapsed /
+                        static_cast<double>(config.shape.commands_per_batch));
     }
     consume(*state);
   }
 
   const std::uint64_t iterations =
-      shape.batches * shape.commands_per_batch;
+      config.shape.batches * config.shape.commands_per_batch;
   double throughput_ns = 0.0;
   {
     auto state = setup();
     const auto start = std::chrono::steady_clock::now();
-    for (std::uint64_t batch = 0; batch < shape.batches; ++batch) {
-      for (std::uint64_t command = 0; command < shape.commands_per_batch;
-           ++command) {
+    for (std::uint64_t batch = 0; batch < config.shape.batches; ++batch) {
+      for (std::uint64_t command = 0;
+           command < config.shape.commands_per_batch; ++command) {
         operation(*state, batch, command);
       }
     }
@@ -208,30 +240,117 @@ Stats measure_scenario(BatchShape shape, SetupFn&& setup,
   }
 
   std::sort(samples.begin(), samples.end());
-  const auto percentile = [&samples](double p) {
-    const std::size_t index = static_cast<std::size_t>(
-        (static_cast<double>(samples.size() - 1) * p) / 100.0);
-    return samples[index];
-  };
   return {iterations,
-          shape.batches,
+          config.shape.batches,
           total_ns / static_cast<double>(iterations),
           (static_cast<double>(iterations) * 1'000'000'000.0) / throughput_ns,
-          percentile(50.0),
-          percentile(90.0),
-          percentile(99.0),
-          percentile(99.9),
+          percentile(samples, 50.0),
+          percentile(samples, 90.0),
+          percentile(samples, 99.0),
+          percentile(samples, 99.9),
           samples.back()};
 }
 
-template <typename Fn>
-void run_benchmark(std::string_view name, Fn&& make_stats) {
-  for (int run = 1; run <= benchmark_runs; ++run) {
-    print_stats(name, run, make_stats());
+void print_stats(std::string_view name, int run, const Stats& stats) {
+  std::cout << "matcher name=" << name << " run=" << run
+            << " iterations=" << stats.iterations
+            << " latency_samples=" << stats.latency_samples
+            << " mean_ns/command=" << stats.mean
+            << " commands/s=" << stats.commands_per_second
+            << " p50=" << stats.p50 << " p90=" << stats.p90
+            << " p99=" << stats.p99 << " p99.9=" << stats.p999
+            << " max=" << stats.max << '\n';
+}
+
+void print_summary(const std::vector<Summary>& summaries) {
+  std::cout << "summary scenario median_mean min_run_mean max_run_mean"
+            << " median_p50 median_p90 median_p99 median_p99.9\n";
+  for (const Summary& summary : summaries) {
+    std::vector<double> means;
+    std::vector<double> p50s;
+    std::vector<double> p90s;
+    std::vector<double> p99s;
+    std::vector<double> p999s;
+    means.reserve(summary.runs.size());
+    p50s.reserve(summary.runs.size());
+    p90s.reserve(summary.runs.size());
+    p99s.reserve(summary.runs.size());
+    p999s.reserve(summary.runs.size());
+    for (const Stats& stats : summary.runs) {
+      means.push_back(stats.mean);
+      p50s.push_back(stats.p50);
+      p90s.push_back(stats.p90);
+      p99s.push_back(stats.p99);
+      p999s.push_back(stats.p999);
+    }
+    const auto minmax = std::minmax_element(means.begin(), means.end());
+    std::cout << "summary scenario=" << summary.name
+              << " median_mean=" << median(means)
+              << " min_run_mean=" << *minmax.first
+              << " max_run_mean=" << *minmax.second
+              << " median_p50=" << median(p50s)
+              << " median_p90=" << median(p90s)
+              << " median_p99=" << median(p99s)
+              << " median_p99.9=" << median(p999s) << '\n';
   }
 }
 
-void print_build_context() {
+#ifdef _WIN32
+void configure_windows_runtime(const Config& config) {
+  bool pinned = false;
+  DWORD_PTR requested_mask = 0;
+  DWORD_PTR previous_mask = 0;
+  if (config.requested_cpu >= 0) {
+    if (config.requested_cpu < static_cast<int>(sizeof(DWORD_PTR) * 8U)) {
+      requested_mask = DWORD_PTR{1} << config.requested_cpu;
+      previous_mask = SetThreadAffinityMask(GetCurrentThread(), requested_mask);
+      pinned = previous_mask != 0;
+    }
+  }
+
+  if (!SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)) {
+    std::cout << "warning=SetPriorityClass_failed error="
+              << GetLastError() << '\n';
+  }
+  if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+    std::cout << "warning=SetThreadPriority_failed error="
+              << GetLastError() << '\n';
+  }
+
+  LARGE_INTEGER frequency{};
+  (void)QueryPerformanceFrequency(&frequency);
+  DWORD_PTR process_affinity = 0;
+  DWORD_PTR system_affinity = 0;
+  (void)GetProcessAffinityMask(GetCurrentProcess(), &process_affinity,
+                               &system_affinity);
+  const DWORD_PTR effective_thread_affinity = pinned ? requested_mask
+                                                     : process_affinity;
+  std::cout << "requested_cpu=" << config.requested_cpu
+            << " pinning_success=" << (pinned ? "true" : "false")
+            << " requested_affinity=0x" << std::hex << requested_mask
+            << " previous_thread_affinity=0x" << previous_mask
+            << " effective_affinity=0x" << effective_thread_affinity
+            << " process_affinity=0x" << process_affinity
+            << " system_affinity=0x" << system_affinity << std::dec
+            << " current_processor=" << GetCurrentProcessorNumber()
+            << " process_priority=" << GetPriorityClass(GetCurrentProcess())
+            << " thread_priority=" << GetThreadPriority(GetCurrentThread())
+            << " qpc_frequency=" << frequency.QuadPart
+            << " smt_sibling=unknown\n";
+  if (config.requested_cpu >= static_cast<int>(sizeof(DWORD_PTR) * 8U)) {
+    std::cout << "warning=requested_cpu_requires_processor_group_support\n";
+  }
+}
+#else
+void configure_windows_runtime(const Config& config) {
+  std::cout << "requested_cpu=" << config.requested_cpu
+            << " pinning_success=false effective_affinity=unavailable"
+            << " current_processor=unavailable process_priority=unavailable"
+            << " thread_priority=unavailable smt_sibling=unknown\n";
+}
+#endif
+
+void print_build_context(const Config& config) {
 #if defined(_MSC_VER)
   std::cout << "compiler=MSVC _MSC_VER=" << _MSC_VER
             << " _MSC_FULL_VER=" << _MSC_FULL_VER << '\n';
@@ -251,19 +370,26 @@ void print_build_context() {
   std::cout << "NDEBUG=not_defined optimization=/Od\n";
 #endif
   std::cout << "timer=std::chrono::steady_clock"
-            << " runs=" << benchmark_runs
-            << " steady_batches=" << steady_shape.batches
-            << " steady_commands_per_batch="
-            << steady_shape.commands_per_batch << '\n';
+            << " timer_mode=steady"
+            << " warmup_commands=" << config.warmup_commands
+            << " runs=" << config.runs
+            << " batches=" << config.shape.batches
+            << " commands_per_batch=" << config.shape.commands_per_batch
+            << '\n';
   std::cout << "latency_sample_unit=batch_ns_per_command"
-            << " throughput_pass=separate_unsampled_run\n";
+            << " throughput_pass=separate_unsampled_run"
+            << " interleaving=round_robin_by_run\n";
   std::cout << "default_config min_price_tick="
             << default_config.min_price_tick
             << " max_price_tick=" << default_config.max_price_tick
             << " max_orders=" << default_config.max_orders << '\n';
+  std::cout << "run_batch_config max_orders="
+            << run_batch_config.max_orders
+            << " note=run_latency_uses_independent_batch_states\n";
   std::cout << "dce_guard=state_consumed_after_timed_region"
             << " null_writer_no_sink_writes=true"
-            << " sink_writer_has_volatile_publish_writes=true\n";
+            << " sink_writer_has_volatile_publish_writes=true"
+            << " tsc_timer=todo\n";
 }
 
 struct BookState {
@@ -299,10 +425,9 @@ void preload_book_asks(BookState& state, std::uint64_t count,
   }
 }
 
-Stats bench_order_book_non_crossing() {
+Stats bench_order_book_non_crossing(Config config) {
   return measure_scenario(
-      steady_shape,
-      [] { return std::make_unique<BookState>(default_config); },
+      config, [] { return std::make_unique<BookState>(default_config); },
       [](BookState& state, std::uint64_t, std::uint64_t) {
         const OrderId id = state.next_order_id++;
         insert_checked(state.book, id, id + 1000, Side::Bid, 100, 1);
@@ -310,14 +435,14 @@ Stats bench_order_book_non_crossing() {
       consume_book_state);
 }
 
-Stats bench_order_book_full_fill() {
+Stats bench_order_book_full_fill(Config config) {
   return measure_scenario(
-      steady_shape,
-      [] {
+      config,
+      [config] {
         auto state = std::make_unique<BookState>(default_config);
         preload_book_asks(*state,
-                          steady_shape.batches *
-                              steady_shape.commands_per_batch,
+                          config.shape.batches *
+                              config.shape.commands_per_batch,
                           100, 1);
         return state;
       },
@@ -336,16 +461,16 @@ Stats bench_order_book_full_fill() {
       consume_book_state);
 }
 
-Stats bench_order_book_partial_fill() {
+Stats bench_order_book_partial_fill(Config config) {
   return measure_scenario(
-      steady_shape,
-      [] {
+      config,
+      [config] {
         auto state = std::make_unique<BookState>(default_config);
         preload_book_asks(*state, 1, 100,
                           static_cast<Quantity>(
-                              steady_shape.batches *
-                                  steady_shape.commands_per_batch +
-                              1));
+                              config.shape.batches *
+                                  config.shape.commands_per_batch +
+                              config.warmup_commands + 1));
         return state;
       },
       [](BookState& state, std::uint64_t, std::uint64_t) {
@@ -414,9 +539,9 @@ void preload_matcher_asks(ProcessState<Writer>& state, std::uint64_t count,
 }
 
 template <typename Writer>
-Stats bench_matcher_non_crossing() {
+Stats bench_matcher_non_crossing(Config config) {
   return measure_scenario(
-      steady_shape,
+      config,
       [] { return std::make_unique<ProcessState<Writer>>(default_config); },
       [](ProcessState<Writer>& state, std::uint64_t, std::uint64_t) {
         const OrderId id = state.next_order_id++;
@@ -427,14 +552,14 @@ Stats bench_matcher_non_crossing() {
 }
 
 template <typename Writer>
-Stats bench_matcher_full_fill() {
+Stats bench_matcher_full_fill(Config config) {
   return measure_scenario(
-      steady_shape,
-      [] {
+      config,
+      [config] {
         auto state = std::make_unique<ProcessState<Writer>>(default_config);
         preload_matcher_asks(*state,
-                             steady_shape.batches *
-                                 steady_shape.commands_per_batch,
+                             config.shape.batches *
+                                 config.shape.commands_per_batch,
                              100, 1);
         return state;
       },
@@ -447,16 +572,16 @@ Stats bench_matcher_full_fill() {
 }
 
 template <typename Writer>
-Stats bench_matcher_partial_fill() {
+Stats bench_matcher_partial_fill(Config config) {
   return measure_scenario(
-      steady_shape,
-      [] {
+      config,
+      [config] {
         auto state = std::make_unique<ProcessState<Writer>>(default_config);
         preload_matcher_asks(*state, 1, 100,
                              static_cast<Quantity>(
-                                 steady_shape.batches *
-                                     steady_shape.commands_per_batch +
-                                 1));
+                                 config.shape.batches *
+                                     config.shape.commands_per_batch +
+                                 config.warmup_commands + 1));
         return state;
       },
       [](ProcessState<Writer>& state, std::uint64_t, std::uint64_t) {
@@ -514,9 +639,9 @@ std::vector<Command> make_full_fill_commands(std::uint64_t command_count) {
 
 template <typename Writer>
 std::unique_ptr<RunState<Writer>> make_full_fill_run_state(
-    std::uint64_t command_count) {
+    std::uint64_t command_count, const OrderBookConfig& config) {
   auto state = std::make_unique<RunState<Writer>>(
-      make_full_fill_commands(command_count), default_config);
+      make_full_fill_commands(command_count), config);
   for (std::uint64_t i = 0; i < command_count; ++i) {
     const OrderId id = static_cast<OrderId>(i + 1);
     const ProcessResult result =
@@ -529,16 +654,31 @@ std::unique_ptr<RunState<Writer>> make_full_fill_run_state(
 }
 
 template <typename Writer>
-Stats bench_run_full_fill_stream() {
-  constexpr std::uint64_t command_count =
-      steady_shape.batches * steady_shape.commands_per_batch;
-  std::vector<double> samples;
-  samples.reserve(benchmark_runs);
-  double total_ns = 0.0;
-  double throughput_ns = 0.0;
+void warmup_run(Config config) {
+  auto state = make_full_fill_run_state<Writer>(
+      config.shape.commands_per_batch, run_batch_config);
+  const RunResult result = state->matcher.run();
+  if (!result.ok()) {
+    std::abort();
+  }
+  consume_run_state(*state);
+}
 
-  for (int run = 0; run < benchmark_runs; ++run) {
-    auto state = make_full_fill_run_state<Writer>(command_count);
+template <typename Writer>
+Stats bench_run_full_fill_stream(Config config) {
+  warmup_run<Writer>(config);
+
+  std::vector<std::unique_ptr<RunState<Writer>>> batch_states;
+  batch_states.reserve(static_cast<std::size_t>(config.shape.batches));
+  for (std::uint64_t batch = 0; batch < config.shape.batches; ++batch) {
+    batch_states.push_back(make_full_fill_run_state<Writer>(
+        config.shape.commands_per_batch, run_batch_config));
+  }
+
+  std::vector<double> samples;
+  samples.reserve(static_cast<std::size_t>(config.shape.batches));
+  double total_ns = 0.0;
+  for (auto& state : batch_states) {
     const auto start = std::chrono::steady_clock::now();
     const RunResult result = state->matcher.run();
     const auto stop = std::chrono::steady_clock::now();
@@ -549,12 +689,16 @@ Stats bench_run_full_fill_stream() {
         std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start)
             .count());
     total_ns += elapsed;
-    samples.push_back(elapsed / static_cast<double>(command_count));
+    samples.push_back(elapsed /
+                      static_cast<double>(config.shape.commands_per_batch));
     consume_run_state(*state);
   }
 
+  double throughput_ns = 0.0;
   {
-    auto state = make_full_fill_run_state<Writer>(command_count);
+    auto state = make_full_fill_run_state<Writer>(
+        config.shape.batches * config.shape.commands_per_batch,
+        default_config);
     const auto start = std::chrono::steady_clock::now();
     const RunResult result = state->matcher.run();
     const auto stop = std::chrono::steady_clock::now();
@@ -568,61 +712,104 @@ Stats bench_run_full_fill_stream() {
   }
 
   std::sort(samples.begin(), samples.end());
-  const auto percentile = [&samples](double p) {
-    const std::size_t index = static_cast<std::size_t>(
-        (static_cast<double>(samples.size() - 1) * p) / 100.0);
-    return samples[index];
-  };
-  return {command_count * benchmark_runs,
-          benchmark_runs,
-          total_ns / static_cast<double>(command_count * benchmark_runs),
-          (static_cast<double>(command_count) * 1'000'000'000.0) /
-              throughput_ns,
-          percentile(50.0),
-          percentile(90.0),
-          percentile(99.0),
-          percentile(99.9),
+  const std::uint64_t iterations =
+      config.shape.batches * config.shape.commands_per_batch;
+  return {iterations,
+          config.shape.batches,
+          total_ns / static_cast<double>(iterations),
+          (static_cast<double>(iterations) * 1'000'000'000.0) / throughput_ns,
+          percentile(samples, 50.0),
+          percentile(samples, 90.0),
+          percentile(samples, 99.0),
+          percentile(samples, 99.9),
           samples.back()};
+}
+
+struct Scenario {
+  std::string_view name;
+  Stats (*run)(Config);
+};
+
+Config parse_args(int argc, char** argv) {
+  Config config;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--cpu" && i + 1 < argc) {
+      config.requested_cpu = std::atoi(argv[++i]);
+    } else if (arg == "--runs" && i + 1 < argc) {
+      config.runs = std::atoi(argv[++i]);
+    } else if (arg == "--batches" && i + 1 < argc) {
+      config.shape.batches = static_cast<std::uint64_t>(
+          std::strtoull(argv[++i], nullptr, 10));
+    } else if (arg == "--commands-per-batch" && i + 1 < argc) {
+      config.shape.commands_per_batch = static_cast<std::uint64_t>(
+          std::strtoull(argv[++i], nullptr, 10));
+    } else if (arg == "--warmup-commands" && i + 1 < argc) {
+      config.warmup_commands = static_cast<std::uint64_t>(
+          std::strtoull(argv[++i], nullptr, 10));
+    } else if (arg == "--timer" && i + 1 < argc) {
+      const std::string timer = argv[++i];
+      if (timer != "steady") {
+        std::cout << "warning=unsupported_timer requested=" << timer
+                  << " using=steady\n";
+      }
+    }
+  }
+  return config;
 }
 
 } // namespace
 
-int main() {
-  print_build_context();
+int main(int argc, char** argv) {
+  const Config config = parse_args(argc, argv);
+  configure_windows_runtime(config);
+  print_build_context(config);
 
-  run_benchmark("order_book_non_crossing",
-                bench_order_book_non_crossing);
-  run_benchmark("matcher_null_non_crossing",
-                bench_matcher_non_crossing<NullEventWriter>);
-  run_benchmark("matcher_counting_non_crossing",
-                bench_matcher_non_crossing<CountingEventWriter>);
-  run_benchmark("matcher_sink_non_crossing",
-                bench_matcher_non_crossing<SinkEventWriter>);
+  const std::vector<Scenario> scenarios{
+      {"order_book_non_crossing", bench_order_book_non_crossing},
+      {"matcher_null_non_crossing",
+       bench_matcher_non_crossing<NullEventWriter>},
+      {"matcher_counting_non_crossing",
+       bench_matcher_non_crossing<CountingEventWriter>},
+      {"matcher_sink_non_crossing",
+       bench_matcher_non_crossing<SinkEventWriter>},
+      {"order_book_full_fill", bench_order_book_full_fill},
+      {"matcher_null_full_fill",
+       bench_matcher_full_fill<NullEventWriter>},
+      {"matcher_counting_full_fill",
+       bench_matcher_full_fill<CountingEventWriter>},
+      {"matcher_sink_full_fill",
+       bench_matcher_full_fill<SinkEventWriter>},
+      {"order_book_partial_fill", bench_order_book_partial_fill},
+      {"matcher_null_partial_fill",
+       bench_matcher_partial_fill<NullEventWriter>},
+      {"matcher_counting_partial_fill",
+       bench_matcher_partial_fill<CountingEventWriter>},
+      {"matcher_sink_partial_fill",
+       bench_matcher_partial_fill<SinkEventWriter>},
+      {"run_null_full_fill_stream",
+       bench_run_full_fill_stream<NullEventWriter>},
+      {"run_counting_full_fill_stream",
+       bench_run_full_fill_stream<CountingEventWriter>},
+      {"run_sink_full_fill_stream",
+       bench_run_full_fill_stream<SinkEventWriter>},
+  };
 
-  run_benchmark("order_book_full_fill", bench_order_book_full_fill);
-  run_benchmark("matcher_null_full_fill",
-                bench_matcher_full_fill<NullEventWriter>);
-  run_benchmark("matcher_counting_full_fill",
-                bench_matcher_full_fill<CountingEventWriter>);
-  run_benchmark("matcher_sink_full_fill",
-                bench_matcher_full_fill<SinkEventWriter>);
+  std::vector<Summary> summaries;
+  summaries.reserve(scenarios.size());
+  for (const Scenario& scenario : scenarios) {
+    summaries.push_back({std::string(scenario.name), {}});
+  }
 
-  run_benchmark("order_book_partial_fill",
-                bench_order_book_partial_fill);
-  run_benchmark("matcher_null_partial_fill",
-                bench_matcher_partial_fill<NullEventWriter>);
-  run_benchmark("matcher_counting_partial_fill",
-                bench_matcher_partial_fill<CountingEventWriter>);
-  run_benchmark("matcher_sink_partial_fill",
-                bench_matcher_partial_fill<SinkEventWriter>);
+  for (int run = 1; run <= config.runs; ++run) {
+    for (std::size_t index = 0; index < scenarios.size(); ++index) {
+      const Stats stats = scenarios[index].run(config);
+      summaries[index].runs.push_back(stats);
+      print_stats(scenarios[index].name, run, stats);
+    }
+  }
 
-  run_benchmark("run_null_full_fill_stream",
-                bench_run_full_fill_stream<NullEventWriter>);
-  run_benchmark("run_counting_full_fill_stream",
-                bench_run_full_fill_stream<CountingEventWriter>);
-  run_benchmark("run_sink_full_fill_stream",
-                bench_run_full_fill_stream<SinkEventWriter>);
-
+  print_summary(summaries);
   std::cout << "sink=" << g_sink << '\n';
   return 0;
 }

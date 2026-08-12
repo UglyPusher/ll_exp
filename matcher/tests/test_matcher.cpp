@@ -132,8 +132,130 @@ public:
       matcher.process(new_limit(1, 101, Side::Bid, 150, 10));
   const RunResult rerun = matcher.run();
 
-  return processed.status == ProcessStatus::Fatal && matcher.fatal() &&
-         rerun.status == RunStatus::Fatal;
+  return processed.status == ProcessStatus::Fatal &&
+         processed.fatal_reason == FatalReason::EventWriterFatal &&
+         matcher.fatal() &&
+         matcher.fatal_reason() == FatalReason::EventWriterFatal &&
+         rerun.status == RunStatus::Fatal &&
+         rerun.fatal_reason == FatalReason::EventWriterFatal;
+}
+
+[[nodiscard]] bool accepts_strictly_increasing_order_ids() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  const ProcessResult first =
+      matcher.process(new_limit(1, 101, Side::Bid, 150, 1));
+  const ProcessResult second =
+      matcher.process(new_limit(2, 102, Side::Bid, 151, 1));
+  const ProcessResult third =
+      matcher.process(new_limit(3, 103, Side::Bid, 152, 1));
+
+  return first.status == ProcessStatus::Continue &&
+         second.status == ProcessStatus::Continue &&
+         third.status == ProcessStatus::Continue && !matcher.fatal() &&
+         matcher.book().validate_invariants();
+}
+
+[[nodiscard]] bool repeated_order_id_is_fatal() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  (void)matcher.process(new_limit(1, 101, Side::Bid, 150, 1));
+  (void)matcher.process(new_limit(2, 102, Side::Bid, 151, 1));
+  const std::size_t event_count_before = writer.event_count;
+  const ProcessResult repeated =
+      matcher.process(new_limit(2, 202, Side::Bid, 152, 1));
+
+  return repeated.status == ProcessStatus::Fatal &&
+         repeated.fatal_reason == FatalReason::NonMonotonicOrderId &&
+         matcher.fatal() &&
+         matcher.fatal_reason() == FatalReason::NonMonotonicOrderId &&
+         writer.event_count == event_count_before + 1 &&
+         event_type_is(writer, event_count_before, EventType::MatcherFatal) &&
+         writer.events[event_count_before].fatal.reason ==
+             FatalReason::NonMonotonicOrderId &&
+         writer.events[event_count_before].fatal.offending_order_id == 2 &&
+         writer.events[event_count_before].fatal.last_order_id == 2;
+}
+
+[[nodiscard]] bool out_of_order_id_is_fatal() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  (void)matcher.process(new_limit(1, 101, Side::Bid, 150, 1));
+  (void)matcher.process(new_limit(3, 103, Side::Bid, 151, 1));
+  const ProcessResult stale =
+      matcher.process(new_limit(2, 102, Side::Bid, 152, 1));
+
+  return stale.status == ProcessStatus::Fatal &&
+         stale.fatal_reason == FatalReason::NonMonotonicOrderId &&
+         matcher.fatal_reason() == FatalReason::NonMonotonicOrderId &&
+         event_type_is(writer, writer.event_count - 1,
+                       EventType::MatcherFatal) &&
+         writer.events[writer.event_count - 1].fatal.offending_order_id == 2 &&
+         writer.events[writer.event_count - 1].fatal.last_order_id == 3;
+}
+
+[[nodiscard]] bool first_duplicate_pair_is_fatal() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  const ProcessResult first =
+      matcher.process(new_limit(5, 105, Side::Bid, 150, 1));
+  const ProcessResult repeated =
+      matcher.process(new_limit(5, 205, Side::Bid, 151, 1));
+
+  return first.status == ProcessStatus::Continue &&
+         repeated.status == ProcessStatus::Fatal &&
+         repeated.fatal_reason == FatalReason::NonMonotonicOrderId &&
+         matcher.fatal() &&
+         event_type_is(writer, writer.event_count - 1,
+                       EventType::MatcherFatal) &&
+         writer.events[writer.event_count - 1].fatal.offending_order_id == 5 &&
+         writer.events[writer.event_count - 1].fatal.last_order_id == 5;
+}
+
+[[nodiscard]] bool rejected_order_id_is_consumed() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  const ProcessResult rejected =
+      matcher.process(new_limit(10, 110, Side::Bid, 150, 0));
+  const ProcessResult accepted =
+      matcher.process(new_limit(11, 111, Side::Bid, 150, 1));
+
+  return rejected.status == ProcessStatus::Continue &&
+         accepted.status == ProcessStatus::Continue && !matcher.fatal() &&
+         writer.event_count == 3 &&
+         event_type_is(writer, 0, EventType::OrderRejected) &&
+         event_type_is(writer, 1, EventType::OrderAccepted) &&
+         event_type_is(writer, 2, EventType::OrderRested);
+}
+
+[[nodiscard]] bool rejected_order_id_cannot_repeat() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+
+  const ProcessResult rejected =
+      matcher.process(new_limit(10, 110, Side::Bid, 150, 0));
+  const std::size_t event_count_before = writer.event_count;
+  const ProcessResult repeated =
+      matcher.process(new_limit(10, 210, Side::Bid, 150, 0));
+
+  return rejected.status == ProcessStatus::Continue &&
+         repeated.status == ProcessStatus::Fatal &&
+         repeated.fatal_reason == FatalReason::NonMonotonicOrderId &&
+         writer.event_count == event_count_before + 1 &&
+         event_type_is(writer, event_count_before, EventType::MatcherFatal) &&
+         writer.events[event_count_before].fatal.reason ==
+             FatalReason::NonMonotonicOrderId;
 }
 
 } // namespace
@@ -149,6 +271,24 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!fatal_publish_stops_matcher()) {
+    return EXIT_FAILURE;
+  }
+  if (!accepts_strictly_increasing_order_ids()) {
+    return EXIT_FAILURE;
+  }
+  if (!repeated_order_id_is_fatal()) {
+    return EXIT_FAILURE;
+  }
+  if (!out_of_order_id_is_fatal()) {
+    return EXIT_FAILURE;
+  }
+  if (!first_duplicate_pair_is_fatal()) {
+    return EXIT_FAILURE;
+  }
+  if (!rejected_order_id_is_consumed()) {
+    return EXIT_FAILURE;
+  }
+  if (!rejected_order_id_cannot_repeat()) {
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

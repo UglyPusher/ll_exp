@@ -35,13 +35,23 @@ This file tracks open design issues for the minimal `matcher` sample.
 
 ## Order identity and preflight
 
-- `OrderBook` does not expose `contains(OrderId)`. The matcher cannot preflight
-  duplicate active order IDs without attempting to insert a resting remainder.
+- `OrderId` is assigned upstream. Within one matcher epoch, new-order IDs must
+  be strictly monotonically increasing: `order_id > last_order_id_`.
+- `(EpochId, OrderId)` identifies an order globally. Epoch infrastructure is
+  not part of the current sample.
+- A stale, duplicate, or out-of-order new-order ID is a fatal stream invariant
+  violation, not a business rejection.
+- Stream/system invariant fatal reasons such as `NonMonotonicOrderId` publish a
+  terminal `MatcherFatal` event while the event writer is still healthy.
+- `EventWriterFatal` cannot publish a reliable fatal event through the failed
+  writer; runtime/executor diagnostics remain out-of-band for that case.
+- The matcher does not perform an active-book duplicate lookup for new orders;
+  monotonicity is the hot-path duplicate/stale guard.
 - In the current sample, if an order partially executes and then cannot rest its
   remaining quantity, the matcher treats that as fatal because trade events have
   already been published and there is no rollback.
-- Decide whether incoming taker order IDs must be globally unique even when the
-  order fully executes and never rests.
+- Business rejection does not roll back `last_order_id_`; the ID is consumed
+  after the monotonicity check passes.
 
 ## Matching semantics
 

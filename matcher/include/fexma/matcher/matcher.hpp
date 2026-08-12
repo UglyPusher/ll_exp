@@ -26,7 +26,7 @@ public:
 
   [[nodiscard]] RunResult run() noexcept {
     if (fatal_) {
-      return {RunStatus::Fatal};
+      return {RunStatus::Fatal, fatal_reason_};
     }
 
     while (running_) {
@@ -38,14 +38,14 @@ public:
           return {RunStatus::Stopped};
         }
         if (processed.status == ProcessStatus::Fatal) {
-          return {RunStatus::Fatal};
+          return {RunStatus::Fatal, processed.fatal_reason};
         }
         break;
       }
       case CommandReadStatus::Empty:
         break;
       case CommandReadStatus::Fatal:
-        return enter_fatal();
+        return enter_fatal(FatalReason::CommandReaderFatal, {}, {});
       }
     }
 
@@ -54,7 +54,7 @@ public:
 
   [[nodiscard]] ProcessResult process(const Command& command) noexcept {
     if (fatal_) {
-      return {ProcessStatus::Fatal};
+      return {ProcessStatus::Fatal, fatal_reason_};
     }
 
     switch (command.type) {
@@ -66,13 +66,17 @@ public:
     }
 
     if (!publish_rejected({}, RejectReason::UnknownCommand)) {
-      return {ProcessStatus::Fatal};
+      return {ProcessStatus::Fatal, fatal_reason_};
     }
     return {ProcessStatus::Continue};
   }
 
   [[nodiscard]] bool fatal() const noexcept {
     return fatal_;
+  }
+
+  [[nodiscard]] FatalReason fatal_reason() const noexcept {
+    return fatal_reason_;
   }
 
   [[nodiscard]] const order_book::OrderBook& book() const noexcept {
@@ -82,15 +86,21 @@ public:
 private:
   [[nodiscard]] ProcessResult process_new_limit(
       const NewLimitOrder& incoming) noexcept {
+    if (incoming.id <= last_order_id_) {
+      return enter_fatal_process(FatalReason::NonMonotonicOrderId,
+                                 incoming.id, last_order_id_);
+    }
+    last_order_id_ = incoming.id;
+
     if (incoming.quantity == 0) {
       if (!publish_rejected(incoming.id, RejectReason::InvalidQuantity)) {
-        return {ProcessStatus::Fatal};
+        return {ProcessStatus::Fatal, fatal_reason_};
       }
       return {ProcessStatus::Continue};
     }
 
     if (!publish_accepted(incoming.id)) {
-      return {ProcessStatus::Fatal};
+      return {ProcessStatus::Fatal, fatal_reason_};
     }
 
     Quantity remaining = incoming.quantity;
@@ -106,7 +116,7 @@ private:
       const Quantity executed =
           (std::min)(remaining, resting->remaining);
       if (!publish_trade(incoming, *resting, executed)) {
-        return {ProcessStatus::Fatal};
+        return {ProcessStatus::Fatal, fatal_reason_};
       }
 
       remaining -= executed;
@@ -114,20 +124,20 @@ private:
       if (resting_remaining == 0) {
         const order_book::EraseResult erased = book_.erase(resting->id);
         if (!erased.ok() || !publish_done(resting->id)) {
-          return {ProcessStatus::Fatal};
+          return {ProcessStatus::Fatal, fatal_reason_};
         }
       } else {
         const order_book::SetRemainingResult changed =
             book_.set_remaining(resting->id, resting_remaining);
         if (!changed.ok()) {
-          return {ProcessStatus::Fatal};
+          return {ProcessStatus::Fatal, fatal_reason_};
         }
       }
     }
 
     if (remaining == 0) {
       if (!publish_done(incoming.id)) {
-        return {ProcessStatus::Fatal};
+        return {ProcessStatus::Fatal, fatal_reason_};
       }
       return {ProcessStatus::Continue};
     }
@@ -138,15 +148,16 @@ private:
     if (!inserted.ok()) {
       if (remaining == incoming.quantity) {
         if (!publish_rejected(incoming.id, RejectReason::BookInsertFailed)) {
-          return {ProcessStatus::Fatal};
+          return {ProcessStatus::Fatal, fatal_reason_};
         }
         return {ProcessStatus::Continue};
       }
-      return {ProcessStatus::Fatal};
+      return enter_fatal_process(FatalReason::BookInsertFailedAfterExecution,
+                                 incoming.id, last_order_id_);
     }
 
     if (!publish_rested(incoming, remaining)) {
-      return {ProcessStatus::Fatal};
+      return {ProcessStatus::Fatal, fatal_reason_};
     }
     return {ProcessStatus::Continue};
   }
@@ -211,27 +222,63 @@ private:
     return publish(event);
   }
 
+  [[nodiscard]] bool publish_matcher_fatal(FatalReason reason,
+                                           OrderId offending_order_id,
+                                           OrderId last_order_id) noexcept {
+    Event event{};
+    event.type = EventType::MatcherFatal;
+    event.fatal.reason = reason;
+    event.fatal.offending_order_id = offending_order_id;
+    event.fatal.last_order_id = last_order_id;
+    return publish(event);
+  }
+
   [[nodiscard]] bool publish(const Event& event) noexcept {
     const PublishResult published = events_.publish(event);
     if (!published.ok()) {
       fatal_ = true;
       running_ = false;
+      fatal_reason_ = FatalReason::EventWriterFatal;
       return false;
     }
     return true;
   }
 
-  [[nodiscard]] RunResult enter_fatal() noexcept {
+  [[nodiscard]] RunResult enter_fatal(FatalReason reason,
+                                      OrderId offending_order_id,
+                                      OrderId last_order_id) noexcept {
+    if (reason != FatalReason::EventWriterFatal &&
+        !publish_matcher_fatal(reason, offending_order_id, last_order_id)) {
+      return {RunStatus::Fatal, fatal_reason_};
+    }
+    mark_fatal(reason);
+    return {RunStatus::Fatal, fatal_reason_};
+  }
+
+  [[nodiscard]] ProcessResult enter_fatal_process(
+      FatalReason reason, OrderId offending_order_id,
+      OrderId last_order_id) noexcept {
+    if (reason != FatalReason::EventWriterFatal &&
+        !publish_matcher_fatal(reason, offending_order_id, last_order_id)) {
+      return {ProcessStatus::Fatal, fatal_reason_};
+    }
+    mark_fatal(reason);
+    return {ProcessStatus::Fatal, fatal_reason_};
+  }
+
+  void mark_fatal(FatalReason reason) noexcept {
     fatal_ = true;
     running_ = false;
-    return {RunStatus::Fatal};
+    fatal_reason_ = reason;
   }
 
   CommandReader& commands_;
   EventWriter& events_;
   order_book::OrderBook book_;
+  OrderId last_order_id_{};
   bool running_{true};
   bool fatal_{false};
+  FatalReason fatal_reason_{FatalReason::None};
 };
 
 } // namespace fexma::matcher

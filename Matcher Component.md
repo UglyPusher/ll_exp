@@ -317,6 +317,35 @@ void Matcher::process(const Command& command)
 
 Для одного экземпляра Matcher отсутствует конкурентная обработка двух команд.
 
+Для команд, создающих новый ордер, `OrderId` назначается upstream до попадания
+в Matcher. В рамках одной matcher epoch входящие `OrderId` должны быть строго
+монотонно возрастающими:
+
+```cpp
+command.order_id > last_order_id_
+```
+
+Пара `(EpochId, OrderId)` является глобальным идентификатором ордера. Текущий
+sample не вводит epoch infrastructure; `last_order_id_` относится только к
+текущей epoch.
+
+Нарушение монотонности не является пользовательской или business ошибкой и не
+публикует `OrderRejected`. Это fatal-нарушение ordered command stream:
+
+```text
+order_id <= last_order_id_ -> Fatal
+```
+
+Так как при `NonMonotonicOrderId` сам `EventWriter` не является источником
+ошибки, Matcher публикует terminal `MatcherFatal` event с причиной,
+offending `OrderId` и последним принятым `last_order_id_`, а затем завершает
+обработку. Для `EventWriterFatal` такой marker не публикуется через тот же
+writer, потому что publication channel уже ненадёжен.
+
+После успешной проверки ID считается потреблённым независимо от дальнейшего
+результата обработки: accepted, rejected, fully filled, partially filled или
+rested. Business rejection не откатывает `last_order_id_`.
+
 ---
 
 ## FSM и lifecycle потока — разные вещи

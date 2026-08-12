@@ -75,8 +75,17 @@ enum class RunStatus : std::uint8_t {
   Fatal
 };
 
+enum class FatalReason : std::uint8_t {
+  None,
+  CommandReaderFatal,
+  EventWriterFatal,
+  NonMonotonicOrderId,
+  BookInsertFailedAfterExecution
+};
+
 struct RunResult {
   RunStatus status{RunStatus::Stopped};
+  FatalReason fatal_reason{FatalReason::None};
 
   [[nodiscard]] bool ok() const noexcept {
     return status == RunStatus::Stopped;
@@ -91,6 +100,7 @@ enum class ProcessStatus : std::uint8_t {
 
 struct ProcessResult {
   ProcessStatus status{ProcessStatus::Continue};
+  FatalReason fatal_reason{FatalReason::None};
 
   [[nodiscard]] bool fatal() const noexcept {
     return status == ProcessStatus::Fatal;
@@ -103,7 +113,8 @@ enum class EventType : std::uint8_t {
   OrderRejected,
   Trade,
   OrderRested,
-  OrderDone
+  OrderDone,
+  MatcherFatal
 };
 
 enum class RejectReason : std::uint8_t {
@@ -143,6 +154,12 @@ struct OrderRejectedEvent {
   RejectReason reason{RejectReason::None};
 };
 
+struct MatcherFatalEvent {
+  FatalReason reason{FatalReason::None};
+  OrderId offending_order_id{};
+  OrderId last_order_id{};
+};
+
 struct Event {
   EventType type{EventType::None};
   OrderAcceptedEvent accepted{};
@@ -150,6 +167,7 @@ struct Event {
   OrderRestedEvent rested{};
   OrderDoneEvent done{};
   OrderRejectedEvent rejected{};
+  MatcherFatalEvent fatal{};
 };
 
 } // namespace fexma::matcher

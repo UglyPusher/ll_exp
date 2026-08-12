@@ -73,6 +73,9 @@ changes.
 - `Matcher::run()` over a reader-backed command stream;
 - a sink writer that performs volatile `g_sink` writes inside `publish()` to
   estimate instrumentation cost;
+- round-robin interleaving of scenario runs;
+- per-scenario warmup before measured passes;
+- optional benchmark-thread CPU pinning through `--cpu N`;
 - non-crossing limit orders that enter the book as resting liquidity;
 - aggressive limit orders that fully fill one resting maker;
 - aggressive limit orders that partially fill one resting maker;
@@ -82,6 +85,12 @@ The harness reports batch-normalized `ns/command` and a separate throughput
 pass. State is consumed after timed regions for dead-code elimination guards;
 the null writer performs no volatile writes in `publish()`. It measures the
 sample contract, not a durable WAL or network publisher.
+
+The `run_*` latency pass reports one sample per fixed-size command stream
+batch. Batch states are constructed and preloaded before timing; only
+`Matcher::run()` is timed. Summary lines include median run mean, min/max run
+mean, and median p50/p90/p99/p99.9 to keep raw outliers visible while making OS
+interruption noise easier to spot.
 
 ## Index Scenarios
 
