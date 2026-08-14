@@ -50,7 +50,7 @@ reliably publish a fatal marker through the same writer, so diagnostics are only
 available through `RunResult` and out-of-band runtime reporting.
 
 This is a base sample, not a complete exchange matching engine. Open design
-items are tracked in [Matcher TODO.md](../Matcher%20TODO.md).
+items are tracked in [Matcher TODO.md](../../thoughts/exchange/matcher/Matcher%20TODO.md).
 
 ## Benchmark
 

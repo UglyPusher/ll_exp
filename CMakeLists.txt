@@ -8,12 +8,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-add_executable(tp tp.cpp)
-add_executable(numa numa.cpp)
-add_executable(affinity affinity.cpp)
-add_executable(cache_locality cache_locality.cpp)
-add_subdirectory(order_book)
-add_subdirectory(matcher)
+add_executable(tp utilities/tp.cpp)
+add_executable(numa utilities/numa.cpp)
+add_executable(affinity utilities/affinity.cpp)
+add_executable(cache_locality utilities/cache_locality.cpp)
+add_subdirectory(exchange/order_book)
+add_subdirectory(exchange/matcher)
 
 find_package(Threads REQUIRED)
 target_link_libraries(affinity PRIVATE Threads::Threads)
