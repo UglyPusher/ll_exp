@@ -12,6 +12,7 @@ add_executable(tp utilities/tp.cpp)
 add_executable(numa utilities/numa.cpp)
 add_executable(affinity utilities/affinity.cpp)
 add_executable(cache_locality utilities/cache_locality.cpp)
+add_subdirectory(exchange/wal)
 add_subdirectory(exchange/order_book)
 add_subdirectory(exchange/matcher)
 
