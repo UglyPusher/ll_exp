@@ -39,7 +39,7 @@ template <std::size_t N>
   return true;
 }
 
-[[nodiscard]] bool hides_accepted_payload_until_durable() {
+[[nodiscard]] bool exposes_only_the_durable_range() {
   const auto path = test_path("fexma_wal_frontier.wal");
   std::filesystem::remove(path);
 
@@ -47,25 +47,41 @@ template <std::size_t N>
   if (!wal.open(path, {16, 4, 64}).ok()) {
     return false;
   }
+  if (wal.read_cursor() != 0 || wal.durable_cursor() != 0 ||
+      wal.write_cursor() != 0) {
+    return false;
+  }
 
   const auto input = payload<16>(7);
   std::array<std::byte, 16> output{};
-  const EnqueueResult enqueued = wal.try_enqueue(input);
-  const DequeueResult before_durable = wal.try_dequeue(output);
-  const DurabilityResult persisted = wal.make_durable();
-  const DequeueResult dequeued = wal.try_dequeue(output);
+  const PushResult pushed = wal.try_push(input);
+  if (!pushed.ok() || pushed.sequence != 1 || wal.read_cursor() != 0 ||
+      wal.durable_cursor() != 0 || wal.write_cursor() != 1) {
+    return false;
+  }
+
+  const PopResult before_durable = wal.try_pop(output);
+  if (before_durable.status != PopStatus::Empty) {
+    return false;
+  }
+
+  const DurabilityResult persisted = wal.advance_durable();
+  if (!persisted.ok() || persisted.durable_cursor != 1 ||
+      persisted.records != 1 || wal.read_cursor() != 0 ||
+      wal.durable_cursor() != 1 || wal.write_cursor() != 1) {
+    return false;
+  }
+
+  const PopResult popped = wal.try_pop(output);
   const CloseResult closed = wal.close();
 
   std::filesystem::remove(path);
-  return enqueued.ok() && enqueued.sequence == 1 &&
-         wal.accepted_sequence() == 1 &&
-         before_durable.status == DequeueStatus::Empty && persisted.ok() &&
-         persisted.durable_sequence == 1 && persisted.records == 1 &&
-         dequeued.ok() && dequeued.sequence == 1 && equal(input, output) &&
-         closed.ok();
+  return popped.ok() && popped.sequence == 1 && equal(input, output) &&
+         wal.read_cursor() == 1 && wal.durable_cursor() == 1 &&
+         wal.write_cursor() == 1 && closed.ok();
 }
 
-[[nodiscard]] bool applies_backpressure_and_reuses_released_slot() {
+[[nodiscard]] bool applies_backpressure_and_reuses_read_slot() {
   const auto path = test_path("fexma_wal_capacity.wal");
   std::filesystem::remove(path);
 
@@ -77,24 +93,24 @@ template <std::size_t N>
   const auto first = payload<8>(1);
   const auto second = payload<8>(20);
   const auto third = payload<8>(40);
-  if (!wal.try_enqueue(first).ok() || !wal.try_enqueue(second).ok() ||
-      wal.try_enqueue(third).status != EnqueueStatus::Full ||
-      !wal.make_durable(1).ok()) {
+  if (!wal.try_push(first).ok() || !wal.try_push(second).ok() ||
+      wal.try_push(third).status != PushStatus::Full ||
+      !wal.advance_durable(1).ok()) {
     return false;
   }
 
   std::array<std::byte, 8> output{};
-  if (!wal.try_dequeue(output).ok() || !equal(first, output)) {
+  if (!wal.try_pop(output).ok() || !equal(first, output)) {
     return false;
   }
 
-  const EnqueueResult reused = wal.try_enqueue(third);
-  const DurabilityResult persisted = wal.make_durable();
+  const PushResult reused = wal.try_push(third);
+  const DurabilityResult persisted = wal.advance_durable();
   const CloseResult closed = wal.close();
   std::filesystem::remove(path);
 
   return reused.ok() && reused.sequence == 3 && persisted.ok() &&
-         persisted.durable_sequence == 3 && persisted.records == 2 &&
+         persisted.durable_cursor == 3 && persisted.records == 2 &&
          closed.ok();
 }
 
@@ -109,17 +125,17 @@ template <std::size_t N>
 
   std::array<std::byte, 8> wrong_size{};
   const auto input = payload<16>(3);
-  const EnqueueResult wrong_enqueue = wal.try_enqueue(wrong_size);
-  const DequeueResult wrong_dequeue = wal.try_dequeue(wrong_size);
-  const EnqueueResult accepted = wal.try_enqueue(input);
+  const PushResult wrong_push = wal.try_push(wrong_size);
+  const PopResult wrong_pop = wal.try_pop(wrong_size);
+  const PushResult pushed = wal.try_push(input);
   const CloseResult pending = wal.close();
-  const DurabilityResult persisted = wal.make_durable();
+  const DurabilityResult persisted = wal.advance_durable();
   const CloseResult closed = wal.close();
 
   std::filesystem::remove(path);
-  return wrong_enqueue.status == EnqueueStatus::InvalidPayloadSize &&
-         wrong_dequeue.status == DequeueStatus::InvalidPayloadSize &&
-         accepted.ok() && pending.status == CloseStatus::PendingAccepted &&
+  return wrong_push.status == PushStatus::InvalidPayloadSize &&
+         wrong_pop.status == PopStatus::InvalidPayloadSize && pushed.ok() &&
+         pending.status == CloseStatus::PendingDurability &&
          persisted.ok() && closed.ok();
 }
 
@@ -135,15 +151,15 @@ template <std::size_t N>
 
   const auto first = payload<12>(10);
   const auto second = payload<12>(30);
-  if (!wal.try_enqueue(first).ok() || !wal.try_enqueue(second).ok() ||
-      !wal.make_durable(1).ok()) {
+  if (!wal.try_push(first).ok() || !wal.try_push(second).ok() ||
+      !wal.advance_durable(1).ok()) {
     return false;
   }
 
   const std::uint64_t one_record_size =
       sizeof(FileHeader) + aligned_record_size(config);
   if (std::filesystem::file_size(path) != one_record_size ||
-      !wal.make_durable().ok() || !wal.close().ok()) {
+      !wal.advance_durable().ok() || !wal.close().ok()) {
     return false;
   }
 
@@ -188,10 +204,10 @@ template <std::size_t N>
 } // namespace
 
 int main() {
-  if (!hides_accepted_payload_until_durable()) {
+  if (!exposes_only_the_durable_range()) {
     return 1;
   }
-  if (!applies_backpressure_and_reuses_released_slot()) {
+  if (!applies_backpressure_and_reuses_read_slot()) {
     return 2;
   }
   if (!rejects_wrong_payload_size_and_pending_close()) {

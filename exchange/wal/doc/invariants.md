@@ -2,64 +2,71 @@
 
 ## Idea In 15 Seconds
 
-The accepted frontier never moves past available pool capacity, the durable
-frontier never moves past accepted data, and the consumer never sees data above
-the durable frontier.
-
-## Frontier Invariants
-
-Let `released` be the internal sequence of the last slot returned to the pool.
-It is implementation bookkeeping, not a public consumer checkpoint.
+The WAL is a bounded ring governed by three monotonically increasing cursors:
 
 ```text
-released <= durable_sequence <= accepted_sequence
-accepted_sequence - released <= capacity
+read <= durable <= write
+write - read <= capacity
 ```
 
-- WAL physical sequences start at `1` and are contiguous.
-- Only the producer advances `accepted_sequence`.
-- Only the durability actor advances `durable_sequence`.
-- Only successful dequeue advances internal `released` state.
-- A slot is overwritten only after its previous sequence was released.
-- A payload is dequeued at most once by the current single consumer.
+## Cursor Invariants
+
+- Cursors start at zero and move forward only.
+- Only the producer writes `write`.
+- Only the durability mechanism writes `durable`.
+- Only the reader writes `read`.
+- `[read, durable)` is readable.
+- `[durable, write)` is queued but not readable.
+- A position `p` maps to slot `p % capacity`.
+- A position `p` maps to physical sequence `p + 1`.
+- The producer reuses a slot only after `read` has passed its previous position.
+
+## Publication Invariants
+
+- Producer payload copy happens before publishing the new `write`.
+- Durability reads only positions below an acquired `write`.
+- Physical persistence and stream flush happen before publishing `durable`.
+- Reader reads only positions below an acquired `durable`.
+- Reader payload copy happens before publishing the new `read`.
+
+The ordering chain is:
+
+```text
+producer --write--> durability --durable--> reader --read--> producer
+```
 
 ## Memory Invariants
 
-- The pool contains exactly `capacity` slots.
-- Every slot starts at an address aligned to `alignment`.
+- The ring contains exactly `capacity` slots.
+- Every slot begins at an address aligned to `alignment`.
 - Slot stride is `payload_size` rounded up to `alignment`.
-- Every enqueue and dequeue span is exactly `payload_size` bytes.
-- Producer copy completes before the accepted frontier publishes the sequence.
-- Durability reads only accepted slots.
-- Consumer reads only durable slots.
-- Consumer copy completes before the slot is released for producer reuse.
+- Push and pop spans are exactly `payload_size` bytes.
+- No queue operation allocates or retains caller spans.
 
 ## Physical File Invariants
 
 - The file begins with one `FileHeader`.
 - `FileHeader` stores format magic, version, compiled header size, payload size,
   record alignment, initial next sequence, header CRC, and reserved bytes.
-- The current create path writes `FileHeader::next_sequence == 1` and does not
-  update the field later.
-- Each physical record contains `RecordHeader`, one payload, and zero padding to
-  the configured alignment.
-- `RecordHeader` stores format magic, version, compiled header size, WAL physical
-  sequence, payload CRC32, and header CRC32.
-- Physical record sequences are written contiguously from `1`.
-- Pool capacity and queue release state are not stored in the file format.
+- The create path writes `FileHeader::next_sequence == 1` and does not update it.
+- Each record contains `RecordHeader`, one payload, and zero padding to the
+  configured alignment.
+- Record headers contain physical sequence, payload CRC32, and header CRC32.
+- Records are written contiguously in physical sequence order from one.
+- Capacity and cursor positions are not stored in the file format.
 
 ## Failure Invariants
 
-- A failed write or flush does not advance `durable_sequence`.
-- A payload above `durable_sequence` is never delivered.
-- After an I/O failure, producer and durability operations fail closed.
-- `close()` does not discard accepted, non-durable records during an ordinary
-  successful call; it reports `PendingAccepted` and leaves the WAL open.
+- Failed write or flush does not advance `durable`.
+- A position at or above `durable` is never returned by `try_pop()`.
+- After an I/O failure, push and durability operations fail closed.
+- `close()` does not silently discard `[durable, write)`; it returns
+  `PendingDurability` and leaves the WAL open.
 
 ## Open Contracts
 
 - OS-level crash durability beyond `std::ostream::flush()`.
-- Recovery, file validation, and reconstruction of queued records at startup.
-- Truncation of a partial final physical record.
-- Sequence overflow.
-- Behaviour outside the one-producer, one-durability-actor, one-consumer model.
+- Recovery and reconstruction of cursors from an existing WAL file.
+- Validation or truncation of a partial final physical record.
+- Cursor overflow.
+- Multiple writers of the same cursor.

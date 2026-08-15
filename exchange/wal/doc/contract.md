@@ -2,94 +2,94 @@
 
 ## Idea In 15 Seconds
 
-The WAL is a bounded queue whose visibility is controlled by durability. A
-producer copies opaque fixed-size bytes into memory. A durability actor persists
-them in order. A consumer receives only records already covered by the durable
-frontier.
-
-The file is a persistence mechanism behind the queue, not the consumer API.
-
-## Terminology
-
-- `payload` - opaque bytes supplied by the caller, always `payload_size` long.
-- `pool slot` - one aligned, reusable in-memory storage element.
-- `record` - physical record header plus one payload in the WAL file.
-- `WAL file` - file header followed by physical records.
-- `accepted_sequence` - highest payload copied into the in-memory queue.
-- `durable_sequence` - highest contiguous accepted sequence completed by the
-  current durability policy.
-
-There is no public `consumed_sequence`. Successful dequeue returns that one pool
-slot for reuse. It is not a durable consumer checkpoint and carries no domain
-meaning.
-
-## Ownership And Lifetime
-
-The WAL allocates and owns `capacity` aligned pool slots during `open()`. It
-releases them during `close()` or destruction. No queue operation allocates.
-
-The caller owns spans passed to `try_enqueue()` and `try_dequeue()`.
-
-- `try_enqueue()` copies from the input span before returning.
-- `try_dequeue()` copies into the output span before returning.
-- The WAL does not retain either span or access caller memory after return.
-
-This is a synchronous span contract. No async span lifetime is defined.
-
-## Queue State
-
-Each sequence passes through these states in order:
+The WAL is an ordinary bounded FIFO with `read` and `write` cursors plus a
+`durable` cursor between them.
 
 ```text
-free slot -> accepted -> durable -> dequeued/released -> free slot
+read <= durable <= write
 ```
 
-`try_enqueue()` returns `Ok` after the payload copy is complete and the accepted
-frontier is published. The result contains the WAL-assigned physical sequence.
-It makes no durability claim.
+The reader treats `durable`, not `write`, as the end of the readable queue. The
+durability mechanism persists `[durable, write)` and moves `durable` forward.
 
-`try_enqueue()` returns `Full` when all pool slots contain accepted records that
-have not yet been dequeued. Backpressure is immediate; the call does not wait.
+## Cursors
 
-`try_dequeue()` returns `Empty` when no durable, not-yet-dequeued payload exists.
-Accepted records above the durable frontier remain invisible.
+All cursors are absolute zero-based positions and are exclusive boundaries:
+
+- `read` is the position of the next payload to pop;
+- `durable` is one past the last payload available to the reader;
+- `write` is the position where the producer will push the next payload.
+
+The queue contains `[read, write)`. Its readable part is `[read, durable)`. Its
+not-yet-durable part is `[durable, write)`.
+
+Physical WAL sequence is derived from position and starts at one:
+
+```text
+sequence = position + 1
+```
+
+It has no domain meaning.
+
+## Payload And Ownership
+
+A payload is exactly `payload_size` opaque bytes. The WAL does not know command,
+event, matcher, schema, consumer, or domain sequence semantics.
+
+The WAL owns `capacity` aligned ring slots allocated during `open()`. Queue
+operations do not allocate.
+
+The caller owns spans passed to `try_push()` and `try_pop()`:
+
+- `try_push()` finishes copying from the span before it advances `write`;
+- `try_pop()` finishes copying into the span before it advances `read`;
+- the WAL does not retain either span after the synchronous call returns.
+
+## Push
+
+`try_push()` writes at `write % capacity`. It returns `Full` when
+`write - read == capacity`; it never waits for space.
+
+Success advances `write` and returns the physical sequence. Success means only
+that the payload is in the in-memory queue. It makes no durability claim.
 
 ## Durability
 
-`make_durable(max_records)` selects up to `max_records` contiguous accepted
-records immediately after `durable_sequence`. It writes their physical records
-in sequence order and calls `std::ostream::flush()` once for the selected range.
+`advance_durable(max_records)` selects up to `max_records` positions from
+`[durable, write)`, writes their physical records in order, and calls
+`std::ostream::flush()` once.
 
-On success it atomically advances `durable_sequence` to the end of that range.
-A return with `records == 0` is successful and leaves the frontier unchanged.
-
-On write or flush failure it returns `IoError`, does not advance the durable
-frontier, and places the instance in an I/O-failed state. Further enqueue and
-durability attempts report `IoError`. Recovery from a partial physical write is
-not implemented.
+Only after all selected writes and the flush succeed does it publish the new
+`durable` cursor. On failure it returns `IoError`, leaves `durable` unchanged,
+and makes later push and durability calls fail closed.
 
 The current durability policy is exactly C++ stream flush. The implementation
-does not call `fsync`, `FlushFileBuffers`, or an equivalent OS API, so
-power-loss and kernel-crash durability are open contracts.
+does not call `fsync`, `FlushFileBuffers`, or an equivalent OS API. Stronger
+crash durability remains an open contract.
 
-## Roles And Concurrency
+## Pop
 
-The current contract permits exactly one caller for each role:
+`try_pop()` returns `Empty` when `read == durable`, even when `durable < write`.
+Otherwise it copies the payload at `read % capacity`, advances `read`, and
+returns the physical sequence.
 
-- producer calls `try_enqueue()`;
-- durability actor calls `make_durable()`;
-- consumer calls `try_dequeue()`.
+Advancing `read` permits the producer to reuse that ring slot. It is local queue
+mechanics, not a durable acknowledgement or domain consumer checkpoint.
 
-The three roles may execute on different threads. Publication between roles uses
-release/acquire frontiers. `open()` and `close()` require external quiescence and
-must not overlap queue operations. Multiple producers, durability actors, or
-consumers are outside the contract.
+## Concurrency
+
+The current contract permits one caller per moving cursor:
+
+- one producer advances `write`;
+- one durability mechanism caller advances `durable`;
+- one reader advances `read`.
+
+These roles may run on separate threads. Cursor publication uses release/acquire
+ordering. `open()` and `close()` require all queue activity to be stopped.
 
 ## Close
 
-`close()` returns `PendingAccepted` while accepted records remain above the
-durable frontier and leaves the WAL open. Durable records do not have to be
-dequeued before close.
+`close()` returns `PendingDurability` while `durable != write` and leaves the WAL
+open. Already durable payloads do not have to be popped before close.
 
-The destructor closes the file and releases memory but does not make pending
-records durable.
+Destruction releases resources but does not advance durability.

@@ -34,7 +34,7 @@ struct OpenResult {
   [[nodiscard]] bool ok() const noexcept { return status == OpenStatus::Ok; }
 };
 
-enum class EnqueueStatus : std::uint8_t {
+enum class PushStatus : std::uint8_t {
   Ok,
   Full,
   InvalidPayloadSize,
@@ -42,11 +42,11 @@ enum class EnqueueStatus : std::uint8_t {
   Closed
 };
 
-struct EnqueueResult {
-  EnqueueStatus status{EnqueueStatus::Closed};
+struct PushResult {
+  PushStatus status{PushStatus::Closed};
   std::uint64_t sequence{};
 
-  [[nodiscard]] bool ok() const noexcept { return status == EnqueueStatus::Ok; }
+  [[nodiscard]] bool ok() const noexcept { return status == PushStatus::Ok; }
 };
 
 enum class DurabilityStatus : std::uint8_t {
@@ -57,7 +57,7 @@ enum class DurabilityStatus : std::uint8_t {
 
 struct DurabilityResult {
   DurabilityStatus status{DurabilityStatus::Closed};
-  std::uint64_t durable_sequence{};
+  std::uint64_t durable_cursor{};
   std::uint32_t records{};
 
   [[nodiscard]] bool ok() const noexcept {
@@ -65,23 +65,23 @@ struct DurabilityResult {
   }
 };
 
-enum class DequeueStatus : std::uint8_t {
+enum class PopStatus : std::uint8_t {
   Ok,
   Empty,
   InvalidPayloadSize,
   Closed
 };
 
-struct DequeueResult {
-  DequeueStatus status{DequeueStatus::Closed};
+struct PopResult {
+  PopStatus status{PopStatus::Closed};
   std::uint64_t sequence{};
 
-  [[nodiscard]] bool ok() const noexcept { return status == DequeueStatus::Ok; }
+  [[nodiscard]] bool ok() const noexcept { return status == PopStatus::Ok; }
 };
 
 enum class CloseStatus : std::uint8_t {
   Ok,
-  PendingAccepted,
+  PendingDurability,
   IoError,
   AlreadyClosed
 };

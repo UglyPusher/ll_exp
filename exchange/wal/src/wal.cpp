@@ -115,9 +115,9 @@ OpenResult Wal::open(const std::filesystem::path& path,
   }
 
   slot_stride_ = stride;
-  accepted_sequence_.store(0, std::memory_order_relaxed);
-  durable_sequence_.store(0, std::memory_order_relaxed);
-  released_sequence_.store(0, std::memory_order_relaxed);
+  read_.store(0, std::memory_order_relaxed);
+  durable_.store(0, std::memory_order_relaxed);
+  write_.store(0, std::memory_order_relaxed);
   io_failed_.store(false, std::memory_order_relaxed);
 
   FileHeader header{};
@@ -141,96 +141,64 @@ OpenResult Wal::open(const std::filesystem::path& path,
   return {OpenStatus::Ok};
 }
 
-EnqueueResult Wal::try_enqueue(std::span<const std::byte> payload) noexcept {
-  if (!open_.load(std::memory_order_acquire)) {
-    return {EnqueueStatus::Closed, 0};
-  }
-  if (payload.size() != config_.payload_size) {
-    return {EnqueueStatus::InvalidPayloadSize, 0};
-  }
-  if (io_failed_.load(std::memory_order_acquire)) {
-    return {EnqueueStatus::IoError, 0};
+PushResult Wal::try_push(std::span<const std::byte> payload) noexcept {
+  const PushStatus status = check_push(payload);
+  if (status != PushStatus::Ok) {
+    return {status, 0};
   }
 
-  const std::uint64_t accepted =
-      accepted_sequence_.load(std::memory_order_relaxed);
-  const std::uint64_t released =
-      released_sequence_.load(std::memory_order_acquire);
-  if ((accepted - released) == config_.capacity) {
-    return {EnqueueStatus::Full, 0};
+  const auto block = try_acquire_writable_block();
+  if (!block) {
+    return {PushStatus::Full, 0};
   }
 
-  const std::uint64_t sequence = accepted + 1u;
-  std::memcpy(slot(sequence), payload.data(), payload.size());
-  accepted_sequence_.store(sequence, std::memory_order_release);
-  return {EnqueueStatus::Ok, sequence};
+  block->fill(payload);
+  publish(*block);
+  return {PushStatus::Ok, block->sequence()};
 }
 
-DurabilityResult Wal::make_durable(std::uint32_t max_records) noexcept {
-  if (!open_.load(std::memory_order_acquire)) {
-    return {DurabilityStatus::Closed, durable_sequence(), 0};
-  }
-  if (io_failed_.load(std::memory_order_relaxed)) {
-    return {DurabilityStatus::IoError, durable_sequence(), 0};
+DurabilityResult Wal::advance_durable(std::uint32_t max_records) noexcept {
+  const DurabilityStatus status = check_durability();
+  if (status != DurabilityStatus::Ok) {
+    return {status, durable_cursor(), 0};
   }
 
-  const std::uint64_t durable =
-      durable_sequence_.load(std::memory_order_relaxed);
-  const std::uint64_t accepted =
-      accepted_sequence_.load(std::memory_order_acquire);
-  const std::uint64_t available = accepted - durable;
-  const std::uint64_t count = std::min<std::uint64_t>(available, max_records);
-  if (count == 0) {
-    return {DurabilityStatus::Ok, durable, 0};
+  const PositionRange pending = pending_range(max_records);
+  if (pending.empty()) {
+    return {DurabilityStatus::Ok, pending.begin, 0};
   }
 
-  const std::uint64_t target = durable + count;
-  for (std::uint64_t sequence = durable + 1u; sequence <= target; ++sequence) {
-    if (!write_record(sequence, slot(sequence))) {
-      io_failed_.store(true, std::memory_order_release);
-      return {DurabilityStatus::IoError, durable, 0};
-    }
+  if (!persist(pending)) {
+    return fail_durability(pending);
   }
 
-  stream_.flush();
-  if (!stream_) {
-    io_failed_.store(true, std::memory_order_release);
-    return {DurabilityStatus::IoError, durable, 0};
-  }
-
-  durable_sequence_.store(target, std::memory_order_release);
-  return {DurabilityStatus::Ok, target, static_cast<std::uint32_t>(count)};
+  publish_durable(pending);
+  return {DurabilityStatus::Ok, pending.end, pending.size()};
 }
 
-DequeueResult Wal::try_dequeue(std::span<std::byte> payload) noexcept {
-  if (!open_.load(std::memory_order_acquire)) {
-    return {DequeueStatus::Closed, 0};
-  }
-  if (payload.size() != config_.payload_size) {
-    return {DequeueStatus::InvalidPayloadSize, 0};
+PopResult Wal::try_pop(std::span<std::byte> payload) noexcept {
+  const PopStatus status = check_pop(payload);
+  if (status != PopStatus::Ok) {
+    return {status, 0};
   }
 
-  const std::uint64_t released =
-      released_sequence_.load(std::memory_order_relaxed);
-  const std::uint64_t durable =
-      durable_sequence_.load(std::memory_order_acquire);
-  if (released == durable) {
-    return {DequeueStatus::Empty, 0};
+  const auto block = try_acquire_readable_block();
+  if (!block) {
+    return {PopStatus::Empty, 0};
   }
 
-  const std::uint64_t sequence = released + 1u;
-  std::memcpy(payload.data(), slot(sequence), payload.size());
-  released_sequence_.store(sequence, std::memory_order_release);
-  return {DequeueStatus::Ok, sequence};
+  block->copy_to(payload);
+  release(*block);
+  return {PopStatus::Ok, block->sequence()};
 }
 
 CloseResult Wal::close() noexcept {
   if (!open_.load(std::memory_order_acquire)) {
     return {CloseStatus::AlreadyClosed};
   }
-  if (accepted_sequence_.load(std::memory_order_acquire) !=
-      durable_sequence_.load(std::memory_order_acquire)) {
-    return {CloseStatus::PendingAccepted};
+  if (write_.load(std::memory_order_acquire) !=
+      durable_.load(std::memory_order_acquire)) {
+    return {CloseStatus::PendingDurability};
   }
 
   open_.store(false, std::memory_order_release);
@@ -246,21 +214,142 @@ bool Wal::is_open() const noexcept {
 
 const WalConfig& Wal::config() const noexcept { return config_; }
 
-std::uint64_t Wal::accepted_sequence() const noexcept {
-  return accepted_sequence_.load(std::memory_order_acquire);
+std::uint64_t Wal::read_cursor() const noexcept {
+  return read_.load(std::memory_order_acquire);
 }
 
-std::uint64_t Wal::durable_sequence() const noexcept {
-  return durable_sequence_.load(std::memory_order_acquire);
+std::uint64_t Wal::durable_cursor() const noexcept {
+  return durable_.load(std::memory_order_acquire);
 }
 
-std::byte* Wal::slot(std::uint64_t sequence) noexcept {
-  const std::size_t index = static_cast<std::size_t>((sequence - 1u) % config_.capacity);
+std::uint64_t Wal::write_cursor() const noexcept {
+  return write_.load(std::memory_order_acquire);
+}
+
+void Wal::WritableBlock::fill(
+    std::span<const std::byte> payload) const noexcept {
+  std::memcpy(bytes.data(), payload.data(), payload.size());
+}
+
+std::uint64_t Wal::WritableBlock::sequence() const noexcept {
+  return position + 1u;
+}
+
+void Wal::ReadableBlock::copy_to(std::span<std::byte> payload) const noexcept {
+  std::memcpy(payload.data(), bytes.data(), payload.size());
+}
+
+std::uint64_t Wal::ReadableBlock::sequence() const noexcept {
+  return position + 1u;
+}
+
+bool Wal::PositionRange::empty() const noexcept { return begin == end; }
+
+std::uint32_t Wal::PositionRange::size() const noexcept {
+  return static_cast<std::uint32_t>(end - begin);
+}
+
+PushStatus Wal::check_push(std::span<const std::byte> payload) const noexcept {
+  if (!open_.load(std::memory_order_acquire)) {
+    return PushStatus::Closed;
+  }
+  if (payload.size() != config_.payload_size) {
+    return PushStatus::InvalidPayloadSize;
+  }
+  if (io_failed_.load(std::memory_order_acquire)) {
+    return PushStatus::IoError;
+  }
+  return PushStatus::Ok;
+}
+
+std::optional<Wal::WritableBlock> Wal::try_acquire_writable_block() noexcept {
+  const std::uint64_t write = write_.load(std::memory_order_relaxed);
+  const std::uint64_t read = read_.load(std::memory_order_acquire);
+  if ((write - read) == config_.capacity) {
+    return std::nullopt;
+  }
+
+  return WritableBlock{
+      write, std::span<std::byte>{slot(write), config_.payload_size}};
+}
+
+void Wal::publish(const WritableBlock& block) noexcept {
+  write_.store(block.position + 1u, std::memory_order_release);
+}
+
+DurabilityStatus Wal::check_durability() const noexcept {
+  if (!open_.load(std::memory_order_acquire)) {
+    return DurabilityStatus::Closed;
+  }
+  if (io_failed_.load(std::memory_order_relaxed)) {
+    return DurabilityStatus::IoError;
+  }
+  return DurabilityStatus::Ok;
+}
+
+Wal::PositionRange
+Wal::pending_range(std::uint32_t max_records) const noexcept {
+  const std::uint64_t durable = durable_.load(std::memory_order_relaxed);
+  const std::uint64_t write = write_.load(std::memory_order_acquire);
+  const std::uint64_t available = write - durable;
+  const std::uint64_t count = std::min<std::uint64_t>(available, max_records);
+  return {durable, durable + count};
+}
+
+bool Wal::persist(PositionRange range) noexcept {
+  for (std::uint64_t position = range.begin; position < range.end; ++position) {
+    if (!write_record(position + 1u, slot(position))) {
+      return false;
+    }
+  }
+
+  stream_.flush();
+  return static_cast<bool>(stream_);
+}
+
+DurabilityResult Wal::fail_durability(PositionRange range) noexcept {
+  io_failed_.store(true, std::memory_order_release);
+  return {DurabilityStatus::IoError, range.begin, 0};
+}
+
+void Wal::publish_durable(PositionRange range) noexcept {
+  durable_.store(range.end, std::memory_order_release);
+}
+
+PopStatus Wal::check_pop(std::span<std::byte> payload) const noexcept {
+  if (!open_.load(std::memory_order_acquire)) {
+    return PopStatus::Closed;
+  }
+  if (payload.size() != config_.payload_size) {
+    return PopStatus::InvalidPayloadSize;
+  }
+  return PopStatus::Ok;
+}
+
+std::optional<Wal::ReadableBlock> Wal::try_acquire_readable_block() noexcept {
+  const std::uint64_t read = read_.load(std::memory_order_relaxed);
+  const std::uint64_t durable = durable_.load(std::memory_order_acquire);
+  if (read == durable) {
+    return std::nullopt;
+  }
+
+  return ReadableBlock{
+      read, std::span<const std::byte>{slot(read), config_.payload_size}};
+}
+
+void Wal::release(const ReadableBlock& block) noexcept {
+  read_.store(block.position + 1u, std::memory_order_release);
+}
+
+std::byte* Wal::slot(std::uint64_t position) noexcept {
+  const std::size_t index =
+      static_cast<std::size_t>(position % config_.capacity);
   return storage_ + (index * slot_stride_);
 }
 
-const std::byte* Wal::slot(std::uint64_t sequence) const noexcept {
-  const std::size_t index = static_cast<std::size_t>((sequence - 1u) % config_.capacity);
+const std::byte* Wal::slot(std::uint64_t position) const noexcept {
+  const std::size_t index =
+      static_cast<std::size_t>(position % config_.capacity);
   return storage_ + (index * slot_stride_);
 }
 
@@ -279,8 +368,8 @@ bool Wal::write_record(std::uint64_t sequence,
   std::uint32_t remaining = padding_size(config_);
   const std::array<std::byte, default_alignment> zeros{};
   while (remaining != 0) {
-    const std::uint32_t chunk =
-        std::min<std::uint32_t>(remaining, zeros.size());
+    const std::uint32_t chunk = std::min(
+        remaining, static_cast<std::uint32_t>(zeros.size()));
     if (!write_exact(stream_, {zeros.data(), chunk})) {
       return false;
     }

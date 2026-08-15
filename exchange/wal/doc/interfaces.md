@@ -2,8 +2,8 @@
 
 ## Idea In 15 Seconds
 
-One object exposes three non-blocking roles over the same fixed-size payload
-queue: enqueue, durability progression, and durable dequeue.
+The API is a bounded FIFO with push, pop, and one operation that advances the
+durable cursor.
 
 ```cpp
 class Wal {
@@ -11,17 +11,18 @@ public:
   OpenResult open(const std::filesystem::path& path,
                   const WalConfig& config) noexcept;
 
-  EnqueueResult try_enqueue(std::span<const std::byte> payload) noexcept;
+  PushResult try_push(std::span<const std::byte> payload) noexcept;
 
-  DurabilityResult make_durable(
+  DurabilityResult advance_durable(
       std::uint32_t max_records = UINT32_MAX) noexcept;
 
-  DequeueResult try_dequeue(std::span<std::byte> payload) noexcept;
+  PopResult try_pop(std::span<std::byte> payload) noexcept;
 
   CloseResult close() noexcept;
 
-  std::uint64_t accepted_sequence() const noexcept;
-  std::uint64_t durable_sequence() const noexcept;
+  std::uint64_t read_cursor() const noexcept;
+  std::uint64_t durable_cursor() const noexcept;
+  std::uint64_t write_cursor() const noexcept;
 };
 ```
 
@@ -36,46 +37,42 @@ struct WalConfig {
 ```
 
 `payload_size` and `capacity` must be non-zero. `alignment` must be a power of
-two and at least `alignof(void*)`. `open()` allocates the entire pool and creates
-a new truncated WAL file. Opening an existing file is not implemented.
+two and at least `alignof(void*)`. `open()` allocates the complete ring and
+creates a new truncated WAL file.
 
-## Producer
+## Push
 
-`try_enqueue()` performs one bounded memory copy and publishes the next physical
-sequence. It returns:
+`try_push()` returns:
 
-- `Ok` with the assigned sequence;
-- `Full` when no pool slot can be reused;
+- `Ok` with the physical sequence after copying and advancing `write`;
+- `Full` when `write - read == capacity`;
 - `InvalidPayloadSize` for a span of the wrong size;
-- `IoError` after the durability path has failed;
+- `IoError` after persistence has failed;
 - `Closed` when the WAL is not open.
 
-## Durability Actor
+## Advance Durable
 
-`make_durable(limit)` persists at most `limit` records. One successful call uses
-one stream flush for the selected range. Its result reports the resulting
-durable frontier and the number of newly durable records.
+`advance_durable(limit)` processes at most `limit` positions from
+`[durable, write)`. Its result reports the resulting `durable_cursor` and the
+number of positions advanced. An empty range is a successful no-op.
 
-This method is where a stronger durability backend can later be substituted.
-It is not a producer append operation and it does not expose payload semantics.
+The current implementation writes physical records and performs one stream
+flush per non-empty call. A stronger persistence mechanism can replace that
+detail without changing the three-cursor queue model.
 
-## Consumer
+## Pop
 
-`try_dequeue()` copies the oldest durable payload and releases its pool slot in
-the same synchronous call. It returns:
+`try_pop()` returns:
 
-- `Ok` with the physical sequence;
-- `Empty` when the durable range contains no available payload;
+- `Ok` with the physical sequence after copying and advancing `read`;
+- `Empty` when `read == durable`;
 - `InvalidPayloadSize` for a span of the wrong size;
 - `Closed` when the WAL is not open.
 
-The current copy-out API deliberately has no long-lived read lease. Therefore a
-successful return is also the exact point at which the internal slot may be
-reused. Durable consumer acknowledgements and replay checkpoints belong to a
-future, separate contract.
+There is no read lease or acknowledgement API. The output copy and slot release
+are one synchronous operation.
 
 ## Shutdown
 
-`close()` returns `PendingAccepted` and leaves the instance open if accepted
-records still need durability processing. Otherwise it closes the physical file,
-releases the pool, and returns either `Ok` or `IoError` from file close.
+`close()` returns `PendingDurability` if `durable != write`. Otherwise it closes
+the physical file, releases the ring, and returns `Ok` or `IoError`.
