@@ -2,7 +2,7 @@
 
 /**
  * @file types.hpp
- * @brief Public types for the fixed-payload durable queue.
+ * @brief Public types for the fixed-payload WAL frontier ring.
  */
 
 #include <cstdint>
@@ -20,6 +20,12 @@ struct WalConfig {
   std::uint32_t alignment{default_alignment};
 };
 
+struct WalSnapshot {
+  std::uint64_t tail{};
+  std::uint64_t durable{};
+  std::uint64_t head{};
+};
+
 enum class OpenStatus : std::uint8_t {
   Ok,
   InvalidConfig,
@@ -34,7 +40,7 @@ struct OpenResult {
   [[nodiscard]] bool ok() const noexcept { return status == OpenStatus::Ok; }
 };
 
-enum class PushStatus : std::uint8_t {
+enum class PublishStatus : std::uint8_t {
   Ok,
   Full,
   InvalidPayloadSize,
@@ -42,11 +48,13 @@ enum class PushStatus : std::uint8_t {
   Closed
 };
 
-struct PushResult {
-  PushStatus status{PushStatus::Closed};
+struct PublishResult {
+  PublishStatus status{PublishStatus::Closed};
   std::uint64_t sequence{};
 
-  [[nodiscard]] bool ok() const noexcept { return status == PushStatus::Ok; }
+  [[nodiscard]] bool ok() const noexcept {
+    return status == PublishStatus::Ok;
+  }
 };
 
 enum class DurabilityStatus : std::uint8_t {
@@ -57,7 +65,7 @@ enum class DurabilityStatus : std::uint8_t {
 
 struct DurabilityResult {
   DurabilityStatus status{DurabilityStatus::Closed};
-  std::uint64_t durable_cursor{};
+  std::uint64_t durable_frontier{};
   std::uint32_t records{};
 
   [[nodiscard]] bool ok() const noexcept {
@@ -65,18 +73,20 @@ struct DurabilityResult {
   }
 };
 
-enum class PopStatus : std::uint8_t {
+enum class ConsumeStatus : std::uint8_t {
   Ok,
   Empty,
   InvalidPayloadSize,
   Closed
 };
 
-struct PopResult {
-  PopStatus status{PopStatus::Closed};
+struct ConsumeResult {
+  ConsumeStatus status{ConsumeStatus::Closed};
   std::uint64_t sequence{};
 
-  [[nodiscard]] bool ok() const noexcept { return status == PopStatus::Ok; }
+  [[nodiscard]] bool ok() const noexcept {
+    return status == ConsumeStatus::Ok;
+  }
 };
 
 enum class CloseStatus : std::uint8_t {

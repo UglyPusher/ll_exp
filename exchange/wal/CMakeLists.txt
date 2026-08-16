@@ -1,4 +1,5 @@
 add_library(fexma_wal STATIC
+  src/physical_wal_file.cpp
   src/wal.cpp
 )
 
@@ -17,6 +18,7 @@ function(fexma_wal_apply_warnings target_name)
       /W4
       /permissive-
       /EHsc
+      /FS
       $<$<CONFIG:Release>:/O2>
     )
   else()
@@ -31,7 +33,8 @@ endfunction()
 
 fexma_wal_apply_warnings(fexma_wal)
 
-add_executable(test_wal_queue tests/test_wal_queue.cpp)
-target_link_libraries(test_wal_queue PRIVATE fexma::wal)
-fexma_wal_apply_warnings(test_wal_queue)
-add_test(NAME test_wal_queue COMMAND test_wal_queue)
+add_executable(test_wal_frontier_ring tests/test_wal_frontier_ring.cpp)
+target_link_libraries(test_wal_frontier_ring PRIVATE fexma::wal)
+target_include_directories(test_wal_frontier_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+fexma_wal_apply_warnings(test_wal_frontier_ring)
+add_test(NAME test_wal_frontier_ring COMMAND test_wal_frontier_ring)
