@@ -31,6 +31,7 @@ enum class OpenStatus : std::uint8_t {
   InvalidConfig,
   AllocationFailed,
   IoError,
+  FileAlreadyExists,
   AlreadyOpen
 };
 
@@ -91,6 +92,7 @@ struct ConsumeResult {
 
 enum class CloseStatus : std::uint8_t {
   Ok,
+  PendingConsumption,
   PendingDurability,
   IoError,
   AlreadyClosed

@@ -61,3 +61,6 @@ No frontier operation uses `seq_cst`.
 - No position at or above `durable` is returned by the consumer.
 - I/O failure stops producer and durability progress, but not reading below the
   existing durable frontier.
+- `close()` never releases storage while `tail != durable`.
+- After an I/O failure, `close()` returns `PendingConsumption` until durable
+  backlog is consumed, then releases resources and returns `IoError`.

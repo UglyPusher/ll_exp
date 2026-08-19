@@ -60,6 +60,15 @@ iostream buffering:
 One non-empty logical batch receives one physical sync. The durable frontier is a
 publication of that completed sync, not of append completion alone.
 
+File creation is exclusive (`CREATE_NEW` on Windows, `O_CREAT | O_EXCL` on
+POSIX). Existing files are not truncated because recovery is not implemented.
+
+Physical headers are serialized field-by-field in canonical little-endian byte
+order. Header CRCs are computed over those serialized bytes with the
+corresponding header CRC field set to zero. The file header stores
+`records_offset`, and zero padding fills the gap between the canonical file
+header and the first record so every record starts at an aligned offset.
+
 ## Test Boundary
 
 The physical writer contains a narrow test control for failing a selected

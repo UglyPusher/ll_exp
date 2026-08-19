@@ -88,13 +88,24 @@ can drain the previously published durable range after a later I/O failure.
 ## Lifecycle
 
 `open()` validates configuration, allocates and warms all ring storage, creates
-and physically synchronizes a new truncated WAL file, resets frontiers, and only
-then publishes the working state.
+and physically synchronizes a new WAL file, resets frontiers, and only then
+publishes the working state. Creation is exclusive: an existing path returns
+`OpenStatus::FileAlreadyExists` and the existing file is not modified. Recovery
+is not implemented, so `open()` creates only a new WAL.
 
-`close()` returns `PendingDurability` without closing while a healthy WAL has
-`durable != head`. After an I/O failure, `close()` releases resources and
-returns `IoError`, because the non-durable tail can no longer be committed by
-that instance.
+`close()` does not consume, persist, or synchronize data. It returns
+`PendingConsumption` while `tail != durable`, including after an I/O failure,
+because the consumer may still drain the already durable range. It returns
+`PendingDurability` while a healthy WAL has `durable != head`.
+
+After an I/O failure and after the durable backlog is consumed, `close()`
+releases resources and returns `IoError`; the non-durable range
+`[durable, head)` is lost according to the fail-closed contract. A healthy
+close succeeds only when:
+
+```text
+tail == durable == head
+```
 
 Destruction releases resources but never advances durability.
 

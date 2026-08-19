@@ -3,7 +3,8 @@
 ## Layout
 
 ```text
-FileHeader
+canonical FileHeader
+zero padding to records_offset
 RecordHeader + payload + zero padding
 RecordHeader + payload + zero padding
 ...
@@ -14,35 +15,62 @@ only an I/O grouping and does not add a batch header.
 
 ## File Header
 
-`FileHeader` stores:
+The canonical file header is 32 bytes. All integer fields are little-endian:
 
-- format magic and version;
-- compiled file-header size;
-- fixed payload size;
-- physical record alignment;
-- initial `next_sequence`, currently always `1` and not updated later;
-- CRC32 of the complete header with `header_crc32` zeroed;
-- reserved bytes with no current meaning.
+```text
+u32 magic
+u16 version
+u16 header_size       == 32
+u32 payload_size
+u32 alignment
+u64 next_sequence     == 1
+u32 header_crc32
+u32 records_offset
+```
+
+`header_crc32` is CRC32 of the canonical 32 bytes with `header_crc32` encoded
+as zero. `records_offset` is the first byte of the record area and is always a
+multiple of `alignment`. Zero padding between the file header and
+`records_offset` is part of the physical file but not part of the file-header
+CRC.
 
 ## Record
 
-`RecordHeader` stores:
+The canonical record header is 24 bytes. All integer fields are little-endian:
 
-- record magic and format version;
-- compiled record-header size;
-- physical sequence;
-- CRC32 of exactly one fixed-size payload;
-- CRC32 of the complete record header with `header_crc32` zeroed.
+```text
+u32 magic
+u16 version
+u16 header_size       == 24
+u64 sequence
+u32 payload_crc32
+u32 header_crc32
+```
 
 The payload follows immediately. Zero bytes pad the combined header and payload
 to configured alignment. Padding is not part of payload CRC.
 
 Physical sequences start at `1` and are contiguous in append order.
 
+The record stride is:
+
+```text
+align_up(24 + payload_size, alignment)
+```
+
+Every record starts at:
+
+```text
+records_offset + (sequence - 1) * record_stride
+```
+
+Both `records_offset` and `record_stride` are multiples of `alignment`.
+
 ## Compatibility And Recovery
 
-The current format uses native C++ standard-layout structs and therefore does
-not yet define cross-compiler or cross-endian compatibility.
+The physical format does not use native C++ object representation, structure
+padding, or native endian layout. C++ structs may exist as logical field
+carriers only; disk bytes are canonical serialized bytes.
 
-The implementation only creates a new truncated file. It does not open,
-validate, recover, or truncate an existing WAL.
+The implementation only creates a new exclusive file. It does not open,
+validate, recover, truncate, or migrate an existing WAL.

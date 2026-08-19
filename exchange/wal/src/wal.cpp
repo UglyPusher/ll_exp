@@ -14,10 +14,32 @@
 namespace fexma::wal {
 namespace {
 
-[[nodiscard]] std::size_t aligned_payload_size(const WalConfig& config) noexcept {
-  return ((static_cast<std::size_t>(config.payload_size) + config.alignment - 1u) /
-          config.alignment) *
-         config.alignment;
+[[nodiscard]] bool checked_add(std::size_t left, std::size_t right,
+                               std::size_t& out) noexcept {
+  if (left > std::numeric_limits<std::size_t>::max() - right) {
+    return false;
+  }
+  out = left + right;
+  return true;
+}
+
+[[nodiscard]] bool checked_mul(std::size_t left, std::size_t right,
+                               std::size_t& out) noexcept {
+  if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
+    return false;
+  }
+  out = left * right;
+  return true;
+}
+
+[[nodiscard]] bool checked_align_up(std::size_t value, std::size_t alignment,
+                                    std::size_t& out) noexcept {
+  std::size_t biased{};
+  if (!checked_add(value, alignment - 1u, biased)) {
+    return false;
+  }
+  out = (biased / alignment) * alignment;
+  return true;
 }
 
 } // namespace
@@ -27,19 +49,32 @@ bool valid_config(const WalConfig& config) noexcept {
       config.alignment < alignof(void*)) {
     return false;
   }
-  return (config.alignment & (config.alignment - 1u)) == 0;
+  if ((config.alignment & (config.alignment - 1u)) != 0) {
+    return false;
+  }
+
+  std::size_t storage_stride{};
+  std::size_t storage_size{};
+  if (!checked_align_up(config.payload_size, config.alignment,
+                        storage_stride) ||
+      !checked_mul(storage_stride, config.capacity, storage_size)) {
+    return false;
+  }
+  return records_offset(config) != 0 && aligned_record_size(config) != 0;
 }
 
 Wal::Storage::~Storage() { release(); }
 
 OpenStatus Wal::Storage::initialize(const WalConfig& config) noexcept {
-  const std::size_t stride = aligned_payload_size(config);
-  if (stride > (std::numeric_limits<std::size_t>::max() / config.capacity)) {
+  std::size_t stride{};
+  std::size_t size{};
+  if (!checked_align_up(config.payload_size, config.alignment, stride) ||
+      !checked_mul(stride, config.capacity, size)) {
     return OpenStatus::InvalidConfig;
   }
 
   alignment_ = config.alignment;
-  size_ = stride * config.capacity;
+  size_ = size;
   data_ = static_cast<std::byte*>(::operator new(
       size_, std::align_val_t{alignment_}, std::nothrow));
   if (data_ == nullptr) {
@@ -106,9 +141,10 @@ OpenResult Wal::open(const std::filesystem::path& path,
     storage_.release();
     return {OpenStatus::AllocationFailed};
   }
-  if (!file_->create(path, config)) {
+  const OpenStatus file_status = file_->create(path, config);
+  if (file_status != OpenStatus::Ok) {
     release_resources();
-    return {OpenStatus::IoError};
+    return {file_status};
   }
 
   config_ = config;
@@ -214,10 +250,17 @@ CloseResult Wal::close() noexcept {
   if (!open_.load(std::memory_order_acquire)) {
     return {CloseStatus::AlreadyClosed};
   }
+  const std::uint64_t tail =
+      tail_frontier_.value.load(std::memory_order_acquire);
+  const std::uint64_t durable =
+      durable_frontier_.value.load(std::memory_order_acquire);
+  if (tail != durable) {
+    return {CloseStatus::PendingConsumption};
+  }
+
   const bool io_failed = io_failed_.load(std::memory_order_acquire);
   if (!io_failed &&
-      head_frontier_.value.load(std::memory_order_acquire) !=
-          durable_frontier_.value.load(std::memory_order_acquire)) {
+      durable != head_frontier_.value.load(std::memory_order_acquire)) {
     return {CloseStatus::PendingDurability};
   }
 

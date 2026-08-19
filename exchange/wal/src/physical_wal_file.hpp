@@ -18,8 +18,8 @@ public:
   PhysicalWalFile(const PhysicalWalFile&) = delete;
   PhysicalWalFile& operator=(const PhysicalWalFile&) = delete;
 
-  [[nodiscard]] bool create(const std::filesystem::path& path,
-                            const WalConfig& config) noexcept;
+  [[nodiscard]] OpenStatus create(const std::filesystem::path& path,
+                                  const WalConfig& config) noexcept;
   [[nodiscard]] bool append_record(
       std::uint64_t sequence,
       std::span<const std::byte> payload) noexcept;

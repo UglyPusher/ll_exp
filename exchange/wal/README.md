@@ -18,6 +18,9 @@ appends a batch to the WAL file, performs one OS-level physical sync, and then
 publishes `durable`. `try_consume()` exposes only positions below `durable` and
 publishes `tail` after copying the block.
 
+`open()` creates only a new WAL file and never truncates an existing path. The
+physical file uses canonical little-endian headers and aligned record offsets.
+
 Start with [CONTRACT.md](doc/CONTRACT.md), then see
 [DESIGN.md](doc/DESIGN.md) and [INVARIANTS.md](doc/INVARIANTS.md).
 The physical layout is in [FILE_FORMAT.md](doc/FILE_FORMAT.md); build and test

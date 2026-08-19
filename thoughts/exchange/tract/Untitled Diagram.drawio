@@ -1,0 +1,75 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="YkUJh5neSWBgPcP69Z8U">
+    <mxGraphModel dx="1664" dy="924" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Ингрес&lt;br&gt;Берет команду с сетевого модуля и запихивает в голову тракта" vertex="1">
+          <mxGeometry height="100" width="120" x="60" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-2" edge="1" parent="1" style="shape=link;html=1;rounded=0;" value="Тракт комманд">
+          <mxGeometry relative="1" width="100" as="geometry">
+            <mxPoint x="120" y="280" as="sourcePoint" />
+            <mxPoint x="770" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-3" edge="1" parent="1" source="MlFVPTwpqN22RiT_Tm80-1" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" value="Указатель на &lt;br&gt;голову тракта">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="170" as="sourcePoint" />
+            <mxPoint x="120" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Берет блоки из тракта, записывает в хранилище, сдвигает границу дюррабл" vertex="1">
+          <mxGeometry height="90" width="120" x="130" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-5" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" value="" vertex="1">
+          <mxGeometry height="80" width="60" x="170" y="570" as="geometry" />
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-6" edge="1" parent="1" source="MlFVPTwpqN22RiT_Tm80-4" style="endArrow=classic;html=1;rounded=0;exitX=0.75;exitY=0;exitDx=0;exitDy=0;" value="Указатель &lt;br&gt;на&amp;nbsp;дюрабл&lt;br&gt;границу">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="230" y="360" as="sourcePoint" />
+            <mxPoint x="230" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-7" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" target="MlFVPTwpqN22RiT_Tm80-4" value="Получение&amp;nbsp;&lt;br&gt;последнего&lt;br&gt;не-дюрабл&lt;br&gt;блока">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="170" y="290" as="sourcePoint" />
+            <mxPoint x="170.00000000000003" y="347.65999999999997" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-9" edge="1" parent="1" source="MlFVPTwpqN22RiT_Tm80-4" style="endArrow=classic;html=1;rounded=0;exitX=0.597;exitY=1.017;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.511;entryY=0.038;entryDx=0;entryDy=0;entryPerimeter=0;" target="MlFVPTwpqN22RiT_Tm80-5" value="Запись блока&amp;nbsp;&lt;br&gt;в хранилище">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="180" y="470" as="sourcePoint" />
+            <mxPoint x="230" y="420" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-10" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Риск-модуль&lt;br&gt;Проверяет риск позицию по команде и проставляет риск фактор. Сдвигает указатель риск-чекд. Не может читать не-дюрабл блоки" vertex="1">
+          <mxGeometry height="120" width="120" x="290" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-11" edge="1" parent="1" source="MlFVPTwpqN22RiT_Tm80-10" style="endArrow=classic;html=1;rounded=0;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" value="Указатель &lt;br&gt;на&amp;nbsp;риск-чекед&lt;br&gt;границу">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="560" y="210" as="sourcePoint" />
+            <mxPoint x="320" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-12" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Менеджер резервов. Для торговых команд выставляет резервы в портфеле клиента. Сдвигает указатель резервед" vertex="1">
+          <mxGeometry height="90" width="120" x="340" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-13" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;exitX=0.75;exitY=0;exitDx=0;exitDy=0;" value="Указатель &lt;br&gt;на&amp;nbsp;&lt;span style=&quot;font-size: 12px; white-space: normal; background-color: rgb(236, 236, 236);&quot;&gt;резервед&lt;/span&gt;&lt;br&gt;границу">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="380" y="400" as="sourcePoint" />
+            <mxPoint x="380" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-17" edge="1" parent="1" source="MlFVPTwpqN22RiT_Tm80-14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="539.5294117647059" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="MlFVPTwpqN22RiT_Tm80-14" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Матчер. Выгребает все блоки за резервед&lt;br&gt;границей. сдвигает указатель ХВОСТ" vertex="1">
+          <mxGeometry height="120" width="120" x="480" y="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
