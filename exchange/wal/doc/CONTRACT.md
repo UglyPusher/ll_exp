@@ -22,6 +22,26 @@ public:
 
 `snapshot()` is diagnostic. Its frontiers are not mutable controls.
 
+The cold-path API in `reader.hpp` provides `WalReader` and `scan_wal()`.
+`WalReader::open()` requires the expected persisted WAL configuration; runtime
+capacity is ignored. `read_next()` is sequential and allocation-free after
+open. It returns `Record` only after complete physical validation.
+
+The file must be quiescent: no writer may append, synchronize, truncate, or
+replace it while a reader or scanner is active. Validation proves physical
+integrity, not the still-open runtime writer's durable frontier. Post-crash
+commit-boundary semantics are a separate recovery-policy decision.
+
+The reader validates file identity, format, header CRC, record header CRC,
+contiguous sequence, payload CRC, record boundaries, and zero padding. Any
+failure is terminal for that reader instance. It never skips or attempts to
+resynchronize after a damaged record.
+
+`scan_wal()` is read-only. It returns the longest trusted record prefix and its
+ending file offset. Partial record header, payload, or padding is classified as
+`IncompleteTail`; other integrity failures are classified as corruption. File
+truncation and recovery mutation are outside this API.
+
 ## Roles
 
 One producer calls `try_publish()`, one durability writer calls
@@ -128,8 +148,9 @@ Destruction releases resources but never advances durability.
 
 ## Intentional Limits
 
-- Existing WAL files cannot be opened or recovered.
-- Partial-tail validation and truncation are not implemented.
+- Existing WAL files cannot be reopened by the live `Wal` writer.
+- Partial-tail truncation is not implemented; reader/scanner detection is
+  available.
 - There is no segment rotation, compaction, or consumer checkpoint.
 - Storage is one monolithic allocation, not an external block pool.
 - The model is a three-stage SPSC frontier chain, not a broadcast SPMC tract.

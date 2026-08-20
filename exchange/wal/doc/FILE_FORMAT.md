@@ -99,6 +99,8 @@ padding, or native endian layout. C++ structs may exist as logical field
 carriers only; disk bytes are canonical serialized bytes.
 
 Format version 2 is an experimental predecessor and is not compatible with
-format version 3. The implementation currently creates only a new exclusive
-file. Validated open, recovery, and explicit version rejection are implemented
-in the next work item; no automatic format migration is planned.
+format version 3. The live writer currently creates only a new exclusive file.
+The read-only validated reader rejects incompatible formats, identity mismatch,
+corruption, sequence gaps, incomplete records, and non-zero padding. The scanner
+reports the longest trusted prefix. Truncation, writer reopen, and automatic
+format migration are not implemented.

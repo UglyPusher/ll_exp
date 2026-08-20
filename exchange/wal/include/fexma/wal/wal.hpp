@@ -30,7 +30,7 @@ class PhysicalWalAdapter;
 
 class Wal final {
 public:
-  Wal() = default;
+  Wal();
   ~Wal();
 
   Wal(const Wal&) = delete;

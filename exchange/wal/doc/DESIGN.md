@@ -31,6 +31,12 @@ filesystem or direct-NVMe version is selected by including its concrete header
 and building its corresponding source. `Wal` uses direct non-virtual calls;
 there is no CRTP, runtime registry, or runtime backend selection.
 
+`WalReader` is the cold-path validated sequential reader. Its selected
+`PhysicalWalReaderAdapter` performs only hardware-specific byte reads;
+`WalReader` owns canonical decoding, identity checks, CRC validation, sequence
+validation, and fail-closed state. `scan_wal()` drives the same reader to report
+the longest trusted prefix and never mutates storage.
+
 ## Operation Walkthrough
 
 `try_publish()` validates the call, uses the block at `head`, fills it,

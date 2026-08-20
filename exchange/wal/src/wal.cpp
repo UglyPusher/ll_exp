@@ -65,6 +65,8 @@ namespace {
 
 } // namespace
 
+Wal::Wal() = default;
+
 bool valid_config(const WalConfig& config) noexcept {
   if (config.payload_size == 0 || config.capacity == 0 ||
       config.alignment < alignof(void*) || config.first_sequence == 0 ||

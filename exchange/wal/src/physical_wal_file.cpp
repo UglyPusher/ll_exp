@@ -40,6 +40,35 @@ void put_u64_le(std::span<std::byte> out, std::size_t offset,
   }
 }
 
+[[nodiscard]] std::uint16_t
+get_u16_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
+  return static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset])) |
+         static_cast<std::uint16_t>(
+             std::to_integer<std::uint8_t>(bytes[offset + 1u]) << 8u);
+}
+
+[[nodiscard]] std::uint32_t
+get_u32_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
+  std::uint32_t value{};
+  for (std::size_t byte = 0; byte < 4u; ++byte) {
+    value |= static_cast<std::uint32_t>(
+                 std::to_integer<std::uint8_t>(bytes[offset + byte]))
+             << (byte * 8u);
+  }
+  return value;
+}
+
+[[nodiscard]] std::uint64_t
+get_u64_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
+  std::uint64_t value{};
+  for (std::size_t byte = 0; byte < 8u; ++byte) {
+    value |= static_cast<std::uint64_t>(
+                 std::to_integer<std::uint8_t>(bytes[offset + byte]))
+             << (byte * 8u);
+  }
+  return value;
+}
+
 [[nodiscard]] bool checked_add(std::uint64_t left, std::uint64_t right,
                                std::uint64_t& out) noexcept {
   if (left > std::numeric_limits<std::uint64_t>::max() - right) {
@@ -171,6 +200,42 @@ serialize_record_header(RecordHeader header) noexcept {
   put_u32_le(out, 16, header.payload_crc32);
   put_u32_le(out, 20, header.header_crc32);
   return out;
+}
+
+bool deserialize_file_header(std::span<const std::byte> bytes,
+                             FileHeader& header) noexcept {
+  if (bytes.size() != physical_file_header_size) {
+    return false;
+  }
+  header.magic = get_u32_le(bytes, 0);
+  header.version = get_u16_le(bytes, 4);
+  header.header_size = get_u16_le(bytes, 6);
+  header.stream_kind = static_cast<StreamKind>(get_u16_le(bytes, 8));
+  header.flags = get_u16_le(bytes, 10);
+  header.payload_size = get_u32_le(bytes, 12);
+  header.payload_schema_version = get_u32_le(bytes, 16);
+  header.alignment = get_u32_le(bytes, 20);
+  header.records_offset = get_u32_le(bytes, 24);
+  header.stream_id = get_u64_le(bytes, 28);
+  header.epoch_id = get_u64_le(bytes, 36);
+  header.first_sequence = get_u64_le(bytes, 44);
+  header.manifest_id = get_u64_le(bytes, 52);
+  header.header_crc32 = get_u32_le(bytes, 60);
+  return true;
+}
+
+bool deserialize_record_header(std::span<const std::byte> bytes,
+                               RecordHeader& header) noexcept {
+  if (bytes.size() != physical_record_header_size) {
+    return false;
+  }
+  header.magic = get_u32_le(bytes, 0);
+  header.version = get_u16_le(bytes, 4);
+  header.header_size = get_u16_le(bytes, 6);
+  header.sequence = get_u64_le(bytes, 8);
+  header.payload_crc32 = get_u32_le(bytes, 16);
+  header.header_crc32 = get_u32_le(bytes, 20);
+  return true;
 }
 
 namespace detail {
@@ -370,6 +435,98 @@ bool PhysicalWalAdapter::write_bytes(
   }
 #endif
   return true;
+}
+
+PhysicalWalReaderAdapter::~PhysicalWalReaderAdapter() { (void)close(); }
+
+bool PhysicalWalReaderAdapter::open(
+    const std::filesystem::path& path) noexcept {
+  if (is_open()) {
+    return false;
+  }
+#if defined(_WIN32)
+  const HANDLE handle = ::CreateFileW(
+      path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  handle_ = handle;
+#else
+  descriptor_ = ::open(path.c_str(), O_RDONLY);
+  if (descriptor_ == -1) {
+    return false;
+  }
+#endif
+  return true;
+}
+
+PhysicalReadStatus
+PhysicalWalReaderAdapter::read(std::span<std::byte> bytes) noexcept {
+  if (!is_open()) {
+    return PhysicalReadStatus::IoError;
+  }
+  std::size_t completed{};
+#if defined(_WIN32)
+  while (!bytes.empty()) {
+    const DWORD requested = static_cast<DWORD>(std::min<std::size_t>(
+        bytes.size(), std::numeric_limits<DWORD>::max()));
+    DWORD read_bytes{};
+    if (::ReadFile(static_cast<HANDLE>(handle_), bytes.data(), requested,
+                   &read_bytes, nullptr) == FALSE) {
+      return PhysicalReadStatus::IoError;
+    }
+    if (read_bytes == 0) {
+      return completed == 0 ? PhysicalReadStatus::EndOfFile
+                            : PhysicalReadStatus::Incomplete;
+    }
+    completed += read_bytes;
+    bytes = bytes.subspan(read_bytes);
+  }
+#else
+  while (!bytes.empty()) {
+    const std::size_t requested = std::min<std::size_t>(
+        bytes.size(), static_cast<std::size_t>(
+                          std::numeric_limits<ssize_t>::max()));
+    const ssize_t read_bytes = ::read(descriptor_, bytes.data(), requested);
+    if (read_bytes == -1) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return PhysicalReadStatus::IoError;
+    }
+    if (read_bytes == 0) {
+      return completed == 0 ? PhysicalReadStatus::EndOfFile
+                            : PhysicalReadStatus::Incomplete;
+    }
+    completed += static_cast<std::size_t>(read_bytes);
+    bytes = bytes.subspan(static_cast<std::size_t>(read_bytes));
+  }
+#endif
+  return PhysicalReadStatus::Complete;
+}
+
+bool PhysicalWalReaderAdapter::close() noexcept {
+  if (!is_open()) {
+    return true;
+  }
+#if defined(_WIN32)
+  const HANDLE handle = static_cast<HANDLE>(handle_);
+  handle_ = nullptr;
+  return ::CloseHandle(handle) != FALSE;
+#else
+  const int descriptor = descriptor_;
+  descriptor_ = -1;
+  return ::close(descriptor) == 0;
+#endif
+}
+
+bool PhysicalWalReaderAdapter::is_open() const noexcept {
+#if defined(_WIN32)
+  return handle_ != nullptr;
+#else
+  return descriptor_ != -1;
+#endif
 }
 
 void set_physical_wal_file_test_control(

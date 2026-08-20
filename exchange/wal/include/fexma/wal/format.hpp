@@ -58,6 +58,10 @@ static_assert(std::is_standard_layout_v<RecordHeader>);
 serialize_file_header(FileHeader header) noexcept;
 [[nodiscard]] std::array<std::byte, physical_record_header_size>
 serialize_record_header(RecordHeader header) noexcept;
+[[nodiscard]] bool deserialize_file_header(
+    std::span<const std::byte> bytes, FileHeader& header) noexcept;
+[[nodiscard]] bool deserialize_record_header(
+    std::span<const std::byte> bytes, RecordHeader& header) noexcept;
 [[nodiscard]] std::uint32_t file_header_crc32(FileHeader header) noexcept;
 [[nodiscard]] std::uint32_t record_header_crc32(RecordHeader header) noexcept;
 [[nodiscard]] std::uint64_t aligned_record_size(const WalConfig& config) noexcept;

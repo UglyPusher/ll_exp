@@ -38,6 +38,35 @@ private:
   WalConfig config_{};
 };
 
+enum class PhysicalReadStatus : std::uint8_t {
+  Complete,
+  EndOfFile,
+  Incomplete,
+  IoError
+};
+
+class PhysicalWalReaderAdapter final {
+public:
+  PhysicalWalReaderAdapter() = default;
+  ~PhysicalWalReaderAdapter();
+
+  PhysicalWalReaderAdapter(const PhysicalWalReaderAdapter&) = delete;
+  PhysicalWalReaderAdapter& operator=(const PhysicalWalReaderAdapter&) = delete;
+
+  [[nodiscard]] bool open(const std::filesystem::path& path) noexcept;
+  [[nodiscard]] PhysicalReadStatus
+  read(std::span<std::byte> bytes) noexcept;
+  [[nodiscard]] bool close() noexcept;
+  [[nodiscard]] bool is_open() const noexcept;
+
+private:
+#if defined(_WIN32)
+  void* handle_{};
+#else
+  int descriptor_{-1};
+#endif
+};
+
 inline constexpr std::uint64_t no_fault =
     std::numeric_limits<std::uint64_t>::max();
 
