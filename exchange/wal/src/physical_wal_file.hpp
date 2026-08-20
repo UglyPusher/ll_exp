@@ -67,6 +67,12 @@ private:
 #endif
 };
 
+class PhysicalWalRecoveryAdapter final {
+public:
+  [[nodiscard]] bool truncate_and_sync(
+      const std::filesystem::path& path, std::uint64_t size) noexcept;
+};
+
 inline constexpr std::uint64_t no_fault =
     std::numeric_limits<std::uint64_t>::max();
 
@@ -79,5 +85,15 @@ struct PhysicalWalFileTestControl {
 
 void set_physical_wal_file_test_control(
     PhysicalWalFileTestControl* control) noexcept;
+
+struct PhysicalWalRecoveryTestControl {
+  std::uint64_t truncate_calls{};
+  std::uint64_t sync_calls{};
+  std::uint64_t fail_truncate_call{no_fault};
+  std::uint64_t fail_sync_call{no_fault};
+};
+
+void set_physical_wal_recovery_test_control(
+    PhysicalWalRecoveryTestControl* control) noexcept;
 
 } // namespace fexma::wal::detail

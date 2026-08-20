@@ -1,6 +1,7 @@
 add_library(fexma_wal STATIC
   src/physical_wal_file.cpp
   src/reader.cpp
+  src/recovery.cpp
   src/wal.cpp
 )
 
@@ -44,3 +45,9 @@ add_executable(test_wal_reader tests/test_wal_reader.cpp)
 target_link_libraries(test_wal_reader PRIVATE fexma::wal)
 fexma_wal_apply_warnings(test_wal_reader)
 add_test(NAME test_wal_reader COMMAND test_wal_reader)
+
+add_executable(test_wal_recovery tests/test_wal_recovery.cpp)
+target_link_libraries(test_wal_recovery PRIVATE fexma::wal)
+target_include_directories(test_wal_recovery PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+fexma_wal_apply_warnings(test_wal_recovery)
+add_test(NAME test_wal_recovery COMMAND test_wal_recovery)

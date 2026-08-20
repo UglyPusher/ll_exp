@@ -102,5 +102,11 @@ Format version 2 is an experimental predecessor and is not compatible with
 format version 3. The live writer currently creates only a new exclusive file.
 The read-only validated reader rejects incompatible formats, identity mismatch,
 corruption, sequence gaps, incomplete records, and non-zero padding. The scanner
-reports the longest trusted prefix. Truncation, writer reopen, and automatic
-format migration are not implemented.
+reports the longest trusted prefix.
+
+Explicit recovery may truncate only a scanner-classified incomplete trailing
+record to the end offset of that trusted prefix. It physically synchronizes the
+truncation and validates the retained file again. An incomplete or invalid file
+header, a complete invalid record (including the final record), middle
+corruption, a sequence error, or an identity mismatch is never truncated or
+repaired. Writer reopen and automatic format migration are not implemented.

@@ -242,6 +242,7 @@ namespace detail {
 namespace {
 
 PhysicalWalFileTestControl* test_control{};
+PhysicalWalRecoveryTestControl* recovery_test_control{};
 
 [[nodiscard]] bool inject_append_failure() noexcept {
   if (test_control == nullptr) {
@@ -257,6 +258,22 @@ PhysicalWalFileTestControl* test_control{};
   }
   const std::uint64_t call = test_control->sync_calls++;
   return call == test_control->fail_sync_call;
+}
+
+[[nodiscard]] bool inject_truncate_failure() noexcept {
+  if (recovery_test_control == nullptr) {
+    return false;
+  }
+  const std::uint64_t call = recovery_test_control->truncate_calls++;
+  return call == recovery_test_control->fail_truncate_call;
+}
+
+[[nodiscard]] bool inject_recovery_sync_failure() noexcept {
+  if (recovery_test_control == nullptr) {
+    return false;
+  }
+  const std::uint64_t call = recovery_test_control->sync_calls++;
+  return call == recovery_test_control->fail_sync_call;
 }
 
 } // namespace
@@ -529,9 +546,63 @@ bool PhysicalWalReaderAdapter::is_open() const noexcept {
 #endif
 }
 
+bool PhysicalWalRecoveryAdapter::truncate_and_sync(
+    const std::filesystem::path& path, std::uint64_t size) noexcept {
+  if (inject_truncate_failure()) {
+    return false;
+  }
+
+#if defined(_WIN32)
+  if (size > static_cast<std::uint64_t>(
+                 std::numeric_limits<LONGLONG>::max())) {
+    return false;
+  }
+  const HANDLE handle = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  LARGE_INTEGER offset{};
+  offset.QuadPart = static_cast<LONGLONG>(size);
+  const bool truncated = ::SetFilePointerEx(handle, offset, nullptr,
+                                             FILE_BEGIN) != FALSE &&
+                         ::SetEndOfFile(handle) != FALSE;
+  const bool synced = truncated && !inject_recovery_sync_failure() &&
+                      ::FlushFileBuffers(handle) != FALSE;
+  const bool closed = ::CloseHandle(handle) != FALSE;
+  return truncated && synced && closed;
+#else
+  if (size > static_cast<std::uint64_t>(
+                 std::numeric_limits<off_t>::max())) {
+    return false;
+  }
+  const int descriptor = ::open(path.c_str(), O_WRONLY);
+  if (descriptor == -1) {
+    return false;
+  }
+  const bool truncated =
+      ::ftruncate(descriptor, static_cast<off_t>(size)) == 0;
+#if defined(__APPLE__)
+  const bool synced = truncated && !inject_recovery_sync_failure() &&
+                      ::fsync(descriptor) == 0;
+#else
+  const bool synced = truncated && !inject_recovery_sync_failure() &&
+                      ::fdatasync(descriptor) == 0;
+#endif
+  const bool closed = ::close(descriptor) == 0;
+  return truncated && synced && closed;
+#endif
+}
+
 void set_physical_wal_file_test_control(
     PhysicalWalFileTestControl* control) noexcept {
   test_control = control;
+}
+
+void set_physical_wal_recovery_test_control(
+    PhysicalWalRecoveryTestControl* control) noexcept {
+  recovery_test_control = control;
 }
 
 } // namespace detail

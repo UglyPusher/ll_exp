@@ -28,6 +28,13 @@ matches the caller's expected configuration. It exposes a record only after
 validating physical headers, sequence, CRCs, payload, and zero padding.
 `scan_wal()` reports the longest trusted prefix without modifying the file.
 
+`recover_incomplete_tail()` is the separate, conservative mutation boundary.
+With exclusive ownership of a quiescent file, it may truncate only a physically
+incomplete trailing record to the scanner-proven trusted offset, synchronize
+that truncation, and validate the complete file again. Complete invalid records,
+middle corruption, sequence errors, and identity mismatches are refused without
+mutation.
+
 Start with [CONTRACT.md](doc/CONTRACT.md), then see
 [DESIGN.md](doc/DESIGN.md) and [INVARIANTS.md](doc/INVARIANTS.md).
 The physical layout is in [FILE_FORMAT.md](doc/FILE_FORMAT.md); build and test

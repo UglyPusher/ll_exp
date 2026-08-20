@@ -42,6 +42,32 @@ ending file offset. Partial record header, payload, or padding is classified as
 `IncompleteTail`; other integrity failures are classified as corruption. File
 truncation and recovery mutation are outside this API.
 
+The cold-path API in `recovery.hpp` provides
+`recover_incomplete_tail(path, expected)`. The caller must own exclusive access
+to the quiescent file for the entire operation. Recovery first performs the same
+validated scan, and mutates the file only when that scan reports an incomplete
+trailing record. It truncates to `last_valid_offset`, physically synchronizes
+the file, and performs a complete validated rescan before returning
+`RecoveryStatus::Recovered`.
+
+The following conditions are always refused without mutation:
+
+- incomplete or invalid file header;
+- invalid complete record, including the final record;
+- corruption in the middle of the file;
+- sequence gap or duplicate;
+- stream, epoch, manifest, physical format, payload schema, or layout mismatch.
+
+`RecoveryResult` reports the original and recovered sizes, removed byte count,
+trusted record count, last sequence, and trusted offset. A clean file returns
+`Clean` without opening it for mutation. A truncate or physical-sync failure
+returns `IoError`; callers must not infer successful durability from that
+result. If synchronization fails after truncation, the reported current size
+may already differ from the original size; the process must remain fail-closed
+instead of treating a subsequent clean scan as proof of durable recovery.
+Recovery does not decide whether a complete CRC-valid post-crash tail was
+acknowledged or committed; that remains the separate durable-tail policy.
+
 ## Roles
 
 One producer calls `try_publish()`, one durability writer calls
@@ -127,8 +153,9 @@ can drain the previously published durable range after a later I/O failure.
 `open()` validates configuration, allocates and warms all ring storage, creates
 and physically synchronizes a new WAL file, resets frontiers, and only then
 publishes the working state. Creation is exclusive: an existing path returns
-`OpenStatus::FileAlreadyExists` and the existing file is not modified. Recovery
-is not implemented, so `open()` creates only a new WAL.
+`OpenStatus::FileAlreadyExists` and the existing file is not modified. The live
+writer still creates only a new WAL; cold-path incomplete-tail recovery is an
+explicit, separate operation and does not reopen the writer.
 
 `close()` does not consume, persist, or synchronize data. It returns
 `PendingConsumption` while `tail != durable`, including after an I/O failure,
@@ -149,8 +176,8 @@ Destruction releases resources but never advances durability.
 ## Intentional Limits
 
 - Existing WAL files cannot be reopened by the live `Wal` writer.
-- Partial-tail truncation is not implemented; reader/scanner detection is
-  available.
+- Recovery removes only scanner-proven incomplete trailing records. It does not
+  repair corruption or reopen an existing live writer.
 - There is no segment rotation, compaction, or consumer checkpoint.
 - Storage is one monolithic allocation, not an external block pool.
 - The model is a three-stage SPSC frontier chain, not a broadcast SPMC tract.

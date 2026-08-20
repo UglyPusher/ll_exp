@@ -37,6 +37,13 @@ there is no CRTP, runtime registry, or runtime backend selection.
 validation, and fail-closed state. `scan_wal()` drives the same reader to report
 the longest trusted prefix and never mutates storage.
 
+`recover_incomplete_tail()` is a separate cold-path policy layer. It uses
+`scan_wal()` as the sole source of the trusted truncation offset and calls the
+compile-time selected `PhysicalWalRecoveryAdapter` only for a scanner-proven
+incomplete trailing record. The adapter performs the hardware-specific
+truncate-and-sync operation. Recovery then scans the complete retained file
+again; it never repairs, skips, or resynchronizes around corruption.
+
 ## Operation Walkthrough
 
 `try_publish()` validates the call, uses the block at `head`, fills it,
@@ -73,7 +80,15 @@ One non-empty logical batch receives one physical sync. The durable frontier is 
 publication of that completed sync, not of append completion alone.
 
 File creation is exclusive (`CREATE_NEW` on Windows, `O_CREAT | O_EXCL` on
-POSIX). Existing files are not truncated because recovery is not implemented.
+POSIX). The live writer never truncates an existing file. Explicit recovery
+opens the quiescent file separately and truncates only to a scanner-proven
+record boundary.
+
+Filesystem recovery uses `SetEndOfFile` followed by `FlushFileBuffers` on
+Windows, `ftruncate` followed by `fdatasync` on POSIX, and `ftruncate` followed
+by `fsync` on macOS. The caller provides exclusive file ownership across the
+initial scan, mutation, and verification scan, preventing a concurrent writer
+from invalidating the trusted offset.
 
 Physical headers are serialized field-by-field in canonical little-endian byte
 order. Header CRCs are computed over those serialized bytes with the
@@ -90,4 +105,5 @@ offset.
 The physical writer contains a narrow test control for failing a selected
 record append or sync and counting calls. It is private to the component and is
 not reachable through the public WAL API. Producer and consumer paths do not
-consult it.
+consult it. The filesystem recovery adapter has an equivalent private control
+for truncate and sync failure-path tests.
