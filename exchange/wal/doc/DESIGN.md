@@ -2,9 +2,9 @@
 
 ## Components
 
-`Wal` owns lifecycle, storage, frontiers, failure state, and the concrete physical
-file writer. It exposes only lifecycle, the three role operations, and a
-diagnostic snapshot.
+`Wal` owns lifecycle, storage, frontiers, failure state, and the selected
+physical WAL adapter. It exposes only lifecycle, the three role operations,
+and a diagnostic snapshot.
 
 `Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
@@ -20,10 +20,16 @@ sequence numbers. It keeps separate slot indexes for block addressing, so the
 hot path advances slots with a simple increment-and-wrap instead of deriving a
 slot from `position % capacity` on every access.
 
-`PhysicalWalFile` owns the native OS file handle. It creates the file, writes
-the file header, serializes physical records with CRC and padding, synchronizes
-one completed batch, and closes the handle. It has no virtual interface and no
-knowledge of ring frontiers.
+`PhysicalWalAdapter` owns the hardware-specific persistence mechanics. The
+default filesystem implementation owns the native OS file handle, creates the
+file, writes the file header, serializes physical records with CRC and padding,
+synchronizes one completed batch, and closes the handle. It has no knowledge of
+ring frontiers.
+
+`physical_wal_adapter.hpp` is the single compile-time selection point. A
+filesystem or direct-NVMe version is selected by including its concrete header
+and building its corresponding source. `Wal` uses direct non-virtual calls;
+there is no CRTP, runtime registry, or runtime backend selection.
 
 ## Operation Walkthrough
 
@@ -31,8 +37,8 @@ knowledge of ring frontiers.
 publishes `head + 1`, and returns the derived physical sequence.
 
 `advance_durable()` selects a bounded pending range, passes each immutable block
-to `PhysicalWalFile`, requests one physical sync, and publishes the range end as
-`durable` only after success.
+to the selected `PhysicalWalAdapter`, requests one physical sync, and publishes
+the range end as `durable` only after success.
 
 `try_consume()` uses the readable block at `tail`, copies it to caller memory,
 publishes `tail + 1`, and returns the derived physical sequence.

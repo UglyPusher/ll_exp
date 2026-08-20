@@ -20,7 +20,7 @@
 namespace fexma::wal {
 
 namespace detail {
-class PhysicalWalFile;
+class PhysicalWalAdapter;
 }
 
 #if defined(_MSC_VER)
@@ -108,7 +108,7 @@ private:
   std::uint32_t durable_slot_{};
   std::uint32_t head_slot_{};
   Storage storage_{};
-  std::unique_ptr<detail::PhysicalWalFile> file_{};
+  std::unique_ptr<detail::PhysicalWalAdapter> physical_wal_{};
   WalConfig config_{};
   std::atomic<bool> io_failed_{false};
   std::atomic<bool> open_{false};

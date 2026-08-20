@@ -5,7 +5,7 @@
 
 #include <fexma/wal/wal.hpp>
 
-#include "physical_wal_file.hpp"
+#include "physical_wal_adapter.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -136,12 +136,12 @@ OpenResult Wal::open(const std::filesystem::path& path,
     return {storage_status};
   }
 
-  file_.reset(new (std::nothrow) detail::PhysicalWalFile{});
-  if (!file_) {
+  physical_wal_.reset(new (std::nothrow) detail::PhysicalWalAdapter{});
+  if (!physical_wal_) {
     storage_.release();
     return {OpenStatus::AllocationFailed};
   }
-  const OpenStatus file_status = file_->create(path, config);
+  const OpenStatus file_status = physical_wal_->create(path, config);
   if (file_status != OpenStatus::Ok) {
     release_resources();
     return {file_status};
@@ -206,15 +206,15 @@ DurabilityResult Wal::advance_durable(std::uint32_t batch_size) noexcept {
 
   std::uint32_t slot = durable_slot_;
   for (std::uint64_t position = durable; position < end; ++position) {
-    if (!file_->append_record(position + 1u,
-                              storage_.block_at_slot(slot))) {
+    if (!physical_wal_->append_record(position + 1u,
+                                      storage_.block_at_slot(slot))) {
       io_failed_.store(true, std::memory_order_release);
       return {DurabilityStatus::IoError, durable, 0};
     }
     slot = storage_.next_slot(slot);
   }
 
-  if (!file_->sync()) {
+  if (!physical_wal_->sync()) {
     io_failed_.store(true, std::memory_order_release);
     return {DurabilityStatus::IoError, durable, 0};
   }
@@ -265,8 +265,8 @@ CloseResult Wal::close() noexcept {
   }
 
   open_.store(false, std::memory_order_release);
-  const bool close_ok = file_->close();
-  file_.reset();
+  const bool close_ok = physical_wal_->close();
+  physical_wal_.reset();
   storage_.release();
   return {!io_failed && close_ok ? CloseStatus::Ok : CloseStatus::IoError};
 }
@@ -288,9 +288,9 @@ WalSnapshot Wal::snapshot() const noexcept {
 }
 
 void Wal::release_resources() noexcept {
-  if (file_) {
-    (void)file_->close();
-    file_.reset();
+  if (physical_wal_) {
+    (void)physical_wal_->close();
+    physical_wal_.reset();
   }
   storage_.release();
 }

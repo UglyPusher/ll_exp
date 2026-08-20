@@ -10,13 +10,13 @@
 
 namespace fexma::wal::detail {
 
-class PhysicalWalFile final {
+class PhysicalWalAdapter final {
 public:
-  PhysicalWalFile() = default;
-  ~PhysicalWalFile();
+  PhysicalWalAdapter() = default;
+  ~PhysicalWalAdapter();
 
-  PhysicalWalFile(const PhysicalWalFile&) = delete;
-  PhysicalWalFile& operator=(const PhysicalWalFile&) = delete;
+  PhysicalWalAdapter(const PhysicalWalAdapter&) = delete;
+  PhysicalWalAdapter& operator=(const PhysicalWalAdapter&) = delete;
 
   [[nodiscard]] OpenStatus create(const std::filesystem::path& path,
                                   const WalConfig& config) noexcept;

@@ -191,10 +191,10 @@ PhysicalWalFileTestControl* test_control{};
 
 } // namespace
 
-PhysicalWalFile::~PhysicalWalFile() { (void)close(); }
+PhysicalWalAdapter::~PhysicalWalAdapter() { (void)close(); }
 
-OpenStatus PhysicalWalFile::create(const std::filesystem::path& path,
-                                   const WalConfig& config) noexcept {
+OpenStatus PhysicalWalAdapter::create(const std::filesystem::path& path,
+                                      const WalConfig& config) noexcept {
   if (is_open()) {
     return OpenStatus::IoError;
   }
@@ -255,7 +255,7 @@ OpenStatus PhysicalWalFile::create(const std::filesystem::path& path,
   return OpenStatus::Ok;
 }
 
-bool PhysicalWalFile::append_record(
+bool PhysicalWalAdapter::append_record(
     std::uint64_t sequence,
     std::span<const std::byte> payload) noexcept {
   if (!is_open() || payload.size() != config_.payload_size ||
@@ -286,7 +286,7 @@ bool PhysicalWalFile::append_record(
   return true;
 }
 
-bool PhysicalWalFile::sync() noexcept {
+bool PhysicalWalAdapter::sync() noexcept {
   if (!is_open() || inject_sync_failure()) {
     return false;
   }
@@ -300,7 +300,7 @@ bool PhysicalWalFile::sync() noexcept {
 #endif
 }
 
-bool PhysicalWalFile::close() noexcept {
+bool PhysicalWalAdapter::close() noexcept {
   if (!is_open()) {
     return true;
   }
@@ -319,7 +319,7 @@ bool PhysicalWalFile::close() noexcept {
 #endif
 }
 
-bool PhysicalWalFile::is_open() const noexcept {
+bool PhysicalWalAdapter::is_open() const noexcept {
 #if defined(_WIN32)
   return handle_ != nullptr;
 #else
@@ -327,7 +327,7 @@ bool PhysicalWalFile::is_open() const noexcept {
 #endif
 }
 
-bool PhysicalWalFile::write_bytes(
+bool PhysicalWalAdapter::write_bytes(
     std::span<const std::byte> bytes) noexcept {
 #if defined(_WIN32)
   while (!bytes.empty()) {
