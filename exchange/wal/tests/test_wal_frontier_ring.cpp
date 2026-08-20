@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <new>
 #include <span>
 #include <thread>
@@ -201,18 +202,23 @@ void put_u64_le(std::vector<std::byte>& out, std::uint64_t value) {
   put_u32_le(bytes, file_magic);
   put_u16_le(bytes, format_version);
   put_u16_le(bytes, physical_file_header_size);
+  put_u16_le(bytes, static_cast<std::uint16_t>(config.stream_kind));
+  put_u16_le(bytes, 0);
   put_u32_le(bytes, config.payload_size);
-  put_u32_le(bytes, config.alignment);
-  put_u64_le(bytes, 1);
-  put_u32_le(bytes, 0);
-  put_u32_le(bytes, records_offset(config));
   put_u32_le(bytes, config.payload_schema_version);
+  put_u32_le(bytes, config.alignment);
+  put_u32_le(bytes, records_offset(config));
+  put_u64_le(bytes, config.stream_id);
+  put_u64_le(bytes, config.epoch_id);
+  put_u64_le(bytes, config.first_sequence);
+  put_u64_le(bytes, config.manifest_id);
+  put_u32_le(bytes, 0);
 
   const std::uint32_t crc = test_crc32(bytes.data(), bytes.size());
-  bytes[24] = static_cast<std::byte>(crc & 0xffu);
-  bytes[25] = static_cast<std::byte>((crc >> 8u) & 0xffu);
-  bytes[26] = static_cast<std::byte>((crc >> 16u) & 0xffu);
-  bytes[27] = static_cast<std::byte>((crc >> 24u) & 0xffu);
+  bytes[60] = static_cast<std::byte>(crc & 0xffu);
+  bytes[61] = static_cast<std::byte>((crc >> 8u) & 0xffu);
+  bytes[62] = static_cast<std::byte>((crc >> 16u) & 0xffu);
+  bytes[63] = static_cast<std::byte>((crc >> 24u) & 0xffu);
   return bytes;
 }
 
@@ -242,12 +248,20 @@ template <std::size_t N>
   const auto path = test_path("fexma_wal_invalid_config.wal");
   std::filesystem::remove(path);
 
+  WalConfig unknown_kind{8, 1, 64};
+  unknown_kind.stream_kind = static_cast<StreamKind>(99);
+  const WalConfig incomplete_command{8, 1, 64, 1, StreamKind::Command};
+
   Wal wal;
   return wal.open(path, {0, 1, 64}).status == OpenStatus::InvalidConfig &&
          wal.open(path, {8, 0, 64}).status == OpenStatus::InvalidConfig &&
          wal.open(path, {8, 1, 0}).status == OpenStatus::InvalidConfig &&
          wal.open(path, {8, 1, 24}).status == OpenStatus::InvalidConfig &&
-         wal.open(path, {8, 1, 7}).status == OpenStatus::InvalidConfig;
+         wal.open(path, {8, 1, 7}).status == OpenStatus::InvalidConfig &&
+         wal.open(path, {8, 1, 64, 0, StreamKind::Generic, 0, 0, 0})
+                 .status == OpenStatus::InvalidConfig &&
+         wal.open(path, unknown_kind).status == OpenStatus::InvalidConfig &&
+         wal.open(path, incomplete_command).status == OpenStatus::InvalidConfig;
 }
 
 [[nodiscard]] bool existing_file_is_not_destroyed() {
@@ -574,15 +588,18 @@ template <std::size_t N>
   const auto path = test_path("fexma_wal_format.wal");
   std::filesystem::remove(path);
 
-  constexpr WalConfig config{12, 4, 64, 17};
+  constexpr WalConfig config{12, 4, 64, 17, StreamKind::Command,
+                             41, 7, 101, 19};
   const std::array inputs{payload<12>(1), payload<12>(2), payload<12>(3)};
   {
     Wal wal;
     if (!wal.open(path, config).ok()) {
       return false;
     }
-    for (const auto& input : inputs) {
-      if (!wal.try_publish(input).ok()) {
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+      const PublishResult published = wal.try_publish(inputs[index]);
+      if (!published.ok() ||
+          published.sequence != config.first_sequence + index) {
         return false;
       }
     }
@@ -590,8 +607,11 @@ template <std::size_t N>
     if (!wal.advance_durable(2).ok() || !wal.advance_durable().ok()) {
       return false;
     }
-    for (const auto& input : inputs) {
-      if (!wal.try_consume(output).ok() || !equal(output, input)) {
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+      const ConsumeResult consumed = wal.try_consume(output);
+      if (!consumed.ok() ||
+          consumed.sequence != config.first_sequence + index ||
+          !equal(output, inputs[index])) {
         return false;
       }
     }
@@ -627,7 +647,7 @@ template <std::size_t N>
     }
 
     const auto expected_record =
-        expected_record_header(index + 1u, inputs[index]);
+        expected_record_header(config.first_sequence + index, inputs[index]);
     const auto record_begin = file_bytes.begin() + offset;
     if (!std::equal(expected_record.begin(), expected_record.end(),
                     record_begin)) {
@@ -710,6 +730,39 @@ template <std::size_t N>
     std::filesystem::remove(path);
   }
   return true;
+}
+
+[[nodiscard]] bool sequence_domain_exhaustion_is_fail_closed() {
+  const auto path = test_path("fexma_wal_sequence_exhaustion.wal");
+  std::filesystem::remove(path);
+
+  constexpr std::uint64_t last_sequence =
+      std::numeric_limits<std::uint64_t>::max();
+  Wal wal;
+  if (!wal.open(path, {8, 2, 64, 0, StreamKind::Generic,
+                       0, 0, last_sequence})
+           .ok()) {
+    return false;
+  }
+
+  const PublishResult published = wal.try_publish(payload<8>(1));
+  const PublishResult exhausted = wal.try_publish(payload<8>(2));
+  const CloseResult pending = wal.close();
+  const DurabilityResult durable = wal.advance_durable();
+  std::array<std::byte, 8> output{};
+  const ConsumeResult consumed = wal.try_consume(output);
+  const WalSnapshot snapshot = wal.snapshot();
+  const CloseResult closed = wal.close();
+
+  std::filesystem::remove(path);
+  return published.ok() && published.sequence == last_sequence &&
+         durable.ok() && consumed.ok() &&
+         consumed.sequence == last_sequence &&
+         exhausted.status == PublishStatus::SequenceExhausted &&
+         pending.status == CloseStatus::PendingDurability &&
+         snapshot.tail == 1 &&
+         snapshot.durable == 1 && snapshot.head == 1 &&
+         closed.status == CloseStatus::SequenceExhausted;
 }
 
 struct StressPayload {
@@ -838,5 +891,6 @@ int main() {
   if (!physical_file_format_crc_and_padding_are_correct()) return 11;
   if (!physical_records_are_aligned()) return 12;
   if (!three_role_spsc_stress()) return 13;
+  if (!sequence_domain_exhaustion_is_fail_closed()) return 14;
   return 0;
 }

@@ -20,6 +20,8 @@ publishes `tail` after copying the block.
 
 `open()` creates only a new WAL file and never truncates an existing path. The
 physical file uses canonical little-endian headers and aligned record offsets.
+Its immutable identity binds one stream kind and ID to one epoch, manifest, and
+payload schema; runtime ring capacity is intentionally not persisted.
 
 Start with [CONTRACT.md](doc/CONTRACT.md), then see
 [DESIGN.md](doc/DESIGN.md) and [INVARIANTS.md](doc/INVARIANTS.md).

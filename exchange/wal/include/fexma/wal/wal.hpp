@@ -110,6 +110,7 @@ private:
   Storage storage_{};
   std::unique_ptr<detail::PhysicalWalAdapter> physical_wal_{};
   WalConfig config_{};
+  std::atomic<bool> sequence_exhausted_{false};
   std::atomic<bool> io_failed_{false};
   std::atomic<bool> open_{false};
 

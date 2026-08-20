@@ -13,7 +13,8 @@ head - tail <= capacity
 - `[durable, head)` is published by the producer but not readable.
 - `[head, tail + capacity)` is free capacity.
 - Position `p` maps to block `p % capacity`.
-- Position `p` maps to physical sequence `p + 1`.
+- Position `p` maps to physical sequence `first_sequence + p` without unsigned
+  wraparound.
 
 Only the producer writes `head`, only the durability writer writes `durable`,
 and only the consumer writes `tail`.

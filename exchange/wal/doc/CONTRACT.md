@@ -34,9 +34,14 @@ contract.
 ## Payload And Lifetime
 
 Each WAL instance has one non-zero `payload_size`, one file-level
-`payload_schema_version`, and bounded non-zero `capacity`. Payload bytes and
+`payload_schema_version`, one stream identity, one epoch, one non-zero
+`first_sequence`, and bounded non-zero runtime `capacity`. Payload bytes and
 the meaning of the schema version are opaque to the WAL. Schema version `0` is
 reserved for callers that do not declare an application payload schema.
+
+Generic infrastructure WALs may use zero stream, epoch, and manifest identities.
+Command and Event WALs require non-zero `stream_id`, `epoch_id`, and
+`manifest_id`. Runtime `capacity` is not part of the physical file identity.
 
 `payload_size` is fixed for the entire file. Physical records do not carry an
 individual payload length. Application schemas that encode shorter logical
@@ -51,13 +56,18 @@ return.
 
 `try_publish()` is non-blocking and allocation-free. On success it copies one
 payload into the block at `head`, publishes `head + 1`, and returns physical
-sequence `position + 1`.
+sequence `first_sequence + position`.
 
 It returns `Full` when `head - tail == capacity`. Success does not mean the
 payload is durable or visible to the consumer.
 
 After a durability I/O failure, producer calls return `IoError` without
 publishing more data.
+
+Exhausting the physical sequence domain puts the WAL into a distinct
+fail-closed `SequenceExhausted` producer state; no wrapped sequence is
+published. The durability writer and consumer may finish the already published
+valid prefix before close reports `SequenceExhausted`.
 
 ## Advance Durable
 

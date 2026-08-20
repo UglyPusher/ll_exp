@@ -18,19 +18,24 @@
 
 namespace fexma::wal {
 
-inline constexpr std::uint16_t physical_file_header_size = 36;
+inline constexpr std::uint16_t physical_file_header_size = 64;
 inline constexpr std::uint16_t physical_record_header_size = 24;
 
 struct FileHeader {
   std::uint32_t magic{file_magic};
   std::uint16_t version{format_version};
   std::uint16_t header_size{physical_file_header_size};
+  StreamKind stream_kind{StreamKind::Generic};
+  std::uint16_t flags{};
   std::uint32_t payload_size{};
-  std::uint32_t alignment{default_alignment};
-  std::uint64_t next_sequence{1};
-  std::uint32_t header_crc32{};
-  std::uint32_t records_offset{};
   std::uint32_t payload_schema_version{};
+  std::uint32_t alignment{default_alignment};
+  std::uint32_t records_offset{};
+  StreamId stream_id{};
+  EpochId epoch_id{};
+  std::uint64_t first_sequence{1};
+  ManifestId manifest_id{};
+  std::uint32_t header_crc32{};
 };
 
 struct RecordHeader {

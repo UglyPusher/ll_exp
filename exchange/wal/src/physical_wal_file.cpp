@@ -147,12 +147,17 @@ serialize_file_header(FileHeader header) noexcept {
   put_u32_le(out, 0, header.magic);
   put_u16_le(out, 4, header.version);
   put_u16_le(out, 6, header.header_size);
-  put_u32_le(out, 8, header.payload_size);
-  put_u32_le(out, 12, header.alignment);
-  put_u64_le(out, 16, header.next_sequence);
-  put_u32_le(out, 24, header.header_crc32);
-  put_u32_le(out, 28, header.records_offset);
-  put_u32_le(out, 32, header.payload_schema_version);
+  put_u16_le(out, 8, static_cast<std::uint16_t>(header.stream_kind));
+  put_u16_le(out, 10, header.flags);
+  put_u32_le(out, 12, header.payload_size);
+  put_u32_le(out, 16, header.payload_schema_version);
+  put_u32_le(out, 20, header.alignment);
+  put_u32_le(out, 24, header.records_offset);
+  put_u64_le(out, 28, header.stream_id);
+  put_u64_le(out, 36, header.epoch_id);
+  put_u64_le(out, 44, header.first_sequence);
+  put_u64_le(out, 52, header.manifest_id);
+  put_u32_le(out, 60, header.header_crc32);
   return out;
 }
 
@@ -220,10 +225,15 @@ OpenStatus PhysicalWalAdapter::create(const std::filesystem::path& path,
 
   config_ = config;
   FileHeader header{};
+  header.stream_kind = config.stream_kind;
   header.payload_size = config.payload_size;
+  header.payload_schema_version = config.payload_schema_version;
   header.alignment = config.alignment;
   header.records_offset = records_offset(config);
-  header.payload_schema_version = config.payload_schema_version;
+  header.stream_id = config.stream_id;
+  header.epoch_id = config.epoch_id;
+  header.first_sequence = config.first_sequence;
+  header.manifest_id = config.manifest_id;
   header.header_crc32 = file_header_crc32(header);
   const auto header_bytes = serialize_file_header(header);
 

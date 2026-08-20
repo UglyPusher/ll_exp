@@ -42,11 +42,38 @@ namespace {
   return true;
 }
 
+[[nodiscard]] bool valid_stream_kind(StreamKind kind) noexcept {
+  switch (kind) {
+  case StreamKind::Generic:
+  case StreamKind::Command:
+  case StreamKind::Event:
+    return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool sequence_at_position(const WalConfig& config,
+                                        std::uint64_t position,
+                                        std::uint64_t& sequence) noexcept {
+  if (position >
+      std::numeric_limits<std::uint64_t>::max() - config.first_sequence) {
+    return false;
+  }
+  sequence = config.first_sequence + position;
+  return true;
+}
+
 } // namespace
 
 bool valid_config(const WalConfig& config) noexcept {
   if (config.payload_size == 0 || config.capacity == 0 ||
-      config.alignment < alignof(void*)) {
+      config.alignment < alignof(void*) || config.first_sequence == 0 ||
+      !valid_stream_kind(config.stream_kind)) {
+    return false;
+  }
+  if (config.stream_kind != StreamKind::Generic &&
+      (config.stream_id == 0 || config.epoch_id == 0 ||
+       config.manifest_id == 0)) {
     return false;
   }
   if ((config.alignment & (config.alignment - 1u)) != 0) {
@@ -154,6 +181,7 @@ OpenResult Wal::open(const std::filesystem::path& path,
   tail_slot_ = 0;
   durable_slot_ = 0;
   head_slot_ = 0;
+  sequence_exhausted_.store(false, std::memory_order_relaxed);
   io_failed_.store(false, std::memory_order_relaxed);
   open_.store(true, std::memory_order_release);
   return {OpenStatus::Ok};
@@ -166,6 +194,9 @@ PublishResult Wal::try_publish(std::span<const std::byte> payload) noexcept {
   if (payload.size() != config_.payload_size) {
     return {PublishStatus::InvalidPayloadSize, 0};
   }
+  if (sequence_exhausted_.load(std::memory_order_acquire)) {
+    return {PublishStatus::SequenceExhausted, 0};
+  }
   if (io_failed_.load(std::memory_order_acquire)) {
     return {PublishStatus::IoError, 0};
   }
@@ -176,11 +207,17 @@ PublishResult Wal::try_publish(std::span<const std::byte> payload) noexcept {
     return {PublishStatus::Full, 0};
   }
 
+  std::uint64_t sequence{};
+  if (!sequence_at_position(config_, head, sequence)) {
+    sequence_exhausted_.store(true, std::memory_order_release);
+    return {PublishStatus::SequenceExhausted, 0};
+  }
+
   std::span<std::byte> block = storage_.block_at_slot(head_slot_);
   std::memcpy(block.data(), payload.data(), payload.size());
   head_slot_ = storage_.next_slot(head_slot_);
   head_frontier_.value.store(head + 1u, std::memory_order_release);
-  return {PublishStatus::Ok, head + 1u};
+  return {PublishStatus::Ok, sequence};
 }
 
 DurabilityResult Wal::advance_durable(std::uint32_t batch_size) noexcept {
@@ -206,7 +243,12 @@ DurabilityResult Wal::advance_durable(std::uint32_t batch_size) noexcept {
 
   std::uint32_t slot = durable_slot_;
   for (std::uint64_t position = durable; position < end; ++position) {
-    if (!physical_wal_->append_record(position + 1u,
+    std::uint64_t sequence{};
+    if (!sequence_at_position(config_, position, sequence)) {
+      sequence_exhausted_.store(true, std::memory_order_release);
+      return {DurabilityStatus::SequenceExhausted, durable, 0};
+    }
+    if (!physical_wal_->append_record(sequence,
                                       storage_.block_at_slot(slot))) {
       io_failed_.store(true, std::memory_order_release);
       return {DurabilityStatus::IoError, durable, 0};
@@ -240,10 +282,12 @@ ConsumeResult Wal::try_consume(std::span<std::byte> payload) noexcept {
   }
 
   std::span<const std::byte> block = storage_.block_at_slot(tail_slot_);
+  std::uint64_t sequence{};
+  (void)sequence_at_position(config_, tail, sequence);
   std::memcpy(payload.data(), block.data(), payload.size());
   tail_slot_ = storage_.next_slot(tail_slot_);
   tail_frontier_.value.store(tail + 1u, std::memory_order_release);
-  return {ConsumeStatus::Ok, tail + 1u};
+  return {ConsumeStatus::Ok, sequence};
 }
 
 CloseResult Wal::close() noexcept {
@@ -258,6 +302,8 @@ CloseResult Wal::close() noexcept {
     return {CloseStatus::PendingConsumption};
   }
 
+  const bool sequence_exhausted =
+      sequence_exhausted_.load(std::memory_order_acquire);
   const bool io_failed = io_failed_.load(std::memory_order_acquire);
   if (!io_failed &&
       durable != head_frontier_.value.load(std::memory_order_acquire)) {
@@ -268,7 +314,11 @@ CloseResult Wal::close() noexcept {
   const bool close_ok = physical_wal_->close();
   physical_wal_.reset();
   storage_.release();
-  return {!io_failed && close_ok ? CloseStatus::Ok : CloseStatus::IoError};
+  if (!close_ok || io_failed) {
+    return {CloseStatus::IoError};
+  }
+  return {sequence_exhausted ? CloseStatus::SequenceExhausted
+                             : CloseStatus::Ok};
 }
 
 bool Wal::is_open() const noexcept {
