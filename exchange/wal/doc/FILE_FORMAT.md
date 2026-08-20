@@ -15,20 +15,26 @@ only an I/O grouping and does not add a batch header.
 
 ## File Header
 
-The canonical file header is 32 bytes. All integer fields are little-endian:
+The canonical file header is 36 bytes. All integer fields are little-endian:
 
 ```text
 u32 magic
 u16 version
-u16 header_size       == 32
+u16 header_size       == 36
 u32 payload_size
 u32 alignment
 u64 next_sequence     == 1
 u32 header_crc32
 u32 records_offset
+u32 payload_schema_version
 ```
 
-`header_crc32` is CRC32 of the canonical 32 bytes with `header_crc32` encoded
+`payload_schema_version` identifies the application-level schema used to encode
+every payload in this file. It is file metadata and is not repeated in physical
+record headers or payloads. Value `0` means that the generic WAL caller has not
+declared an application schema.
+
+`header_crc32` is CRC32 of the canonical 36 bytes with `header_crc32` encoded
 as zero. `records_offset` is the first byte of the record area and is always a
 multiple of `alignment`. Zero padding between the file header and
 `records_offset` is part of the physical file but not part of the file-header

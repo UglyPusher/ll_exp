@@ -206,6 +206,7 @@ void put_u64_le(std::vector<std::byte>& out, std::uint64_t value) {
   put_u64_le(bytes, 1);
   put_u32_le(bytes, 0);
   put_u32_le(bytes, records_offset(config));
+  put_u32_le(bytes, config.payload_schema_version);
 
   const std::uint32_t crc = test_crc32(bytes.data(), bytes.size());
   bytes[24] = static_cast<std::byte>(crc & 0xffu);
@@ -573,7 +574,7 @@ template <std::size_t N>
   const auto path = test_path("fexma_wal_format.wal");
   std::filesystem::remove(path);
 
-  constexpr WalConfig config{12, 4, 64};
+  constexpr WalConfig config{12, 4, 64, 17};
   const std::array inputs{payload<12>(1), payload<12>(2), payload<12>(3)};
   {
     Wal wal;

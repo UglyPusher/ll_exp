@@ -152,6 +152,7 @@ serialize_file_header(FileHeader header) noexcept {
   put_u64_le(out, 16, header.next_sequence);
   put_u32_le(out, 24, header.header_crc32);
   put_u32_le(out, 28, header.records_offset);
+  put_u32_le(out, 32, header.payload_schema_version);
   return out;
 }
 
@@ -222,6 +223,7 @@ OpenStatus PhysicalWalFile::create(const std::filesystem::path& path,
   header.payload_size = config.payload_size;
   header.alignment = config.alignment;
   header.records_offset = records_offset(config);
+  header.payload_schema_version = config.payload_schema_version;
   header.header_crc32 = file_header_crc32(header);
   const auto header_bytes = serialize_file_header(header);
 

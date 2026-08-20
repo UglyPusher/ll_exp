@@ -353,6 +353,30 @@ void* counted_alloc(std::size_t size, std::size_t alignment = 0) {
          book.validate_invariants();
 }
 
+[[nodiscard]] bool snapshot_restore_preserves_fifo_state() {
+  OrderBook source({64, 192, 8});
+  if (!source.insert({1, 11, Side::Bid, 128, 10}).ok() ||
+      !source.insert({2, 12, Side::Bid, 128, 20}).ok() ||
+      !source.insert({3, 13, Side::Bid, 191, 30}).ok() ||
+      !source.insert({4, 14, Side::Ask, 96, 40}).ok() ||
+      !source.insert({5, 15, Side::Ask, 96, 50}).ok()) {
+    return false;
+  }
+
+  std::vector<OrderView> orders(source.order_count());
+  const SnapshotResult snapshotted = source.snapshot_into(orders);
+  if (!snapshotted.ok() || snapshotted.copied != orders.size()) {
+    return false;
+  }
+
+  OrderBook restored({64, 192, 8});
+  if (!restored.restore(orders).ok() || !restored.validate_invariants()) {
+    return false;
+  }
+
+  return same_book_snapshot(std::move(restored), std::move(source));
+}
+
 [[nodiscard]] bool runtime_operations_do_not_allocate() {
   OrderBook book({1, 128, 16});
   (void)book.insert({1, 1, Side::Ask, 10, 10});
@@ -526,17 +550,20 @@ int main() {
   if (!duplicate_rollback_preserves_next_pool_slot()) {
     return 6;
   }
-  if (!runtime_operations_do_not_allocate()) {
+  if (!snapshot_restore_preserves_fifo_state()) {
     return 7;
   }
-  if (!validator_rejects_zero_remaining()) {
+  if (!runtime_operations_do_not_allocate()) {
     return 8;
   }
-  if (!validator_rejects_price_outside_configured_range()) {
+  if (!validator_rejects_zero_remaining()) {
     return 9;
   }
-  if (!validator_rejects_invalid_cached_best()) {
+  if (!validator_rejects_price_outside_configured_range()) {
     return 10;
+  }
+  if (!validator_rejects_invalid_cached_best()) {
+    return 11;
   }
   return 0;
 }

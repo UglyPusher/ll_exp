@@ -12,26 +12,31 @@ using namespace fexma::matcher;
 
 namespace {
 
+inline constexpr ClientId example_client_id = 17;
+
 class ArrayCommandReader {
 public:
-  explicit ArrayCommandReader(const std::array<Command, 3>& commands)
+  explicit ArrayCommandReader(const std::array<CommandEnvelope, 3>& commands)
       : commands_(commands) {}
 
   [[nodiscard]] CommandReadResult read_next() noexcept {
     if (next_ == commands_.size()) {
-      return {CommandReadStatus::Ok, {CommandType::Shutdown, {}}};
+      return {CommandReadStatus::Ok,
+              {commands_.back().command_sequence + 1,
+               {example_client_id, Command{ShutdownCommand{}}}}};
     }
     return {CommandReadStatus::Ok, commands_[next_++]};
   }
 
 private:
-  const std::array<Command, 3>& commands_;
+  const std::array<CommandEnvelope, 3>& commands_;
   std::size_t next_{};
 };
 
 class CountingEventWriter {
 public:
-  [[nodiscard]] PublishResult publish(const Event& event) noexcept {
+  [[nodiscard]] PublishResult publish(const EventEnvelope& envelope) noexcept {
+    const Event& event = envelope.payload.message;
     if (event.type == EventType::Trade) {
       ++trades;
     }
@@ -49,18 +54,22 @@ public:
   std::uint32_t done{};
 };
 
-[[nodiscard]] Command new_limit(OrderId id, OwnerId owner_id, Side side,
-                                PriceTick price, Quantity quantity) noexcept {
-  return {CommandType::NewLimit, {id, owner_id, side, price, quantity}};
+[[nodiscard]] CommandEnvelope new_limit(CommandSequence command_sequence,
+                                        OrderId id, OwnerId owner_id,
+                                        Side side, PriceTick price,
+                                        Quantity quantity) noexcept {
+  return {command_sequence,
+          {example_client_id,
+           Command{NewLimitOrder{id, owner_id, side, price, quantity}}}};
 }
 
 } // namespace
 
 int main() {
   const std::array commands{
-      new_limit(1, 101, Side::Ask, 105, 7),
-      new_limit(2, 202, Side::Bid, 104, 3),
-      new_limit(3, 303, Side::Bid, 106, 5),
+      new_limit(1, 1, 101, Side::Ask, 105, 7),
+      new_limit(2, 2, 202, Side::Bid, 104, 3),
+      new_limit(3, 3, 303, Side::Bid, 106, 5),
   };
 
   ArrayCommandReader reader(commands);

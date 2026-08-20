@@ -24,6 +24,11 @@ durable events.
 Event transport is a bounded ring with one producer, one persistence stage, and
 multiple downstream consumers.
 
+One Event Ring and its Event WAL file serve exactly one instrument in exactly
+one epoch. `(InstrumentId, EpochId)` is fixed by tract configuration and the
+manifest and is not repeated in each `EventWalPayload`. A new epoch creates a
+new Event WAL file.
+
 The ring has two different parts:
 
 1. Matcher to Persistence is a sequential publication stage.
@@ -45,10 +50,11 @@ independently and never modify event payloads.
 
 Matcher is the sole producer of events. It:
 
-- transforms one ordered command into zero or more ordered events;
+- transforms one ordered command into one or more ordered events;
 - assigns deterministic event sequences;
 - records causation to the source command;
-- publishes completed events or an event batch to the ring;
+- retains at most the final event of the current command and publishes events
+  with an explicit command-result boundary;
 - forgets the published data after successful publication.
 
 The Matcher thread also publishes command rejections produced by earlier
@@ -73,6 +79,8 @@ Every required consumer:
 
 - reads only events below `durable`;
 - processes events strictly in event-sequence order;
+- applies events and advances progress only for a complete command result ending
+  with `is_last_for_command`;
 - owns and publishes its own progress cursor;
 - is independently rebuildable from Event WAL;
 - never modifies the shared event block.
@@ -117,22 +125,35 @@ position.
 
 ## Event identity and causation
 
-Every logical event identifies:
+The in-memory envelope and logical Event WAL payload are:
 
 ```cpp
-struct EventIdentity {
-    EpochId epoch;
+struct EventEnvelope {
     EventSequence event_sequence;
-    CommandSequence caused_by;
+    EventWalPayload payload;
+};
+
+struct EventWalPayload {
+    ClientId client_id;
+    CommandSequence caused_by_command_sequence;
     EventIndex index_in_command;
+    bool is_last_for_command;
+    Event message;
 };
 ```
 
-- `event_sequence` is unique and strictly increasing within an epoch.
-- `caused_by` identifies the source command.
+- `event_sequence` equals the physical Event WAL `RecordHeader::sequence`,
+  starts at `1`, is local to that instrument and epoch, and is not repeated in
+  `EventWalPayload`.
+- `client_id` preserves the accepted command's client for downstream consumers.
+- `caused_by_command_sequence` identifies the source command.
 - `index_in_command` gives deterministic order among events produced by one
   command.
+- indices for one command start at `0` and are contiguous; exactly the final
+  event has `is_last_for_command == true`.
 - Event sequence is assigned by Matcher, not Persistence.
+- Instrument, epoch, and event schema version belong to Event WAL file/manifest
+  metadata and are not repeated in each payload.
 
 Persistence preserves the order already established by Matcher.
 
@@ -278,6 +299,9 @@ snapshot + durable Event WAL suffix -> reconstructed projection
 Event replay:
 
 - applies recorded events in event-sequence order;
+- applies a command result only after validating contiguous indices and
+  `is_last_for_command == true`;
+- discards an incomplete command result at the end of the WAL;
 - does not rerun PreRisk, ReserveManager decisions, or Matcher;
 - verifies physical record integrity and sequence continuity;
 - stops on schema mismatch, corruption, or an unexplained sequence gap.
@@ -288,8 +312,10 @@ then compares the produced Event WAL with the recorded one.
 
 ## Epochs and versions
 
-Every event carries `epoch_id`. The epoch manifest fixes all inputs that can
-change deterministic Command WAL to Event WAL transformation:
+One Event WAL belongs to one instrument and one epoch; `InstrumentId` and
+`EpochId` are not repeated in every `EventWalPayload`. The epoch manifest fixes
+all inputs that can change the deterministic Command WAL to Event WAL
+transformation:
 
 - engine build;
 - Matcher version;
@@ -312,32 +338,33 @@ result:
 Command N -> Event N.0, Event N.1, ... Event N.k
 ```
 
-The baseline requires that consumers never observe a partially published
-in-memory command result. Matcher publishes the completed result as one logical
-batch or publishes its end boundary only after every event is written.
+Matcher retains one final event for the current command. When another event is
+produced, the previous one is published with
+`is_last_for_command == false`; command completion publishes the retained event
+with `is_last_for_command == true`. There is no separate `CommandCompleted`
+event.
 
-Physical crash atomicity of a multi-event command batch remains an open file
-format decision. Recovery must either:
+Consumers may read or make durable a prefix of a multi-event result, but must
+not apply it as a completed business result before the final event. After a
+crash, recovery validates equal `ClientId` and
+`caused_by_command_sequence`, contiguous indices starting at `0`, and the final
+flag. It truncates the tail after the last fully validated command result.
 
-- recognize an explicit batch commit marker/footer; or
-- derive and validate batch completeness from physical record metadata and
-  truncate an incomplete final batch.
-
-Advancing in-memory `durable` after one sync is not by itself sufficient to
-identify a complete batch after a crash.
+Every accepted command must produce at least one event. Therefore
+`ShutdownCommand` publishes `ShutdownEvent`. `CommandReaderFatal` has no
+accepted command and is reported out-of-band instead of using fabricated zero
+identities.
 
 ## Open decisions
 
 1. **Required consumers.** Finalize which projections participate in
    reclamation. In particular, decide whether Client Egress is required or may
    rebuild/resume independently from Event WAL.
-2. **Physical command-batch boundary.** Choose commit marker/footer versus
-   self-describing record metadata for recovery of incomplete final batches.
-3. **Reserve feedback ordering.** Define one deterministic order between new
+2. **Reserve feedback ordering.** Define one deterministic order between new
    command-side reservations and durable trade/cancel/rejection feedback.
-4. **Snapshot consumer.** Decide whether snapshotting is a required ring
+3. **Snapshot consumer.** Decide whether snapshotting is a required ring
    consumer or operates from an independently maintained projection.
-5. **Consumer checkpoints.** Define which progress positions must themselves be
+4. **Consumer checkpoints.** Define which progress positions must themselves be
    durable and how they are restored without skipping events.
 
 ## Consequences

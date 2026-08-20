@@ -98,6 +98,10 @@ public:
     return *this;
   }
 
+  void clear() noexcept {
+    initialize_freelist();
+  }
+
   [[nodiscard]] OrderIndex emplace(OrderId id, OwnerId owner_id,
                                    PriceTick price, Quantity remaining,
                                    Side side) noexcept {

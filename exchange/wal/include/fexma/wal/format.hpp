@@ -18,7 +18,7 @@
 
 namespace fexma::wal {
 
-inline constexpr std::uint16_t physical_file_header_size = 32;
+inline constexpr std::uint16_t physical_file_header_size = 36;
 inline constexpr std::uint16_t physical_record_header_size = 24;
 
 struct FileHeader {
@@ -30,6 +30,7 @@ struct FileHeader {
   std::uint64_t next_sequence{1};
   std::uint32_t header_crc32{};
   std::uint32_t records_offset{};
+  std::uint32_t payload_schema_version{};
 };
 
 struct RecordHeader {

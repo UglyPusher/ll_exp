@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 #include <fexma/order_book/order_id_index.hpp>
 #include <fexma/order_book/side_book.hpp>
@@ -76,6 +77,31 @@ public:
   [[nodiscard]] SetRemainingResult
   set_remaining(OrderId id, Quantity new_remaining) noexcept;
 
+  /** @brief Removes all active orders while preserving fixed storage. */
+  void clear() noexcept;
+
+  /**
+   * @brief Copies active resting orders into caller-owned memory.
+   *
+   * Orders are copied in deterministic side/price/FIFO order. The caller owns
+   * the destination memory, which lets snapshot coordinators decide whether the
+   * barrier uses preallocated memory, an arena, or another handoff buffer.
+   */
+  [[nodiscard]] SnapshotResult
+  snapshot_into(std::span<OrderView> orders) const noexcept;
+
+  /**
+   * @brief Replaces book state from a snapshot image.
+   *
+   * The input is expected to be the exact image previously produced by
+   * snapshot_into() or an equivalent validated recovery image.
+   */
+  [[nodiscard]] RestoreResult
+  restore(std::span<const OrderView> orders) noexcept;
+
+  /** @brief Returns the number of currently active resting orders. */
+  [[nodiscard]] OrderCapacity order_count() const noexcept;
+
   /**
    * @brief Slow structural verifier for tests and Debug diagnostics.
    *
@@ -88,6 +114,10 @@ private:
   using AskBook = SideBook<Side::Ask>;
 
   [[nodiscard]] std::uint32_t active_order_count() const noexcept;
+  template <class Book>
+  [[nodiscard]] SnapshotResult
+  snapshot_side_into(const Book& book, std::span<OrderView> orders,
+                     OrderCapacity& copied) const noexcept;
   [[nodiscard]] bool price_in_range(PriceTick price) const noexcept;
   [[nodiscard]] OrderView view_for(OrderIndex slot) const noexcept;
   [[nodiscard]] OrderView remove_active_order(OrderIndex slot) noexcept;

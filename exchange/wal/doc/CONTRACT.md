@@ -33,8 +33,15 @@ contract.
 
 ## Payload And Lifetime
 
-Each WAL instance has one non-zero `payload_size` and bounded non-zero
-`capacity`. Payload bytes are opaque to the WAL.
+Each WAL instance has one non-zero `payload_size`, one file-level
+`payload_schema_version`, and bounded non-zero `capacity`. Payload bytes and
+the meaning of the schema version are opaque to the WAL. Schema version `0` is
+reserved for callers that do not declare an application payload schema.
+
+`payload_size` is fixed for the entire file. Physical records do not carry an
+individual payload length. Application schemas that encode shorter logical
+values into the fixed payload are responsible for deterministic initialization
+of every remaining byte.
 
 Input and output spans remain owned by the caller. Each operation finishes its
 copy synchronously and never retains the span or accesses caller memory after

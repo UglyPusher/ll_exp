@@ -6,18 +6,50 @@
 
 #include <algorithm>
 #include <optional>
+#include <type_traits>
 
 #include <fexma/matcher/types.hpp>
 #include <fexma/order_book/order_book.hpp>
 
 namespace fexma::matcher {
 
-template <class CommandReader, class EventWriter>
+class NullSnapshotStore final {
+public:
+  [[nodiscard]] SnapshotOperationResult
+  capture(const SaveSnapshotCommand&, const MatcherSnapshotView&) noexcept {
+    return {SnapshotOperationStatus::Ok};
+  }
+
+  [[nodiscard]] SnapshotOperationResult
+  load(const LoadSnapshotCommand&, MatcherSnapshotImage&) noexcept {
+    return {SnapshotOperationStatus::Unavailable};
+  }
+};
+
+template <class CommandReader, class EventWriter,
+          class SnapshotStore = NullSnapshotStore>
 class Matcher final {
 public:
-  Matcher(CommandReader& commands, EventWriter& events,
-          const OrderBookConfig& book_config)
-      : commands_(commands), events_(events), book_(book_config) {}
+  Matcher(CommandReader& command_reader, EventWriter& event_writer,
+          const OrderBookConfig& book_config,
+          EventSequence first_event_sequence = 1)
+      requires std::is_same_v<SnapshotStore, NullSnapshotStore>
+      : command_reader_(command_reader),
+        event_writer_(event_writer),
+        snapshot_store_(&default_snapshot_store_),
+        book_config_(book_config),
+        book_(book_config),
+        next_event_sequence_(first_event_sequence) {}
+
+  Matcher(CommandReader& command_reader, EventWriter& event_writer,
+          SnapshotStore& snapshot_store, const OrderBookConfig& book_config,
+          EventSequence first_event_sequence = 1)
+      : command_reader_(command_reader),
+        event_writer_(event_writer),
+        snapshot_store_(&snapshot_store),
+        book_config_(book_config),
+        book_(book_config),
+        next_event_sequence_(first_event_sequence) {}
 
   Matcher(const Matcher&) = delete;
   Matcher& operator=(const Matcher&) = delete;
@@ -30,10 +62,10 @@ public:
     }
 
     while (running_) {
-      const CommandReadResult read = commands_.read_next();
+      const CommandReadResult read = command_reader_.read_next();
       switch (read.status) {
       case CommandReadStatus::Ok: {
-        const ProcessResult processed = process(read.command);
+        const ProcessResult processed = process(read.envelope);
         if (processed.status == ProcessStatus::Stop) {
           return {RunStatus::Stopped};
         }
@@ -43,32 +75,72 @@ public:
         break;
       }
       case CommandReadStatus::Empty:
-        break;
+        continue;
       case CommandReadStatus::Fatal:
-        return enter_fatal(FatalReason::CommandReaderFatal, {}, {});
+        transition_to_fatal_state(FatalReason::CommandReaderFatal);
+        return {RunStatus::Fatal, fatal_reason_};
       }
     }
 
     return {RunStatus::Stopped};
   }
 
-  [[nodiscard]] ProcessResult process(const Command& command) noexcept {
+  [[nodiscard]] ProcessResult
+  process(const CommandEnvelope& envelope) noexcept {
     if (fatal_) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
 
+    CommandEventBatch events(*this, envelope.payload.client_id,
+                             envelope.command_sequence);
+    const Command& command = envelope.payload.message;
+    ProcessResult processed{};
     switch (command.type) {
+    case CommandType::None:
+      if (!events.add(
+              OrderRejectedEvent{{}, RejectReason::UnknownCommand})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      break;
     case CommandType::NewLimit:
-      return process_new_limit(command.new_limit);
+      processed = process_new_limit(command.new_limit, events);
+      break;
+    case CommandType::SaveSnapshot:
+      processed = process_save_snapshot(
+          command.save_snapshot, envelope.command_sequence, events);
+      break;
+    case CommandType::LoadSnapshot:
+      processed = process_load_snapshot(command.load_snapshot, events);
+      break;
     case CommandType::Shutdown:
+      if (!events.add(ShutdownEvent{})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
       running_ = false;
-      return {ProcessStatus::Stop};
+      processed = {ProcessStatus::Stop};
+      break;
+    default:
+      if (!events.add(
+              OrderRejectedEvent{{}, RejectReason::UnknownCommand})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      break;
     }
 
-    if (!publish_rejected({}, RejectReason::UnknownCommand)) {
+    if (!events.failed() && events.empty()) {
+      if (!events.add(MatcherFatalEvent{
+              FatalReason::CommandProducedNoEvent, {}, last_order_id_})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      transition_to_fatal_state(FatalReason::CommandProducedNoEvent);
+      processed = {ProcessStatus::Fatal,
+                   FatalReason::CommandProducedNoEvent};
+    }
+
+    if (!events.failed() && !events.finish()) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
-    return {ProcessStatus::Continue};
+    return processed;
   }
 
   [[nodiscard]] bool fatal() const noexcept {
@@ -84,22 +156,135 @@ public:
   }
 
 private:
+  class CommandEventBatch final {
+  public:
+    CommandEventBatch(Matcher& matcher, ClientId client_id,
+                      CommandSequence command_sequence) noexcept
+        : matcher_(matcher),
+          client_id_(client_id),
+          command_sequence_(command_sequence) {}
+
+    template <class Payload>
+    [[nodiscard]] bool add(const Payload& payload) noexcept {
+      if (has_pending_ && !publish_pending(false)) {
+        return false;
+      }
+
+      pending_ = Event{payload};
+      pending_index_ = next_index_++;
+      has_pending_ = true;
+      return true;
+    }
+
+    [[nodiscard]] bool finish() noexcept {
+      return has_pending_ && publish_pending(true);
+    }
+
+    [[nodiscard]] bool failed() const noexcept {
+      return failed_;
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+      return !has_pending_;
+    }
+
+  private:
+    [[nodiscard]] bool publish_pending(bool is_last_for_command) noexcept {
+      const EventEnvelope envelope{
+          matcher_.next_event_sequence_,
+          {client_id_, command_sequence_, pending_index_,
+           is_last_for_command, pending_}};
+      if (!matcher_.publish_event(envelope)) {
+        failed_ = true;
+        return false;
+      }
+      has_pending_ = false;
+      return true;
+    }
+
+    Matcher& matcher_;
+    ClientId client_id_{};
+    CommandSequence command_sequence_{};
+    Event pending_{};
+    EventIndex pending_index_{};
+    EventIndex next_index_{};
+    bool has_pending_{};
+    bool failed_{};
+  };
+
+  [[nodiscard]] ProcessResult process_save_snapshot(
+      const SaveSnapshotCommand& command,
+      CommandSequence command_sequence, CommandEventBatch& events) noexcept {
+    const MatcherSnapshotView snapshot{command.snapshot_id,
+                                       command_sequence,
+                                       command.snapshot_epoch_id,
+                                       last_order_id_,
+                                       book_config_,
+                                       &book_};
+    const SnapshotOperationResult captured =
+        snapshot_store_->capture(command, snapshot);
+    if (!captured.ok()) {
+      return enter_fatal_process(FatalReason::SnapshotCaptureFailed, {},
+                                 last_order_id_, events);
+    }
+    if (!events.add(SaveSnapshotEvent{command.snapshot_id,
+                                      command.snapshot_epoch_id})) {
+      return {ProcessStatus::Fatal, fatal_reason_};
+    }
+    return {ProcessStatus::Continue};
+  }
+
+  [[nodiscard]] ProcessResult process_load_snapshot(
+      const LoadSnapshotCommand& command, CommandEventBatch& events) noexcept {
+    MatcherSnapshotImage snapshot{};
+    const SnapshotOperationResult loaded =
+        snapshot_store_->load(command, snapshot);
+    if (!loaded.ok()) {
+      const FatalReason reason =
+          loaded.status == SnapshotOperationStatus::Unavailable
+              ? FatalReason::SnapshotLoadUnavailable
+              : FatalReason::SnapshotLoadInvalid;
+      return enter_fatal_process(reason, {}, last_order_id_, events);
+    }
+
+    if (!same_config(snapshot.book_config, book_config_) ||
+        snapshot.snapshot_id != command.snapshot_id ||
+        snapshot.epoch_id != command.snapshot_epoch_id) {
+      return enter_fatal_process(FatalReason::SnapshotLoadInvalid, {},
+                                 last_order_id_, events);
+    }
+
+    const order_book::RestoreResult restored = book_.restore(snapshot.orders);
+    if (!restored.ok()) {
+      return enter_fatal_process(FatalReason::SnapshotLoadInvalid, {},
+                                 last_order_id_, events);
+    }
+
+    last_order_id_ = snapshot.last_order_id;
+    if (!events.add(LoadSnapshotEvent{command.snapshot_id,
+                                      command.snapshot_epoch_id})) {
+      return {ProcessStatus::Fatal, fatal_reason_};
+    }
+    return {ProcessStatus::Continue};
+  }
+
   [[nodiscard]] ProcessResult process_new_limit(
-      const NewLimitOrder& incoming) noexcept {
+      const NewLimitOrder& incoming, CommandEventBatch& events) noexcept {
     if (incoming.id <= last_order_id_) {
       return enter_fatal_process(FatalReason::NonMonotonicOrderId,
-                                 incoming.id, last_order_id_);
+                                 incoming.id, last_order_id_, events);
     }
     last_order_id_ = incoming.id;
 
     if (incoming.quantity == 0) {
-      if (!publish_rejected(incoming.id, RejectReason::InvalidQuantity)) {
+      if (!events.add(OrderRejectedEvent{incoming.id,
+                                         RejectReason::InvalidQuantity})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
       return {ProcessStatus::Continue};
     }
 
-    if (!publish_accepted(incoming.id)) {
+    if (!events.add(OrderAcceptedEvent{incoming.id})) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
 
@@ -115,7 +300,9 @@ private:
 
       const Quantity executed =
           (std::min)(remaining, resting->remaining);
-      if (!publish_trade(incoming, *resting, executed)) {
+      if (!events.add(TradeEvent{incoming.id, resting->id, incoming.owner_id,
+                                 resting->owner_id, resting->price,
+                                 executed})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
 
@@ -123,20 +310,27 @@ private:
       const Quantity resting_remaining = resting->remaining - executed;
       if (resting_remaining == 0) {
         const order_book::EraseResult erased = book_.erase(resting->id);
-        if (!erased.ok() || !publish_done(resting->id)) {
+        if (!erased.ok()) {
+          return enter_fatal_process(
+              FatalReason::BookEraseFailedAfterExecution, incoming.id,
+              last_order_id_, events);
+        }
+        if (!events.add(OrderDoneEvent{resting->id})) {
           return {ProcessStatus::Fatal, fatal_reason_};
         }
       } else {
         const order_book::SetRemainingResult changed =
             book_.set_remaining(resting->id, resting_remaining);
         if (!changed.ok()) {
-          return {ProcessStatus::Fatal, fatal_reason_};
+          return enter_fatal_process(
+              FatalReason::BookUpdateFailedAfterExecution, incoming.id,
+              last_order_id_, events);
         }
       }
     }
 
     if (remaining == 0) {
-      if (!publish_done(incoming.id)) {
+      if (!events.add(OrderDoneEvent{incoming.id})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
       return {ProcessStatus::Continue};
@@ -147,16 +341,19 @@ private:
                       incoming.price, remaining});
     if (!inserted.ok()) {
       if (remaining == incoming.quantity) {
-        if (!publish_rejected(incoming.id, RejectReason::BookInsertFailed)) {
+        if (!events.add(OrderRejectedEvent{
+                incoming.id, RejectReason::BookInsertFailed})) {
           return {ProcessStatus::Fatal, fatal_reason_};
         }
         return {ProcessStatus::Continue};
       }
       return enter_fatal_process(FatalReason::BookInsertFailedAfterExecution,
-                                 incoming.id, last_order_id_);
+                                 incoming.id, last_order_id_, events);
     }
 
-    if (!publish_rested(incoming, remaining)) {
+    if (!events.add(OrderRestedEvent{incoming.id, incoming.owner_id,
+                                     incoming.side, incoming.price,
+                                     remaining})) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
     return {ProcessStatus::Continue};
@@ -173,112 +370,53 @@ private:
                                       : incoming_price <= resting_price;
   }
 
-  [[nodiscard]] bool publish_accepted(OrderId id) noexcept {
-    Event event{};
-    event.type = EventType::OrderAccepted;
-    event.accepted.id = id;
-    return publish(event);
+  [[nodiscard]] static bool same_config(
+      const OrderBookConfig& lhs, const OrderBookConfig& rhs) noexcept {
+    return lhs.min_price_tick == rhs.min_price_tick &&
+           lhs.max_price_tick == rhs.max_price_tick &&
+           lhs.max_orders == rhs.max_orders;
   }
 
-  [[nodiscard]] bool publish_rejected(OrderId id,
-                                      RejectReason reason) noexcept {
-    Event event{};
-    event.type = EventType::OrderRejected;
-    event.rejected.id = id;
-    event.rejected.reason = reason;
-    return publish(event);
-  }
-
-  [[nodiscard]] bool publish_trade(const NewLimitOrder& taker,
-                                   const order_book::OrderView& maker,
-                                   Quantity quantity) noexcept {
-    Event event{};
-    event.type = EventType::Trade;
-    event.trade.taker_order_id = taker.id;
-    event.trade.maker_order_id = maker.id;
-    event.trade.taker_owner_id = taker.owner_id;
-    event.trade.maker_owner_id = maker.owner_id;
-    event.trade.price = maker.price;
-    event.trade.quantity = quantity;
-    return publish(event);
-  }
-
-  [[nodiscard]] bool publish_rested(const NewLimitOrder& order,
-                                    Quantity remaining) noexcept {
-    Event event{};
-    event.type = EventType::OrderRested;
-    event.rested.id = order.id;
-    event.rested.owner_id = order.owner_id;
-    event.rested.side = order.side;
-    event.rested.price = order.price;
-    event.rested.remaining = remaining;
-    return publish(event);
-  }
-
-  [[nodiscard]] bool publish_done(OrderId id) noexcept {
-    Event event{};
-    event.type = EventType::OrderDone;
-    event.done.id = id;
-    return publish(event);
-  }
-
-  [[nodiscard]] bool publish_matcher_fatal(FatalReason reason,
-                                           OrderId offending_order_id,
-                                           OrderId last_order_id) noexcept {
-    Event event{};
-    event.type = EventType::MatcherFatal;
-    event.fatal.reason = reason;
-    event.fatal.offending_order_id = offending_order_id;
-    event.fatal.last_order_id = last_order_id;
-    return publish(event);
-  }
-
-  [[nodiscard]] bool publish(const Event& event) noexcept {
-    const PublishResult published = events_.publish(event);
+  [[nodiscard]] bool publish_event(const EventEnvelope& envelope) noexcept {
+    const PublishResult published = event_writer_.publish(envelope);
     if (!published.ok()) {
-      fatal_ = true;
-      running_ = false;
-      fatal_reason_ = FatalReason::EventWriterFatal;
+      transition_to_fatal_state(FatalReason::EventWriterFatal);
       return false;
     }
+    ++next_event_sequence_;
     return true;
-  }
-
-  [[nodiscard]] RunResult enter_fatal(FatalReason reason,
-                                      OrderId offending_order_id,
-                                      OrderId last_order_id) noexcept {
-    if (reason != FatalReason::EventWriterFatal &&
-        !publish_matcher_fatal(reason, offending_order_id, last_order_id)) {
-      return {RunStatus::Fatal, fatal_reason_};
-    }
-    mark_fatal(reason);
-    return {RunStatus::Fatal, fatal_reason_};
   }
 
   [[nodiscard]] ProcessResult enter_fatal_process(
       FatalReason reason, OrderId offending_order_id,
-      OrderId last_order_id) noexcept {
+      OrderId last_order_id, CommandEventBatch& events) noexcept {
     if (reason != FatalReason::EventWriterFatal &&
-        !publish_matcher_fatal(reason, offending_order_id, last_order_id)) {
+        !events.add(MatcherFatalEvent{reason, offending_order_id,
+                                      last_order_id})) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
-    mark_fatal(reason);
+    transition_to_fatal_state(reason);
     return {ProcessStatus::Fatal, fatal_reason_};
   }
 
-  void mark_fatal(FatalReason reason) noexcept {
+  void transition_to_fatal_state(FatalReason reason) noexcept {
     fatal_ = true;
     running_ = false;
     fatal_reason_ = reason;
   }
 
-  CommandReader& commands_;
-  EventWriter& events_;
+  CommandReader& command_reader_;
+  EventWriter& event_writer_;
+  SnapshotStore* snapshot_store_{};
+  OrderBookConfig book_config_{};
   order_book::OrderBook book_;
   OrderId last_order_id_{};
+  EventSequence next_event_sequence_{1};
   bool running_{true};
   bool fatal_{false};
   FatalReason fatal_reason_{FatalReason::None};
+
+  inline static NullSnapshotStore default_snapshot_store_{};
 };
 
 } // namespace fexma::matcher

@@ -181,7 +181,7 @@ enum class CommandReadStatus : std::uint8_t {
 
 struct CommandReadResult {
     CommandReadStatus status;
-    Command command;
+    CommandEnvelope envelope;
 };
 
 class ICommandReader {
@@ -198,12 +198,13 @@ public:
 template<class CommandReader, class EventWriter>
 class Matcher {
 public:
-    Matcher(CommandReader& commands,
-            EventWriter& events,
+    Matcher(CommandReader& command_reader,
+            EventWriter& event_writer,
             const OrderBookConfig& book_config);
 
     [[nodiscard]] RunResult run() noexcept;
-    [[nodiscard]] ProcessResult process(const Command& command) noexcept;
+    [[nodiscard]] ProcessResult
+    process(const CommandEnvelope& envelope) noexcept;
 };
 ```
 
@@ -244,7 +245,7 @@ class IEventWriter {
 public:
     virtual ~IEventWriter() = default;
 
-    virtual PublishResult publish(const Event&) noexcept = 0;
+    virtual PublishResult publish(const EventEnvelope&) noexcept = 0;
 };
 ```
 
@@ -258,13 +259,23 @@ Test vector
 Network publisher
 ```
 
-Матчер формирует **семантику событий**, но не владеет механизмом их durability или transport.
+Матчер формирует **семантику событий**, назначает `EventSequence` и публикует
+`EventEnvelope`, но не владеет механизмом durability или transport.
+
+Каждый `EventWalPayload` содержит `ClientId`, причинный `CommandSequence`,
+непрерывный нулевой `index_in_command`, `is_last_for_command` и tagged-union
+`Event`. Matcher удерживает одно последнее событие команды, чтобы только оно
+получило `is_last_for_command == true`. Отдельного `CommandCompleted` event нет.
 
 `EventWriter::publish()` имеет только два наблюдаемых результата: `Ok` и `Fatal`. Временная нехватка capacity не является ошибкой: writer применяет backpressure и ждёт освобождения места. Поэтому в контракте нет `WouldBlock`, `Retry` или похожих состояний.
 
 `PublishStatus::Fatal` означает, что writer больше не может предоставить свой publication contract. Для конкретного failing event возможны обе ситуации: событие гарантированно не принято или результат публикации неизвестен. После `Fatal` matcher немедленно прекращает дальнейшую обработку команд и `Matcher::run()` возвращает fatal-статус. Откат уже изменённого состояния matcher не требуется: текущий экземпляр считается непригодным для продолжения, а восстановление выполняется внешним runtime через загрузку последнего валидного snapshot и replay валидного ordered command stream.
 
 Для stream/system invariant failures, включая `NonMonotonicOrderId`, `EventWriter` считается исправным. Matcher может сначала опубликовать terminal `MatcherFatal`, а затем перейти в terminal/fatal state. При `EventWriterFatal` publication channel уже ненадёжен, поэтому Matcher не пытается публиковать `MatcherFatal` через тот же writer. В этом случае причина доступна через `RunResult`, а diagnostics передаются out-of-band средствами runtime/executor.
+
+`CommandReaderFatal` также передаётся out-of-band: он не вызван принятой
+командой и потому не имеет корректных `ClientId` и `CommandSequence` для
+`EventWalPayload`.
 
 ---
 
@@ -278,11 +289,11 @@ RunResult Matcher::run() noexcept
     initialize();
 
     while (running()) {
-        CommandReadResult read = commands_.read_next();
+        CommandReadResult read = command_reader_.read_next();
 
         switch (read.status) {
             case CommandReadStatus::Ok: {
-                ProcessResult result = process(read.command);
+                ProcessResult result = process(read.envelope);
                 if (result.status == ProcessStatus::Stop) {
                     return {RunStatus::Stopped};
                 }
@@ -292,7 +303,7 @@ RunResult Matcher::run() noexcept
                 break;
             }
             case CommandReadStatus::Empty:
-                break;
+                continue;
             case CommandReadStatus::Fatal:
                 return {RunStatus::Fatal, FatalReason::CommandReaderFatal};
         }
@@ -306,8 +317,9 @@ RunResult Matcher::run() noexcept
 При этом:
 
 ```cpp
-ProcessResult Matcher::process(const Command& command) noexcept
+ProcessResult Matcher::process(const CommandEnvelope& envelope) noexcept
 {
+    const Command& command = envelope.payload.message;
     switch (fsm_.state()) {
         case State::Continuous:
             return process_continuous(command);
@@ -440,6 +452,9 @@ Shutdown command
 Matcher FSM / lifecycle logic
       |
       v
+Shutdown event -> Event WAL
+      |
+      v
 Matcher::run() returns
 ```
 
@@ -482,11 +497,12 @@ public:
     Matcher& operator=(const Matcher&) = delete;
 
     [[nodiscard]] RunResult run() noexcept;
-    [[nodiscard]] ProcessResult process(const Command& command) noexcept;
+    [[nodiscard]] ProcessResult
+    process(const CommandEnvelope& envelope) noexcept;
 
 private:
-    CommandReader& commands_;
-    EventWriter& events_;
+    CommandReader& command_reader_;
+    EventWriter& event_writer_;
 
     MatcherState state_;
     MatcherFSM fsm_;
@@ -498,7 +514,8 @@ private:
 При необходимости можно отдельно оставить primitive для тестирования:
 
 ```cpp
-[[nodiscard]] ProcessResult process(const Command& command) noexcept;
+[[nodiscard]] ProcessResult
+process(const CommandEnvelope& envelope) noexcept;
 ```
 
 Однако production execution path остаётся:

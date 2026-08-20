@@ -14,7 +14,7 @@
 ```mermaid
 flowchart TD
     C["Клиент"] --> RX["Network RX"]
-    RX --> I["Ingress + pseudo-risk"]
+    RX --> I["Ingress"]
     I --> CT["Command blocks"]
     CT --> CW["Command WAL writer"]
     CW --> CD["Command durable boundary"]
@@ -33,11 +33,27 @@ flowchart TD
 
 Network RX принимает пакет. Ingress проверяет формат и сессию, нормализует сообщение и назначает команде внутренний монотонный номер.
 
-Pseudo-risk пока является детерминированной заглушкой: проверяет цену, количество, инструмент, статические лимиты и переполнение. Решение `Allow` либо `Reject(reason)` записывается вместе с командой. При replay risk повторно не вычисляется.
+RiskManager и ReserveManager работают после durable-границы Command WAL. Они
+записывают решения только в собственные оперативные sidecar-области
+`CommandRingSlot`; эти области не входят в Command WAL. При Command replay
+проверочные модули запускаются повторно с зафиксированными для эпохи сборкой,
+ruleset, конфигурацией и начальным snapshot.
 
 ## Command tract
 
-Ingress — единственный producer. Он берёт `CommandBlock` из пула, складывает туда команды и публикует блок всем consumers.
+Один Command tract и его файл Command WAL обслуживают один инструмент внутри
+одной эпохи. `(InstrumentId, EpochId)` задаётся конфигурацией и manifest, а не
+повторяется в каждой команде. Новая эпоха создаёт новый файл Command WAL.
+
+Одна входящая торговая, управляющая или финансовая команда всегда занимает
+ровно одну физическую запись Command WAL. Запись не содержит несколько команд,
+а одна команда не разбивается между записями. Владение WAL для финансовых
+команд, не относящихся к инструменту, требует отдельного решения.
+
+Ingress — единственный producer. Он берёт `CommandRingSlot` из пула, записывает
+неизменяемый `CommandEnvelope` и публикует слот конвейеру. Persistence записывает
+`command_sequence` только в физический заголовок, а `CommandWalPayload` — в
+payload записи. Risk/reserve sidecars существуют только в памяти.
 
 Обязательных consumers два:
 
@@ -57,6 +73,10 @@ Matcher — однопоточный детерминированный авто
 Matcher не работает с диском или сетью. Его выход — только упорядоченные события в `EventBlock`.
 
 ## Event tract и ответ клиенту
+
+Один Event tract и его файл Event WAL обслуживают один инструмент внутри одной
+эпохи. `(InstrumentId, EpochId)` задаётся конфигурацией и manifest и не
+повторяется в `EventWalPayload`.
 
 Все Event-блоки читают:
 

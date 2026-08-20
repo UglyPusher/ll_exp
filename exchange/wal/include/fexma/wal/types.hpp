@@ -11,13 +11,14 @@ namespace fexma::wal {
 
 inline constexpr std::uint32_t file_magic = 0x57414c46u;   // FLAW
 inline constexpr std::uint32_t record_magic = 0x57414c52u; // RLAW
-inline constexpr std::uint16_t format_version = 1;
+inline constexpr std::uint16_t format_version = 2;
 inline constexpr std::uint32_t default_alignment = 64;
 
 struct WalConfig {
   std::uint32_t payload_size{};
   std::uint32_t capacity{};
   std::uint32_t alignment{default_alignment};
+  std::uint32_t payload_schema_version{};
 };
 
 struct WalSnapshot {

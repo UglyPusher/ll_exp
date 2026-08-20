@@ -8,6 +8,34 @@
 Тракт команд от Ingress до Matcher реализуется как один ограниченный
 **SPMC-конвейерный ринг с последовательными границами готовности**.
 
+Один ринг и связанный с ним файл Command WAL обслуживают ровно один инструмент
+внутри ровно одной эпохи. `(InstrumentId, EpochId)` фиксируется конфигурацией
+тракта и manifest и не повторяется в каждом `CommandWalPayload`. Новая эпоха
+создаёт новый файл Command WAL. `CommandSequence` монотонна в пределах файла.
+
+`CommandSequence` равна `RecordHeader::sequence` физической записи Command WAL.
+Отдельного счётчика или таблицы соответствия нет. Ingress получает sequence из
+следующей абсолютной позиции ринга до публикации команды, а Persistence пишет
+то же значение в заголовок физической записи.
+
+Одна принятая входящая команда соответствует ровно одной физической записи
+Command WAL. Это одинаково для торговых, управляющих и финансовых команд:
+запись не содержит batch команд, а команда не разбивается между записями.
+Владение Command WAL для финансовых команд остаётся отдельным открытым
+решением, поскольку они не принадлежат инструменту. Решение обязано задать
+детерминированный порядок между выводом денег из портфеля и одновременным
+созданием резерва или исполнением сделки; локальных sequence независимых WAL
+для этого недостаточно.
+
+Все записи одного Command WAL имеют одинаковый канонический `payload_size`,
+достаточный для самой большой команды текущей версии схемы. Короткая команда
+обнуляет неиспользованный хвост payload. Переменной длины в `RecordHeader` нет;
+канонический размер не выводится из native `sizeof(CommandWalPayload)`.
+
+Каждый `CommandWalPayload` содержит `ClientId`, зафиксированный Ingress вместе
+с командой. `ClientSequence` в payload отсутствует: его инвариант, проверка,
+поведение при reconnect и роль в recovery пока не определены.
+
 Ingress — единственный producer блоков команд. Persistence, PreRisk,
 ReserveManager и Matcher читают одну и ту же неизменяемую команду. В отличие от
 широковещательной SPMC-очереди, consumers упорядочены: каждая стадия может
@@ -66,10 +94,10 @@ Ingress записывает команду до публикации `head`. К
 Модуль может записывать только собственный результат.
 
 ```cpp
-struct CommandBlock {
-    Command command;          // Ingress
-    CheckResult risk;         // PreRisk
-    CheckResult reserve;      // ReserveManager
+struct CommandRingSlot {
+    CommandEnvelope command;  // Ingress; sequence + immutable WAL payload
+    RiskResult risk;          // PreRisk; runtime-only sidecar
+    ReserveResult reserve;    // ReserveManager; runtime-only sidecar
 };
 
 enum class Decision : std::uint8_t {
@@ -80,8 +108,14 @@ enum class Decision : std::uint8_t {
 };
 ```
 
-`CheckResult` — оперативные sidecar-метаданные. Они не являются частью
-неизменяемого payload Command WAL и не входят в CRC физической записи команды.
+Persistence записывает `CommandEnvelope::command_sequence` только в
+`RecordHeader::sequence`, а `CommandEnvelope::payload` сериализует как
+`CommandWalPayload`. Sequence не дублируется в payload.
+
+`RiskResult` и `ReserveResult` — оперативные sidecar-метаданные. Они не являются
+частью неизменяемого `CommandWalPayload`, не сериализуются в Command WAL и не
+входят в CRC физической записи команды. Уже durable-запись Command WAL никогда
+не изменяется проверочными модулями.
 
 Разметка sidecar фиксируется версией сборки/эпохи. Динамический registry, map,
 TLV и аллокации на команду не используются.

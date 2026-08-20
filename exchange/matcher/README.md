@@ -13,11 +13,30 @@ The hot-path contract is intentionally small:
 
 - one matcher instance has one mutable matching state;
 - commands are processed strictly sequentially;
+- `CommandReader` and public `process()` provide a `CommandEnvelope`; raw
+  `Command` payloads are never processed without their WAL-derived sequence;
+- every persisted `CommandWalPayload` contains `ClientId`; no client-provided
+  sequence participates in matcher ordering;
+- `Command` is a tagged union built from typed command payloads; its size grows
+  with the largest payload rather than the sum of every supported command;
+- default `Command{}` has type `None` and cannot stop the matcher accidentally;
+- Command WAL uses one fixed canonical payload width per schema version, sized
+  for the largest command; shorter commands zero-fill unused payload bytes;
 - `CommandReader::read_next()` may return `Ok`, `Empty`, or `Fatal`;
-- graceful shutdown is an ordered `CommandType::Shutdown` command;
+- graceful shutdown is an ordered `CommandType::Shutdown` command that
+  publishes a final `ShutdownEvent` for downstream stateful modules;
+- `SaveSnapshot` and `LoadSnapshot` are ordered barrier commands shared by
+  stateful tract stages;
+- `SaveSnapshot` completes after matcher state has been copied into
+  snapshot-writer memory and the corresponding barrier event has been published
+  to the event stream; disk persistence is asynchronous and outside the matcher
+  fatal path;
+- `LoadSnapshot` replaces matcher state from a snapshot image already available
+  through the snapshot store and publishes the corresponding barrier event to
+  the event stream; hot-path disk reads are outside the matcher;
 - new-order `OrderId` values are strictly monotonically increasing within one
   matcher epoch;
-- `EventWriter::publish()` returns only `Ok` or `Fatal`;
+- `EventWriter::publish(const EventEnvelope&)` returns only `Ok` or `Fatal`;
 - temporary writer capacity pressure is handled inside the writer and is not
   observable by the matcher;
 - after `Fatal`, the matcher instance must not continue processing commands.
@@ -26,6 +45,17 @@ The hot-path contract is intentionally small:
 transition. The concrete pause/backoff strategy is deliberately not modeled in
 this sample.
 
+Every accepted command produces at least one event. Events from one command
+carry contiguous zero-based indices. Matcher retains one pending event: it
+publishes the previous event as non-final when the next appears, and publishes
+the final pending event with `is_last_for_command == true`. `EventSequence`
+equals the physical Event WAL record sequence and is not repeated in
+`EventWalPayload`. An incomplete Event WAL tail without a final event is not a
+complete command result.
+
+One Event WAL belongs to one instrument and one epoch. `InstrumentId` and
+`EpochId` are stream/file metadata and are not repeated in `EventWalPayload`.
+
 `PublishStatus::Fatal` means the writer can no longer provide its publication
 contract. The failing event may be definitely not accepted or may have unknown
 publication status. The matcher stops immediately. Because the publication
@@ -33,6 +63,8 @@ channel is no longer reliable, `EventWriterFatal` diagnostics are available
 through `RunResult` and out-of-band runtime/executor reporting, not through a
 `MatcherFatal` event sent to the same writer. Recovery is performed by loading
 the last valid snapshot and replaying the valid ordered command stream.
+`CommandReaderFatal` is also out-of-band because it is not caused by an
+accepted command and has no truthful `ClientId` or `CommandSequence`.
 
 `OrderId` is assigned upstream before a command reaches the matcher. Within one
 matcher epoch, each new-order command must satisfy `order_id > last_order_id_`.
@@ -48,6 +80,21 @@ outside this sample.
 `EventWriterFatal` is different: if publishing itself fails, the matcher cannot
 reliably publish a fatal marker through the same writer, so diagnostics are only
 available through `RunResult` and out-of-band runtime reporting.
+
+Snapshot barriers use a caller-provided snapshot store only for matcher-local
+state capture/load. After successful local capture/load, the matcher publishes a
+`SaveSnapshot` or `LoadSnapshot` event through the same event writer used for
+order events. Downstream stateful modules observe that event in Event WAL and
+perform their own local barrier work. Save durability failures after the memory
+handoff are handled by external recovery/runtime mechanisms. Failed local
+capture, failed barrier publication, or invalid/unavailable local load is
+terminal for the matcher.
+
+Snapshot command payloads contain snapshot identity only: `snapshot_id` and
+`snapshot_epoch_id`. The causal command sequence comes from the enclosing
+`CommandEnvelope` and is copied into the common `EventWalPayload` as
+`caused_by_command_sequence`; it is not repeated in the snapshot event body.
+The loaded snapshot image carries its own source command boundary independently.
 
 This is a base sample, not a complete exchange matching engine. Open design
 items are tracked in [Matcher TODO.md](../../thoughts/exchange/matcher/Matcher%20TODO.md).

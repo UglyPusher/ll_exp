@@ -66,8 +66,10 @@ POSIX). Existing files are not truncated because recovery is not implemented.
 Physical headers are serialized field-by-field in canonical little-endian byte
 order. Header CRCs are computed over those serialized bytes with the
 corresponding header CRC field set to zero. The file header stores
-`records_offset`, and zero padding fills the gap between the canonical file
-header and the first record so every record starts at an aligned offset.
+`records_offset` and one application-owned `payload_schema_version`. The schema
+version applies to every payload in the file and is not repeated in records.
+Zero padding fills the gap between the canonical file header and the first
+record so every record starts at an aligned offset.
 
 ## Test Boundary
 

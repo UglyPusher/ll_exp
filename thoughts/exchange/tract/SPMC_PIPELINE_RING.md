@@ -8,6 +8,36 @@
 The command tract from Ingress to Matcher is implemented as one bounded
 **SPMC pipeline ring with sequential readiness frontiers**.
 
+One ring and its Command WAL file serve exactly one instrument in exactly one
+epoch. `(InstrumentId, EpochId)` is fixed by tract configuration and the
+manifest and is not repeated in each `CommandWalPayload`. A new epoch creates a
+new Command WAL file. `CommandSequence` is monotonic within that file.
+
+`CommandSequence` equals the physical Command WAL
+`RecordHeader::sequence`. There is no separate counter or mapping table.
+Ingress derives the sequence from the next absolute ring position before
+publishing the command, and Persistence writes the same value into the physical
+record header.
+
+One accepted incoming command corresponds to exactly one physical Command WAL
+record. This applies equally to trading, control, and financial commands: a
+record never contains a command batch, and one command never spans records.
+Command WAL ownership for financial commands remains an explicit open decision
+because those commands are not naturally instrument-scoped. The decision must
+establish deterministic ordering between a portfolio withdrawal and concurrent
+reserve creation or trade execution; independent WAL-local sequences are not
+sufficient by themselves.
+
+Every record in one Command WAL has the same canonical `payload_size`, large
+enough for the largest command in the current schema version. A shorter command
+zero-fills the unused payload tail. `RecordHeader` has no variable payload
+length, and canonical size is not derived from native
+`sizeof(CommandWalPayload)`.
+
+Every `CommandWalPayload` contains the `ClientId` recorded by Ingress together
+with the command. There is no `ClientSequence` in the payload: its invariant,
+validation, reconnect behavior, and recovery role remain undefined.
+
 Ingress is the only producer of command blocks. Persistence, PreRisk,
 ReserveManager, and Matcher are consumers of the same immutable command. Unlike
 a broadcast SPMC queue, consumers are ordered: each stage can process only the
@@ -65,10 +95,10 @@ Each checking module owns a separate decision area in the block. A module may
 write only its own result.
 
 ```cpp
-struct CommandBlock {
-    Command command;          // Ingress
-    CheckResult risk;         // PreRisk
-    CheckResult reserve;      // ReserveManager
+struct CommandRingSlot {
+    CommandEnvelope command;  // Ingress; sequence + immutable WAL payload
+    RiskResult risk;          // PreRisk; runtime-only sidecar
+    ReserveResult reserve;    // ReserveManager; runtime-only sidecar
 };
 
 enum class Decision : std::uint8_t {
@@ -79,8 +109,14 @@ enum class Decision : std::uint8_t {
 };
 ```
 
-`CheckResult` is in-memory sidecar metadata. It is not part of the immutable
-Command WAL payload and is not covered by the command record CRC.
+Persistence writes `CommandEnvelope::command_sequence` only to
+`RecordHeader::sequence` and serializes `CommandEnvelope::payload` as
+`CommandWalPayload`. The sequence is not duplicated in the payload.
+
+`RiskResult` and `ReserveResult` are in-memory sidecar metadata. They are not
+part of the immutable `CommandWalPayload`, are not serialized into Command WAL,
+and are not covered by the command-record payload CRC. Checking stages never
+mutate an already durable Command WAL record.
 
 The sidecar layout is fixed by the engine build/epoch. No dynamic registry,
 map, TLV, or per-command allocation is used.

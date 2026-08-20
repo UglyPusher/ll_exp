@@ -95,6 +95,21 @@ enum class EraseStatus : std::uint8_t {
   NotFound
 };
 
+/** @brief Explicit status for copying active orders into caller-owned memory. */
+enum class SnapshotStatus : std::uint8_t {
+  Ok,
+  CapacityExceeded
+};
+
+/** @brief Explicit status for replacing book state from a snapshot image. */
+enum class RestoreStatus : std::uint8_t {
+  Ok,
+  DuplicateOrderId,
+  CapacityExceeded,
+  PriceOutOfRange,
+  InvalidQuantity
+};
+
 /** @brief Small result wrapper for insert(). */
 struct InsertResult {
   InsertStatus status{InsertStatus::Ok};
@@ -121,6 +136,26 @@ struct EraseResult {
 
   [[nodiscard]] bool ok() const noexcept {
     return status == EraseStatus::Ok;
+  }
+};
+
+/** @brief Result of copying active orders into caller-owned memory. */
+struct SnapshotResult {
+  SnapshotStatus status{SnapshotStatus::Ok};
+  OrderCapacity copied{};
+
+  [[nodiscard]] bool ok() const noexcept {
+    return status == SnapshotStatus::Ok;
+  }
+};
+
+/** @brief Result of replacing book state from a snapshot image. */
+struct RestoreResult {
+  RestoreStatus status{RestoreStatus::Ok};
+  OrderCapacity restored{};
+
+  [[nodiscard]] bool ok() const noexcept {
+    return status == RestoreStatus::Ok;
   }
 };
 

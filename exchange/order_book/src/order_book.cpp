@@ -92,6 +92,62 @@ SetRemainingResult OrderBook::set_remaining(OrderId id,
   return {SetRemainingStatus::Ok, previous_remaining};
 }
 
+void OrderBook::clear() noexcept {
+  pool_.clear();
+  index_.clear();
+  bids_.clear();
+  asks_.clear();
+}
+
+SnapshotResult OrderBook::snapshot_into(
+    std::span<OrderView> orders) const noexcept {
+  OrderCapacity copied = 0;
+  if (orders.size() < active_order_count()) {
+    return {SnapshotStatus::CapacityExceeded, copied};
+  }
+
+  const SnapshotResult bids = snapshot_side_into(bids_, orders, copied);
+  if (!bids.ok()) {
+    return bids;
+  }
+  return snapshot_side_into(asks_, orders, copied);
+}
+
+RestoreResult OrderBook::restore(
+    std::span<const OrderView> orders) noexcept {
+  if (orders.size() > config_.max_orders) {
+    return {RestoreStatus::CapacityExceeded, 0};
+  }
+
+  clear();
+  OrderCapacity restored = 0;
+  for (const OrderView& order : orders) {
+    const InsertResult inserted =
+        insert({order.id, order.owner_id, order.side, order.price,
+                order.remaining});
+    if (!inserted.ok()) {
+      switch (inserted.status) {
+      case InsertStatus::DuplicateOrderId:
+        return {RestoreStatus::DuplicateOrderId, restored};
+      case InsertStatus::CapacityExhausted:
+        return {RestoreStatus::CapacityExceeded, restored};
+      case InsertStatus::PriceOutOfRange:
+        return {RestoreStatus::PriceOutOfRange, restored};
+      case InsertStatus::InvalidQuantity:
+        return {RestoreStatus::InvalidQuantity, restored};
+      case InsertStatus::Ok:
+        break;
+      }
+    }
+    ++restored;
+  }
+  return {RestoreStatus::Ok, restored};
+}
+
+OrderCapacity OrderBook::order_count() const noexcept {
+  return active_order_count();
+}
+
 bool OrderBook::validate_invariants() const noexcept {
   if (!pool_.validate_freelist() || !validate_side(Side::Bid) ||
       !validate_side(Side::Ask)) {
@@ -166,6 +222,27 @@ bool OrderBook::validate_invariants() const noexcept {
 
 std::uint32_t OrderBook::active_order_count() const noexcept {
   return bids_.order_count() + asks_.order_count();
+}
+
+template <class Book>
+SnapshotResult OrderBook::snapshot_side_into(
+    const Book& book, std::span<OrderView> orders,
+    OrderCapacity& copied) const noexcept {
+  for (std::size_t segment_index = 0; segment_index < book.segment_count();
+       ++segment_index) {
+    const PriceSegment& segment = book.segment(segment_index);
+    for (std::uint32_t offset = 0; offset < prices_per_segment; ++offset) {
+      const PriceLevel& level = segment.levels[offset];
+      for (OrderIndex current = level.head; current != invalid_order_index;
+           current = pool_.get_unchecked(current).next) {
+        if (copied == orders.size()) {
+          return {SnapshotStatus::CapacityExceeded, copied};
+        }
+        orders[copied++] = view_for(current);
+      }
+    }
+  }
+  return {SnapshotStatus::Ok, copied};
 }
 
 bool OrderBook::price_in_range(PriceTick price) const noexcept {

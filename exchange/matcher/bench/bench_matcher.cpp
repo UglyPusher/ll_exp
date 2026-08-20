@@ -26,6 +26,8 @@ using namespace fexma::matcher;
 
 namespace {
 
+inline constexpr ClientId benchmark_client_id = 17;
+
 volatile std::uint64_t g_sink = 0;
 
 struct Stats {
@@ -63,37 +65,42 @@ constexpr OrderBookConfig run_batch_config{1, 4096, 2048};
 class ShutdownCommandReader {
 public:
   [[nodiscard]] CommandReadResult read_next() noexcept {
-    return {CommandReadStatus::Ok, {CommandType::Shutdown, {}}};
+    return {CommandReadStatus::Ok,
+            {1, {benchmark_client_id, Command{ShutdownCommand{}}}}};
   }
 };
 
 class ArrayCommandReader {
 public:
-  explicit ArrayCommandReader(const std::vector<Command>& commands)
+  explicit ArrayCommandReader(const std::vector<CommandEnvelope>& commands)
       : commands_(commands) {}
 
   [[nodiscard]] CommandReadResult read_next() noexcept {
     if (next_ == commands_.size()) {
-      return {CommandReadStatus::Ok, {CommandType::Shutdown, {}}};
+      return {CommandReadStatus::Ok,
+              {commands_.empty() ? 1
+                                 : commands_.back().command_sequence + 1,
+               {benchmark_client_id, Command{ShutdownCommand{}}}}};
     }
     return {CommandReadStatus::Ok, commands_[next_++]};
   }
 
 private:
-  const std::vector<Command>& commands_;
+  const std::vector<CommandEnvelope>& commands_;
   std::size_t next_{};
 };
 
 class NullEventWriter {
 public:
-  [[nodiscard]] PublishResult publish(const Event&) noexcept {
+  [[nodiscard]] PublishResult publish(const EventEnvelope&) noexcept {
     return {PublishStatus::Ok};
   }
 };
 
 class CountingEventWriter {
 public:
-  [[nodiscard]] PublishResult publish(const Event& event) noexcept {
+  [[nodiscard]] PublishResult publish(const EventEnvelope& envelope) noexcept {
+    const Event& event = envelope.payload.message;
     switch (event.type) {
     case EventType::None:
       break;
@@ -112,6 +119,10 @@ public:
     case EventType::OrderDone:
       ++done;
       break;
+    case EventType::SaveSnapshot:
+    case EventType::LoadSnapshot:
+    case EventType::Shutdown:
+      break;
     case EventType::MatcherFatal:
       break;
     }
@@ -127,7 +138,8 @@ public:
 
 class SinkEventWriter {
 public:
-  [[nodiscard]] PublishResult publish(const Event& event) noexcept {
+  [[nodiscard]] PublishResult publish(const EventEnvelope& envelope) noexcept {
+    const Event& event = envelope.payload.message;
     switch (event.type) {
     case EventType::None:
       break;
@@ -151,6 +163,19 @@ public:
       ++done;
       g_sink += event.done.id;
       break;
+    case EventType::SaveSnapshot:
+      g_sink += event.save_snapshot.snapshot_id +
+                envelope.payload.caused_by_command_sequence +
+                event.save_snapshot.snapshot_epoch_id;
+      break;
+    case EventType::LoadSnapshot:
+      g_sink += event.load_snapshot.snapshot_id +
+                envelope.payload.caused_by_command_sequence +
+                event.load_snapshot.snapshot_epoch_id;
+      break;
+    case EventType::Shutdown:
+      g_sink += envelope.event_sequence;
+      break;
     case EventType::MatcherFatal:
       g_sink += event.fatal.offending_order_id + event.fatal.last_order_id +
                 static_cast<std::uint64_t>(event.fatal.reason);
@@ -168,7 +193,7 @@ public:
 
 [[nodiscard]] Command new_limit(OrderId id, OwnerId owner_id, Side side,
                                 PriceTick price, Quantity quantity) noexcept {
-  return {CommandType::NewLimit, {id, owner_id, side, price, quantity}};
+  return Command{NewLimitOrder{id, owner_id, side, price, quantity}};
 }
 
 [[nodiscard]] double median(std::vector<double> values) {
@@ -497,6 +522,7 @@ struct ProcessState {
   Writer writer;
   Matcher<ShutdownCommandReader, Writer> matcher;
   OrderId next_order_id{1};
+  CommandSequence next_command_sequence{1};
 };
 
 template <typename Writer>
@@ -522,7 +548,9 @@ void consume_process_state(const ProcessState<SinkEventWriter>& state) {
 
 template <typename Writer>
 void process_checked(ProcessState<Writer>& state, const Command& command) {
-  const ProcessResult result = state.matcher.process(command);
+  const CommandEnvelope envelope{
+      state.next_command_sequence++, {benchmark_client_id, command}};
+  const ProcessResult result = state.matcher.process(envelope);
   if (result.status != ProcessStatus::Continue) {
     std::abort();
   }
@@ -594,13 +622,13 @@ Stats bench_matcher_partial_fill(Config config) {
 
 template <typename Writer>
 struct RunState {
-  RunState(std::vector<Command>&& commands_value,
+  RunState(std::vector<CommandEnvelope>&& commands_value,
            const OrderBookConfig& config)
       : commands(std::move(commands_value)),
         reader(commands),
         matcher(reader, writer, config) {}
 
-  std::vector<Command> commands;
+  std::vector<CommandEnvelope> commands;
   ArrayCommandReader reader;
   Writer writer;
   Matcher<ArrayCommandReader, Writer> matcher;
@@ -627,12 +655,16 @@ void consume_run_state(const RunState<SinkEventWriter>& state) {
             state.writer.trades + state.writer.rested + state.writer.done;
 }
 
-std::vector<Command> make_full_fill_commands(std::uint64_t command_count) {
-  std::vector<Command> commands;
+std::vector<CommandEnvelope>
+make_full_fill_commands(std::uint64_t command_count) {
+  std::vector<CommandEnvelope> commands;
   commands.reserve(static_cast<std::size_t>(command_count));
   for (std::uint64_t i = 0; i < command_count; ++i) {
     const OrderId id = static_cast<OrderId>(1'000'000 + i);
-    commands.push_back(new_limit(id, id + 1000, Side::Bid, 100, 1));
+    commands.push_back(
+        {command_count + i + 1,
+         {benchmark_client_id,
+          new_limit(id, id + 1000, Side::Bid, 100, 1)}});
   }
   return commands;
 }
@@ -644,8 +676,11 @@ std::unique_ptr<RunState<Writer>> make_full_fill_run_state(
       make_full_fill_commands(command_count), config);
   for (std::uint64_t i = 0; i < command_count; ++i) {
     const OrderId id = static_cast<OrderId>(i + 1);
-    const ProcessResult result =
-        state->matcher.process(new_limit(id, id + 1000, Side::Ask, 100, 1));
+    const CommandEnvelope envelope{
+        i + 1,
+        {benchmark_client_id,
+         new_limit(id, id + 1000, Side::Ask, 100, 1)}};
+    const ProcessResult result = state->matcher.process(envelope);
     if (result.status != ProcessStatus::Continue) {
       std::abort();
     }
