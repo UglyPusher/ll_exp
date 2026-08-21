@@ -99,10 +99,12 @@ The loaded snapshot image carries its own source command boundary independently.
 This is a base sample, not a complete exchange matching engine. Open design
 items are tracked in [Matcher TODO.md](../../thoughts/exchange/matcher/Matcher%20TODO.md).
 
-Canonical Command and Event WAL payload schema version 1 is implemented by
-`codec.hpp`. It uses fixed 48-byte Command payloads and fixed 64-byte Event
-payloads, explicit little-endian fields, validated tags/enums, and a zeroed
-unused tail. The exact byte layout is defined in
+Canonical Command and Event WAL payload schema versions 1 and 2 are implemented
+by `codec.hpp`; version 2 is current. Both use fixed 48-byte Command payloads
+and fixed 64-byte Event payloads, explicit little-endian fields, validated
+tags/enums, and a zeroed unused tail. Version 2 preserves every version-1 byte
+layout and adds persisted `StartReplay`/`StopReplay` commands and events. The
+exact byte layout is defined in
 [WAL_PAYLOAD_FORMAT.md](WAL_PAYLOAD_FORMAT.md).
 
 The base five-role runtime transport is implemented by `CommandPipeline` with

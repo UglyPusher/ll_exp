@@ -81,6 +81,8 @@ final `LoadSnapshot` pass through every tract module in order; there is no
 supervisor above the modules. In replay mode Persistence remains the sole
 writer of `durable`, but advances it for commands supplied by `WalFileReader`
 without append or sync. The exact control-message and snapshot orchestration
-protocol is defined by the later deterministic-replay and snapshot items; this
-base pipeline supplies the required transport boundary without changing the
-persisted Command payload schema.
+protocol is defined by the later deterministic-replay and snapshot items. All
+commands share one `CommandEnvelope`; in live mode every command is persisted.
+Schema version 2 adds canonical `StartReplay`/`StopReplay` records. In replay
+mode Persistence advances `durable` without writing those replay-run commands
+back into WAL.

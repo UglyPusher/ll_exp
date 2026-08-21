@@ -98,6 +98,8 @@ PayloadCodecStatus encode_command_wal_payload_v1(
     return PayloadCodecStatus::Ok;
   case CommandType::Shutdown:
     return PayloadCodecStatus::Ok;
+  case CommandType::StartReplay:
+  case CommandType::StopReplay:
   case CommandType::None:
     return PayloadCodecStatus::InvalidType;
   }
@@ -136,6 +138,8 @@ PayloadCodecStatus decode_command_wal_payload_v1(
   case CommandType::Shutdown:
     decoded.message = Command{ShutdownCommand{}};
     break;
+  case CommandType::StartReplay:
+  case CommandType::StopReplay:
   case CommandType::None:
     return PayloadCodecStatus::InvalidType;
   default:
@@ -228,6 +232,8 @@ PayloadCodecStatus encode_event_wal_payload_v1(
     write_u64(bytes, 40, payload.message.fatal.last_order_id);
     return PayloadCodecStatus::Ok;
   }
+  case EventType::StartReplay:
+  case EventType::StopReplay:
   case EventType::None:
     return PayloadCodecStatus::InvalidType;
   }
@@ -304,6 +310,8 @@ PayloadCodecStatus decode_event_wal_payload_v1(
         read_u64(bytes, 40)}};
     break;
   }
+  case EventType::StartReplay:
+  case EventType::StopReplay:
   case EventType::None:
     return PayloadCodecStatus::InvalidType;
   default:
@@ -313,6 +321,138 @@ PayloadCodecStatus decode_event_wal_payload_v1(
   std::array<std::byte, event_wal_payload_size_v1> canonical{};
   const PayloadCodecStatus encoded =
       encode_event_wal_payload_v1(decoded, canonical);
+  if (encoded != PayloadCodecStatus::Ok) {
+    return encoded;
+  }
+  if (!equals(bytes, canonical)) {
+    return PayloadCodecStatus::NonCanonicalBytes;
+  }
+
+  payload = decoded;
+  return PayloadCodecStatus::Ok;
+}
+
+PayloadCodecStatus encode_command_wal_payload_v2(
+    const CommandWalPayload& payload, std::span<std::byte> bytes) noexcept {
+  if (bytes.size() != command_wal_payload_size_v2) {
+    return PayloadCodecStatus::InvalidSize;
+  }
+
+  if (payload.message.type != CommandType::StartReplay &&
+      payload.message.type != CommandType::StopReplay) {
+    return encode_command_wal_payload_v1(payload, bytes);
+  }
+
+  std::fill(bytes.begin(), bytes.end(), std::byte{});
+  write_u64(bytes, 0, payload.client_id);
+  bytes[8] = static_cast<std::byte>(payload.message.type);
+  if (payload.message.type == CommandType::StartReplay) {
+    const StartReplayCommand& command = payload.message.start_replay;
+    write_u64(bytes, 16, command.replay_id);
+    write_u64(bytes, 24, command.live_snapshot_id);
+    write_u64(bytes, 32, command.replay_snapshot_id);
+    write_u64(bytes, 40, command.replay_through_command_sequence);
+  } else {
+    write_u64(bytes, 16, payload.message.stop_replay.replay_id);
+  }
+  return PayloadCodecStatus::Ok;
+}
+
+PayloadCodecStatus decode_command_wal_payload_v2(
+    std::span<const std::byte> bytes, CommandWalPayload& payload) noexcept {
+  if (bytes.size() != command_wal_payload_size_v2) {
+    return PayloadCodecStatus::InvalidSize;
+  }
+
+  const auto type = static_cast<CommandType>(bytes[8]);
+  if (type != CommandType::StartReplay && type != CommandType::StopReplay) {
+    return decode_command_wal_payload_v1(bytes, payload);
+  }
+
+  CommandWalPayload decoded{};
+  decoded.client_id = read_u64(bytes, 0);
+  if (type == CommandType::StartReplay) {
+    decoded.message = Command{StartReplayCommand{
+        read_u64(bytes, 16), read_u64(bytes, 24), read_u64(bytes, 32),
+        read_u64(bytes, 40)}};
+  } else {
+    decoded.message = Command{StopReplayCommand{read_u64(bytes, 16)}};
+  }
+
+  std::array<std::byte, command_wal_payload_size_v2> canonical{};
+  const PayloadCodecStatus encoded =
+      encode_command_wal_payload_v2(decoded, canonical);
+  if (encoded != PayloadCodecStatus::Ok) {
+    return encoded;
+  }
+  if (!equals(bytes, canonical)) {
+    return PayloadCodecStatus::NonCanonicalBytes;
+  }
+
+  payload = decoded;
+  return PayloadCodecStatus::Ok;
+}
+
+PayloadCodecStatus encode_event_wal_payload_v2(
+    const EventWalPayload& payload, std::span<std::byte> bytes) noexcept {
+  if (bytes.size() != event_wal_payload_size_v2) {
+    return PayloadCodecStatus::InvalidSize;
+  }
+
+  if (payload.message.type != EventType::StartReplay &&
+      payload.message.type != EventType::StopReplay) {
+    return encode_event_wal_payload_v1(payload, bytes);
+  }
+
+  std::fill(bytes.begin(), bytes.end(), std::byte{});
+  write_u64(bytes, 0, payload.client_id);
+  write_u64(bytes, 8, payload.caused_by_command_sequence);
+  write_u32(bytes, 16, payload.index_in_command);
+  bytes[20] = payload.is_last_for_command ? std::byte{1} : std::byte{0};
+  bytes[21] = static_cast<std::byte>(payload.message.type);
+  if (payload.message.type == EventType::StartReplay) {
+    const StartReplayEvent& event = payload.message.start_replay;
+    write_u64(bytes, 24, event.replay_id);
+    write_u64(bytes, 32, event.live_snapshot_id);
+    write_u64(bytes, 40, event.replay_snapshot_id);
+    write_u64(bytes, 48, event.replay_through_command_sequence);
+  } else {
+    write_u64(bytes, 24, payload.message.stop_replay.replay_id);
+  }
+  return PayloadCodecStatus::Ok;
+}
+
+PayloadCodecStatus decode_event_wal_payload_v2(
+    std::span<const std::byte> bytes, EventWalPayload& payload) noexcept {
+  if (bytes.size() != event_wal_payload_size_v2) {
+    return PayloadCodecStatus::InvalidSize;
+  }
+
+  const std::uint8_t final_flag = static_cast<std::uint8_t>(bytes[20]);
+  if (final_flag > 1) {
+    return PayloadCodecStatus::InvalidField;
+  }
+  const auto type = static_cast<EventType>(bytes[21]);
+  if (type != EventType::StartReplay && type != EventType::StopReplay) {
+    return decode_event_wal_payload_v1(bytes, payload);
+  }
+
+  EventWalPayload decoded{};
+  decoded.client_id = read_u64(bytes, 0);
+  decoded.caused_by_command_sequence = read_u64(bytes, 8);
+  decoded.index_in_command = read_u32(bytes, 16);
+  decoded.is_last_for_command = final_flag != 0;
+  if (type == EventType::StartReplay) {
+    decoded.message = Event{StartReplayEvent{
+        read_u64(bytes, 24), read_u64(bytes, 32), read_u64(bytes, 40),
+        read_u64(bytes, 48)}};
+  } else {
+    decoded.message = Event{StopReplayEvent{read_u64(bytes, 24)}};
+  }
+
+  std::array<std::byte, event_wal_payload_size_v2> canonical{};
+  const PayloadCodecStatus encoded =
+      encode_event_wal_payload_v2(decoded, canonical);
   if (encoded != PayloadCodecStatus::Ok) {
     return encoded;
   }

@@ -20,6 +20,7 @@ using order_book::Quantity;
 using order_book::Side;
 
 using SnapshotId = std::uint64_t;
+using ReplayId = std::uint64_t;
 using ClientId = std::uint64_t;
 using CommandSequence = std::uint64_t;
 using EventSequence = std::uint64_t;
@@ -28,15 +29,17 @@ using EpochId = std::uint64_t;
 using CommandSchemaVersion = std::uint32_t;
 using EventSchemaVersion = std::uint32_t;
 
-inline constexpr CommandSchemaVersion current_command_schema_version = 1;
-inline constexpr EventSchemaVersion current_event_schema_version = 1;
+inline constexpr CommandSchemaVersion current_command_schema_version = 2;
+inline constexpr EventSchemaVersion current_event_schema_version = 2;
 
 enum class CommandType : std::uint8_t {
   None,
   NewLimit,
   SaveSnapshot,
   LoadSnapshot,
-  Shutdown
+  Shutdown,
+  StartReplay,
+  StopReplay
 };
 
 struct NewLimitOrder {
@@ -59,6 +62,17 @@ struct LoadSnapshotCommand {
 
 struct ShutdownCommand {};
 
+struct StartReplayCommand {
+  ReplayId replay_id{};
+  SnapshotId live_snapshot_id{};
+  SnapshotId replay_snapshot_id{};
+  CommandSequence replay_through_command_sequence{};
+};
+
+struct StopReplayCommand {
+  ReplayId replay_id{};
+};
+
 struct Command {
   constexpr Command() noexcept : type(CommandType::None), none{} {}
 
@@ -74,6 +88,12 @@ struct Command {
   constexpr explicit Command(const ShutdownCommand& command) noexcept
       : type(CommandType::Shutdown), shutdown(command) {}
 
+  constexpr explicit Command(const StartReplayCommand& command) noexcept
+      : type(CommandType::StartReplay), start_replay(command) {}
+
+  constexpr explicit Command(const StopReplayCommand& command) noexcept
+      : type(CommandType::StopReplay), stop_replay(command) {}
+
   CommandType type;
   union {
     struct {} none;
@@ -81,6 +101,8 @@ struct Command {
     SaveSnapshotCommand save_snapshot;
     LoadSnapshotCommand load_snapshot;
     ShutdownCommand shutdown;
+    StartReplayCommand start_replay;
+    StopReplayCommand stop_replay;
   };
 };
 
@@ -272,7 +294,9 @@ enum class EventType : std::uint8_t {
   SaveSnapshot,
   LoadSnapshot,
   Shutdown,
-  MatcherFatal
+  MatcherFatal,
+  StartReplay,
+  StopReplay
 };
 
 enum class RejectReason : std::uint8_t {
@@ -330,6 +354,17 @@ struct LoadSnapshotEvent {
 
 struct ShutdownEvent {};
 
+struct StartReplayEvent {
+  ReplayId replay_id{};
+  SnapshotId live_snapshot_id{};
+  SnapshotId replay_snapshot_id{};
+  CommandSequence replay_through_command_sequence{};
+};
+
+struct StopReplayEvent {
+  ReplayId replay_id{};
+};
+
 struct Event {
   constexpr Event() noexcept : type(EventType::None), none{} {}
 
@@ -360,6 +395,12 @@ struct Event {
   constexpr explicit Event(const MatcherFatalEvent& event) noexcept
       : type(EventType::MatcherFatal), fatal(event) {}
 
+  constexpr explicit Event(const StartReplayEvent& event) noexcept
+      : type(EventType::StartReplay), start_replay(event) {}
+
+  constexpr explicit Event(const StopReplayEvent& event) noexcept
+      : type(EventType::StopReplay), stop_replay(event) {}
+
   EventType type;
   union {
     struct {} none;
@@ -372,6 +413,8 @@ struct Event {
     LoadSnapshotEvent load_snapshot;
     ShutdownEvent shutdown;
     MatcherFatalEvent fatal;
+    StartReplayEvent start_replay;
+    StopReplayEvent stop_replay;
   };
 };
 

@@ -171,6 +171,110 @@ namespace {
   return true;
 }
 
+[[nodiscard]] bool replay_commands_use_schema_v2() {
+  const CommandWalPayload start{
+      0x0102030405060708ull,
+      Command{StartReplayCommand{0x1112131415161718ull,
+                                 0x2122232425262728ull,
+                                 0x3132333435363738ull,
+                                 0x4142434445464748ull}}};
+  std::array<std::byte, command_wal_payload_size_v2> bytes{};
+  if (current_command_schema_version != 2 ||
+      encode_command_wal_payload_v1(start, bytes) !=
+          PayloadCodecStatus::InvalidType ||
+      encode_command_wal_payload_v2(start, bytes) != PayloadCodecStatus::Ok ||
+      bytes[8] != static_cast<std::byte>(CommandType::StartReplay) ||
+      bytes[16] != std::byte{0x18} || bytes[24] != std::byte{0x28} ||
+      bytes[32] != std::byte{0x38} || bytes[40] != std::byte{0x48}) {
+    return false;
+  }
+
+  CommandWalPayload decoded{};
+  if (decode_command_wal_payload_v1(bytes, decoded) !=
+          PayloadCodecStatus::InvalidType ||
+      decode_command_wal_payload_v2(bytes, decoded) !=
+          PayloadCodecStatus::Ok ||
+      decoded.message.type != CommandType::StartReplay ||
+      decoded.message.start_replay.replay_id !=
+          start.message.start_replay.replay_id ||
+      decoded.message.start_replay.live_snapshot_id !=
+          start.message.start_replay.live_snapshot_id ||
+      decoded.message.start_replay.replay_snapshot_id !=
+          start.message.start_replay.replay_snapshot_id ||
+      decoded.message.start_replay.replay_through_command_sequence !=
+          start.message.start_replay.replay_through_command_sequence) {
+    return false;
+  }
+
+  const CommandWalPayload stop{7, Command{StopReplayCommand{9}}};
+  if (encode_command_wal_payload_v2(stop, bytes) != PayloadCodecStatus::Ok ||
+      decode_command_wal_payload_v2(bytes, decoded) !=
+          PayloadCodecStatus::Ok ||
+      decoded.message.type != CommandType::StopReplay ||
+      decoded.message.stop_replay.replay_id != 9) {
+    return false;
+  }
+  bytes[47] = std::byte{1};
+  return decode_command_wal_payload_v2(bytes, decoded) ==
+         PayloadCodecStatus::NonCanonicalBytes;
+}
+
+[[nodiscard]] bool replay_events_use_schema_v2() {
+  const EventWalPayload start{
+      1, 2, 3, true,
+      Event{StartReplayEvent{4, 5, 6, 7}}};
+  std::array<std::byte, event_wal_payload_size_v2> bytes{};
+  if (current_event_schema_version != 2 ||
+      encode_event_wal_payload_v1(start, bytes) !=
+          PayloadCodecStatus::InvalidType ||
+      encode_event_wal_payload_v2(start, bytes) != PayloadCodecStatus::Ok ||
+      bytes[21] != static_cast<std::byte>(EventType::StartReplay)) {
+    return false;
+  }
+
+  EventWalPayload decoded{};
+  if (decode_event_wal_payload_v1(bytes, decoded) !=
+          PayloadCodecStatus::InvalidType ||
+      decode_event_wal_payload_v2(bytes, decoded) != PayloadCodecStatus::Ok ||
+      decoded.message.type != EventType::StartReplay ||
+      decoded.message.start_replay.replay_id != 4 ||
+      decoded.message.start_replay.live_snapshot_id != 5 ||
+      decoded.message.start_replay.replay_snapshot_id != 6 ||
+      decoded.message.start_replay.replay_through_command_sequence != 7) {
+    return false;
+  }
+
+  const EventWalPayload stop{8, 9, 0, true,
+                             Event{StopReplayEvent{10}}};
+  return encode_event_wal_payload_v2(stop, bytes) ==
+             PayloadCodecStatus::Ok &&
+         decode_event_wal_payload_v2(bytes, decoded) ==
+             PayloadCodecStatus::Ok &&
+         decoded.message.type == EventType::StopReplay &&
+         decoded.message.stop_replay.replay_id == 10;
+}
+
+[[nodiscard]] bool schema_v2_preserves_schema_v1_bytes() {
+  const CommandWalPayload command{
+      7, Command{NewLimitOrder{1, 2, Side::Bid, 3, 4}}};
+  std::array<std::byte, command_wal_payload_size_v1> command_v1{};
+  std::array<std::byte, command_wal_payload_size_v2> command_v2{};
+  const EventWalPayload event{
+      7, 8, 0, true, Event{OrderDoneEvent{9}}};
+  std::array<std::byte, event_wal_payload_size_v1> event_v1{};
+  std::array<std::byte, event_wal_payload_size_v2> event_v2{};
+  return encode_command_wal_payload_v1(command, command_v1) ==
+             PayloadCodecStatus::Ok &&
+         encode_command_wal_payload_v2(command, command_v2) ==
+             PayloadCodecStatus::Ok &&
+         command_v1 == command_v2 &&
+         encode_event_wal_payload_v1(event, event_v1) ==
+             PayloadCodecStatus::Ok &&
+         encode_event_wal_payload_v2(event, event_v2) ==
+             PayloadCodecStatus::Ok &&
+         event_v1 == event_v2;
+}
+
 [[nodiscard]] bool rejects_invalid_and_noncanonical_bytes() {
   std::array<std::byte, command_wal_payload_size_v1> command{};
   command[8] = std::byte{0xff};
@@ -245,6 +349,15 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!event_variants_round_trip()) {
+    return EXIT_FAILURE;
+  }
+  if (!replay_commands_use_schema_v2()) {
+    return EXIT_FAILURE;
+  }
+  if (!replay_events_use_schema_v2()) {
+    return EXIT_FAILURE;
+  }
+  if (!schema_v2_preserves_schema_v1_bytes()) {
     return EXIT_FAILURE;
   }
   if (!rejects_invalid_and_noncanonical_bytes()) {

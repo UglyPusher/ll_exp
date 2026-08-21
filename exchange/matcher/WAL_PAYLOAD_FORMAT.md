@@ -1,8 +1,8 @@
 # Matcher WAL Payload Format
 
-This document defines canonical matcher payload schema version 1. The generic
-WAL owns physical record headers, sequence, CRC, and alignment. These payloads
-contain only logical Command or Event fields.
+This document defines canonical matcher payload schema versions 1 and 2. The
+generic WAL owns physical record headers, sequence, CRC, and alignment. These
+payloads contain only logical Command or Event fields.
 
 All integer fields are unsigned little-endian values. All reserved and unused
 bytes are zero. Decoders reject unknown tags, invalid enum values, non-canonical
@@ -12,7 +12,40 @@ object. Native C++ layout, padding, pointers, and spans are never persisted.
 Changing a field, offset, width, tag meaning, or canonical payload size requires
 a new payload schema version.
 
-## Command Payload Version 1
+## Current Schema Version 2
+
+Version 2 retains the version-1 widths and byte layouts for every existing
+command and event. It adds persisted `StartReplay` and `StopReplay` command and
+event tags. A version-1 decoder rejects those tags; it never assigns them a new
+meaning retroactively.
+
+### Command Payload Version 2
+
+Canonical size: 48 bytes. WAL `payload_schema_version` is `2` and
+`payload_size` is `48`. The common header and all version-1 bodies below are
+unchanged.
+
+Additional command body layouts:
+
+| Type | Body fields |
+|---|---|
+| `StartReplay` | `replay_id:u64 @16`, `live_snapshot_id:u64 @24`, `replay_snapshot_id:u64 @32`, `replay_through_command_sequence:u64 @40` |
+| `StopReplay` | `replay_id:u64 @16`, zero `@24..47` |
+
+### Event Payload Version 2
+
+Canonical size: 64 bytes. WAL `payload_schema_version` is `2` and
+`payload_size` is `64`. The common header and all version-1 bodies below are
+unchanged.
+
+Additional event body layouts:
+
+| Type | Body fields |
+|---|---|
+| `StartReplay` | `replay_id:u64 @24`, `live_snapshot_id:u64 @32`, `replay_snapshot_id:u64 @40`, `replay_through_command_sequence:u64 @48`, zero `@56..63` |
+| `StopReplay` | `replay_id:u64 @24`, zero `@32..63` |
+
+## Legacy Command Payload Version 1
 
 Canonical size: 48 bytes. WAL `payload_schema_version` is `1` and
 `payload_size` is `48`.
@@ -37,7 +70,7 @@ Command body layouts:
 Command WAL record sequence and is not repeated in the payload. Instrument and
 epoch identity are physical WAL/manifest metadata.
 
-## Event Payload Version 1
+## Legacy Event Payload Version 1
 
 Canonical size: 64 bytes. WAL `payload_schema_version` is `1` and
 `payload_size` is `64`.
