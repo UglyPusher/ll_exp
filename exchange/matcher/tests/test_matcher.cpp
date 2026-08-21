@@ -134,6 +134,33 @@ public:
       Command{LoadSnapshotCommand{snapshot_id, snapshot_epoch_id}});
 }
 
+[[nodiscard]] bool replay_commands_are_forwarded() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
+  const CommandEnvelope start = envelope(
+      1, Command{StartReplayCommand{9, 8, 7, 6}});
+  const CommandEnvelope stop = envelope(2, Command{StopReplayCommand{9}});
+  if (matcher.process(start).fatal() || matcher.process(stop).fatal() ||
+      writer.event_count != 2) {
+    return false;
+  }
+  const EventEnvelope& started = writer.events[0];
+  const EventEnvelope& stopped = writer.events[1];
+  return started.event_sequence == 1 &&
+         started.payload.caused_by_command_sequence == 1 &&
+         started.payload.message.type == EventType::StartReplay &&
+         started.payload.message.start_replay.replay_id == 9 &&
+         started.payload.message.start_replay.live_snapshot_id == 8 &&
+         started.payload.message.start_replay.replay_snapshot_id == 7 &&
+         started.payload.message.start_replay
+                 .replay_through_command_sequence == 6 &&
+         stopped.event_sequence == 2 &&
+         stopped.payload.caused_by_command_sequence == 2 &&
+         stopped.payload.message.type == EventType::StopReplay &&
+         stopped.payload.message.stop_replay.replay_id == 9;
+}
+
 [[nodiscard]] bool event_type_is(const CollectingEventWriter& writer,
                                  std::size_t index,
                                  EventType type) noexcept {
@@ -537,6 +564,9 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!command_wal_payload_preserves_client_id()) {
+    return EXIT_FAILURE;
+  }
+  if (!replay_commands_are_forwarded()) {
     return EXIT_FAILURE;
   }
   if (!shutdown_is_forwarded_as_a_complete_command_result()) {

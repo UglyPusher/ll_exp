@@ -3,6 +3,8 @@
  * @brief End-to-end canonical matcher payload tests through the physical WAL.
  */
 #include <fexma/matcher/codec.hpp>
+#include <fexma/matcher/matcher.hpp>
+#include <fexma/matcher/replay.hpp>
 #include <fexma/wal/reader.hpp>
 #include <fexma/wal/wal.hpp>
 
@@ -15,6 +17,13 @@
 using namespace fexma::matcher;
 
 namespace {
+
+class UnusedCommandReader {
+public:
+  [[nodiscard]] CommandReadResult read_next() noexcept {
+    return {CommandReadStatus::Empty, {}};
+  }
+};
 
 [[nodiscard]] std::filesystem::path test_path(const char* name) {
   return std::filesystem::temp_directory_path() / name;
@@ -168,6 +177,53 @@ namespace {
   return reader.read_next(bytes).status == fexma::wal::ReadStatus::EndOfLog;
 }
 
+[[nodiscard]] bool replay_first_command(
+    const std::filesystem::path& command_path,
+    const std::filesystem::path& event_path) {
+  CommandPipeline pipeline;
+  WalFileReplaySource source;
+  EventWalComparator comparator;
+  UnusedCommandReader unused_reader;
+  Matcher matcher(unused_reader, comparator, OrderBookConfig{100, 200, 8}, 1);
+  if (pipeline.open({4, 100}) != CommandPipelineStatus::Ok ||
+      source.open(command_path, command_config(), 1, 1) != ReplayStatus::Ok ||
+      comparator.open(event_path, event_config(), 1, 2) != ReplayStatus::Ok ||
+      !source.publish_next(pipeline).ok()) {
+    return false;
+  }
+
+  CommandEnvelope command{};
+  RiskResult risk{};
+  CommandRingSlot slot{};
+  if (!pipeline.publish_durable(1).ok() ||
+      !pipeline.try_read_for_risk(command).ok() ||
+      !pipeline.publish_risk({CheckDecision::Accepted, 1}).ok() ||
+      !pipeline.try_read_for_reserve(command, risk).ok() ||
+      !pipeline.publish_reserve({CheckDecision::Accepted, 2}).ok() ||
+      !pipeline.try_consume(slot).ok() || matcher.process(slot.command).fatal() ||
+      comparator.finish() != ReplayStatus::Complete) {
+    return false;
+  }
+
+  return slot.command.command_sequence == 1 &&
+         slot.risk.decision == CheckDecision::Accepted &&
+         slot.reserve.decision == CheckDecision::Accepted &&
+         matcher.book().order_count() == 1;
+}
+
+[[nodiscard]] bool detects_first_event_mismatch(
+    const std::filesystem::path& event_path) {
+  EventWalComparator comparator;
+  if (comparator.open(event_path, event_config(), 1, 1) != ReplayStatus::Ok) {
+    return false;
+  }
+  const EventEnvelope wrong{
+      1, {17, 1, 0, true, Event{OrderAcceptedEvent{999}}}};
+  return !comparator.publish(wrong).ok() &&
+         comparator.result().status == ReplayStatus::EventMismatch &&
+         comparator.result().sequence == 1;
+}
+
 } // namespace
 
 int main() {
@@ -179,7 +235,10 @@ int main() {
   const bool passed = write_command_stream(command_path) &&
                       read_command_stream(command_path) &&
                       write_event_stream(event_path) &&
-                      read_event_stream(event_path);
+                      read_event_stream(event_path) &&
+                      replay_first_command(command_path, event_path) &&
+                      replay_first_command(command_path, event_path) &&
+                      detects_first_event_mismatch(event_path);
   std::filesystem::remove(command_path);
   std::filesystem::remove(event_path);
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

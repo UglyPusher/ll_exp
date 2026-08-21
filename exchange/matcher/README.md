@@ -113,6 +113,16 @@ frontiers. Its ownership, memory-ordering, backpressure, and fail-closed
 persistence contracts are defined in
 [COMMAND_PIPELINE.md](COMMAND_PIPELINE.md).
 
+The deterministic replay cold path is exposed by `replay.hpp`:
+
+- `WalFileReplaySource` validates and decodes a bounded Command WAL range and
+  publishes original `CommandEnvelope` identities through `try_replay()`;
+- `EventWalComparator` validates the corresponding Event WAL range and compares
+  physical sequence plus exact canonical version-2 payload bytes;
+- source backpressure retains the decoded command instead of advancing or
+  dropping it;
+- comparison stops at the first missing, extra, malformed, or different event.
+
 ## Benchmark
 
 `bench_matcher` measures the current sample contract over prebuilt state:

@@ -119,6 +119,21 @@ public:
       running_ = false;
       processed = {ProcessStatus::Stop};
       break;
+    case CommandType::StartReplay:
+      if (!events.add(StartReplayEvent{
+              command.start_replay.replay_id,
+              command.start_replay.live_snapshot_id,
+              command.start_replay.replay_snapshot_id,
+              command.start_replay.replay_through_command_sequence})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      break;
+    case CommandType::StopReplay:
+      if (!events.add(
+              StopReplayEvent{command.stop_replay.replay_id})) {
+        return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      break;
     default:
       if (!events.add(
               OrderRejectedEvent{{}, RejectReason::UnknownCommand})) {

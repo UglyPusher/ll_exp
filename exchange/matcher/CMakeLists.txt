@@ -3,6 +3,7 @@ find_package(Threads REQUIRED)
 add_library(fexma_matcher STATIC
   src/command_pipeline.cpp
   src/codec.cpp
+  src/replay.cpp
 )
 add_library(fexma::matcher ALIAS fexma_matcher)
 
@@ -12,7 +13,7 @@ target_include_directories(fexma_matcher
 )
 
 target_compile_features(fexma_matcher PUBLIC cxx_std_20)
-target_link_libraries(fexma_matcher PUBLIC fexma::order_book)
+target_link_libraries(fexma_matcher PUBLIC fexma::order_book fexma::wal)
 
 function(fexma_matcher_apply_warnings target_name)
   if(MSVC)
