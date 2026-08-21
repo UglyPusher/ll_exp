@@ -36,6 +36,7 @@ CommandPipeline::open(const CommandPipelineConfig& config) noexcept {
   control_->head.value.store(0, std::memory_order_relaxed);
   control_->failure.persistence_failed.store(false,
                                              std::memory_order_relaxed);
+  next_live_sequence_ = config.first_sequence;
   sequence_exhausted_ = false;
   open_ = true;
   return CommandPipelineStatus::Ok;
@@ -53,6 +54,58 @@ CommandPipeline::try_publish(const CommandWalPayload& payload) noexcept {
     return {CommandPipelineStatus::SequenceExhausted};
   }
 
+  const CommandSequence sequence = next_live_sequence_;
+  const CommandPipelineResult published =
+      try_publish_envelope({sequence, payload});
+  if (!published.ok()) {
+    return published;
+  }
+
+  if (sequence == (std::numeric_limits<CommandSequence>::max)()) {
+    sequence_exhausted_ = true;
+  } else {
+    next_live_sequence_ = sequence + 1;
+  }
+  return published;
+}
+
+CommandPipelineResult
+CommandPipeline::try_replay(const CommandEnvelope& command) noexcept {
+  if (!open_) {
+    return {CommandPipelineStatus::Closed};
+  }
+  if (control_->failure.persistence_failed.load(std::memory_order_acquire)) {
+    return {CommandPipelineStatus::PersistenceFailed};
+  }
+  if (command.command_sequence == 0) {
+    return {CommandPipelineStatus::InvalidSequence};
+  }
+  return try_publish_envelope(command);
+}
+
+CommandPipelineStatus CommandPipeline::restore_live_sequence(
+    CommandSequence next_sequence) noexcept {
+  if (!open_) {
+    return CommandPipelineStatus::Closed;
+  }
+  if (next_sequence == 0) {
+    return CommandPipelineStatus::InvalidSequence;
+  }
+
+  next_live_sequence_ = next_sequence;
+  sequence_exhausted_ = false;
+  return CommandPipelineStatus::Ok;
+}
+
+CommandPipelineResult CommandPipeline::try_publish_envelope(
+    const CommandEnvelope& command) noexcept {
+  if (!open_) {
+    return {CommandPipelineStatus::Closed};
+  }
+  if (control_->failure.persistence_failed.load(std::memory_order_acquire)) {
+    return {CommandPipelineStatus::PersistenceFailed};
+  }
+
   const std::uint64_t head =
       control_->head.value.load(std::memory_order_relaxed);
   const std::uint64_t tail =
@@ -60,19 +113,13 @@ CommandPipeline::try_publish(const CommandWalPayload& payload) noexcept {
   if (head - tail == config_.capacity) {
     return {CommandPipelineStatus::Full};
   }
-  if (head > (std::numeric_limits<CommandSequence>::max)() -
-                 config_.first_sequence) {
-    sequence_exhausted_ = true;
-    return {CommandPipelineStatus::SequenceExhausted};
-  }
 
-  const CommandSequence sequence = sequence_at(head);
   CommandRingSlot& slot = slot_at(head);
-  slot.command = {sequence, payload};
+  slot.command = command;
   slot.risk = {};
   slot.reserve = {};
   control_->head.value.store(head + 1, std::memory_order_release);
-  return {CommandPipelineStatus::Ok, sequence, head + 1};
+  return {CommandPipelineStatus::Ok, command.command_sequence, head + 1};
 }
 
 CommandPipelineResult CommandPipeline::copy_pending_for_persistence(
@@ -118,8 +165,9 @@ CommandPipeline::publish_durable(std::uint32_t count) noexcept {
   }
 
   const std::uint64_t next = durable + count;
+  const CommandSequence sequence = slot_at(next - 1).command.command_sequence;
   control_->durable.value.store(next, std::memory_order_release);
-  return {CommandPipelineStatus::Ok, sequence_at(next - 1), next};
+  return {CommandPipelineStatus::Ok, sequence, next};
 }
 
 void CommandPipeline::fail_persistence() noexcept {
@@ -164,9 +212,10 @@ CommandPipeline::publish_risk(const RiskResult& result) noexcept {
     return {CommandPipelineStatus::Empty};
   }
 
-  slot_at(risk).risk = result;
+  CommandRingSlot& slot = slot_at(risk);
+  slot.risk = result;
   control_->risk_checked.value.store(risk + 1, std::memory_order_release);
-  return {CommandPipelineStatus::Ok, sequence_at(risk), risk + 1};
+  return {CommandPipelineStatus::Ok, slot.command.command_sequence, risk + 1};
 }
 
 CommandPipelineResult CommandPipeline::try_read_for_reserve(
@@ -206,10 +255,12 @@ CommandPipeline::publish_reserve(const ReserveResult& result) noexcept {
     return {CommandPipelineStatus::Empty};
   }
 
-  slot_at(reserve).reserve = result;
+  CommandRingSlot& slot = slot_at(reserve);
+  slot.reserve = result;
   control_->reserve_checked.value.store(reserve + 1,
                                         std::memory_order_release);
-  return {CommandPipelineStatus::Ok, sequence_at(reserve), reserve + 1};
+  return {CommandPipelineStatus::Ok, slot.command.command_sequence,
+          reserve + 1};
 }
 
 CommandPipelineResult
@@ -228,7 +279,7 @@ CommandPipeline::try_consume(CommandRingSlot& slot) noexcept {
 
   slot = slot_at(tail);
   control_->tail.value.store(tail + 1, std::memory_order_release);
-  return {CommandPipelineStatus::Ok, sequence_at(tail), tail + 1};
+  return {CommandPipelineStatus::Ok, slot.command.command_sequence, tail + 1};
 }
 
 CommandPipelineSnapshot CommandPipeline::snapshot() const noexcept {
@@ -258,11 +309,6 @@ CommandRingSlot& CommandPipeline::slot_at(std::uint64_t position) noexcept {
 const CommandRingSlot&
 CommandPipeline::slot_at(std::uint64_t position) const noexcept {
   return slots_[position % config_.capacity];
-}
-
-CommandSequence
-CommandPipeline::sequence_at(std::uint64_t position) const noexcept {
-  return config_.first_sequence + position;
 }
 
 } // namespace fexma::matcher

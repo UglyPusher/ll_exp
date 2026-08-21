@@ -18,13 +18,78 @@ namespace {
   return {value, Command{ShutdownCommand{}}};
 }
 
+[[nodiscard]] CommandEnvelope replay_command(
+    CommandSequence sequence, std::uint64_t value) noexcept {
+  return {sequence, payload(value)};
+}
+
 [[nodiscard]] bool opens_only_valid_configuration() {
   CommandPipeline pipeline;
   pipeline.fail_persistence();
-  return pipeline.open({}) == CommandPipelineStatus::InvalidConfig &&
+  return pipeline.restore_live_sequence(1) == CommandPipelineStatus::Closed &&
+         pipeline.try_replay(replay_command(1, 1)).status ==
+             CommandPipelineStatus::Closed &&
+         pipeline.open({}) == CommandPipelineStatus::InvalidConfig &&
          pipeline.open({4, 0}) == CommandPipelineStatus::InvalidConfig &&
          pipeline.open({4, 10}) == CommandPipelineStatus::Ok &&
+         pipeline.restore_live_sequence(0) ==
+             CommandPipelineStatus::InvalidSequence &&
          pipeline.open({4, 10}) == CommandPipelineStatus::AlreadyOpen;
+}
+
+[[nodiscard]] bool preserves_replay_identity_and_live_sequence() {
+  CommandPipeline pipeline;
+  if (pipeline.open({5, 100}) != CommandPipelineStatus::Ok ||
+      pipeline.try_replay(replay_command(0, 1)).status !=
+          CommandPipelineStatus::InvalidSequence ||
+      pipeline.try_publish(payload(100)).sequence != 100 ||
+      pipeline.try_replay(replay_command(7, 7)).sequence != 7 ||
+      pipeline.try_replay(replay_command(8, 8)).sequence != 8 ||
+      pipeline.try_publish(payload(101)).sequence != 101 ||
+      pipeline.restore_live_sequence(500) != CommandPipelineStatus::Ok ||
+      pipeline.try_publish(payload(500)).sequence != 500 ||
+      pipeline.try_replay(replay_command(9, 9)).status !=
+          CommandPipelineStatus::Full) {
+    return false;
+  }
+
+  constexpr CommandSequence expected_sequences[] = {100, 7, 8, 101, 500};
+  constexpr std::uint64_t expected_clients[] = {100, 7, 8, 101, 500};
+  CommandEnvelope command{};
+  for (std::size_t index = 0; index < std::size(expected_sequences); ++index) {
+    if (pipeline.copy_pending_for_persistence(
+            static_cast<std::uint32_t>(index), command).sequence !=
+            expected_sequences[index] ||
+        command.command_sequence != expected_sequences[index]) {
+      return false;
+    }
+  }
+  if (pipeline.publish_durable(5).sequence != 500) {
+    return false;
+  }
+
+  RiskResult risk{};
+  CommandRingSlot slot{};
+  for (std::size_t index = 0; index < std::size(expected_sequences); ++index) {
+    const CommandSequence expected_sequence = expected_sequences[index];
+    if (pipeline.try_read_for_risk(command).sequence != expected_sequence ||
+        command.command_sequence != expected_sequence ||
+        pipeline.publish_risk({CheckDecision::Accepted, 1}).sequence !=
+            expected_sequence ||
+        pipeline.try_read_for_reserve(command, risk).sequence !=
+            expected_sequence ||
+        pipeline.publish_reserve({CheckDecision::Accepted, 2}).sequence !=
+            expected_sequence ||
+        pipeline.try_consume(slot).sequence != expected_sequence ||
+        slot.command.command_sequence != expected_sequence ||
+        slot.command.payload.client_id != expected_clients[index]) {
+      return false;
+    }
+  }
+
+  const CommandPipelineSnapshot state = pipeline.snapshot();
+  return state.tail == 5 && state.reserve_checked == 5 &&
+         state.risk_checked == 5 && state.durable == 5 && state.head == 5;
 }
 
 [[nodiscard]] bool preserves_stage_order_and_batch_visibility() {
@@ -119,6 +184,8 @@ namespace {
   pipeline.fail_persistence();
   CommandEnvelope command{};
   if (pipeline.try_publish(payload(4)).status !=
+          CommandPipelineStatus::PersistenceFailed ||
+      pipeline.try_replay(replay_command(4, 4)).status !=
           CommandPipelineStatus::PersistenceFailed ||
       pipeline.copy_pending_for_persistence(0, command).status !=
           CommandPipelineStatus::PersistenceFailed ||
@@ -312,6 +379,9 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!preserves_stage_order_and_batch_visibility()) {
+    return EXIT_FAILURE;
+  }
+  if (!preserves_replay_identity_and_live_sequence()) {
     return EXIT_FAILURE;
   }
   if (!wraps_only_after_tail_releases_capacity()) {

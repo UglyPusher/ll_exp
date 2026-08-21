@@ -30,6 +30,7 @@ enum class CommandPipelineStatus : std::uint8_t {
   InvalidCount,
   InvalidDecision,
   SequenceExhausted,
+  InvalidSequence,
   PersistenceFailed,
   Closed,
   AlreadyOpen
@@ -69,6 +70,14 @@ public:
 
   [[nodiscard]] CommandPipelineResult
   try_publish(const CommandWalPayload& payload) noexcept;
+
+  /** Publish a validated WAL command without replacing its persisted identity. */
+  [[nodiscard]] CommandPipelineResult
+  try_replay(const CommandEnvelope& command) noexcept;
+
+  /** Restore the live producer cursor at an ordered snapshot boundary. */
+  [[nodiscard]] CommandPipelineStatus
+  restore_live_sequence(CommandSequence next_sequence) noexcept;
 
   [[nodiscard]] CommandPipelineResult
   copy_pending_for_persistence(std::uint32_t batch_offset,
@@ -127,8 +136,8 @@ private:
   [[nodiscard]] CommandRingSlot& slot_at(std::uint64_t position) noexcept;
   [[nodiscard]] const CommandRingSlot&
   slot_at(std::uint64_t position) const noexcept;
-  [[nodiscard]] CommandSequence sequence_at(std::uint64_t position) const
-      noexcept;
+  [[nodiscard]] CommandPipelineResult
+  try_publish_envelope(const CommandEnvelope& command) noexcept;
 
   static_assert(sizeof(Frontier) == command_pipeline_cache_line_size);
   static_assert(sizeof(FailureState) == command_pipeline_cache_line_size);
@@ -140,6 +149,7 @@ private:
   std::unique_ptr<CommandRingSlot[]> slots_{};
   std::unique_ptr<ControlBlock> control_{};
   CommandPipelineConfig config_{};
+  CommandSequence next_live_sequence_{};
   bool sequence_exhausted_{};
   bool open_{};
 };
