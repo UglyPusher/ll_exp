@@ -86,3 +86,9 @@ commands share one `CommandEnvelope`; in live mode every command is persisted.
 Schema version 2 adds canonical `StartReplay`/`StopReplay` records. In replay
 mode Persistence advances `durable` without writing those replay-run commands
 back into WAL.
+
+`ReplayPersistenceState` makes that persistence policy explicit. A durable
+live `StartReplay` records the next live command sequence and enters replay;
+a matching `StopReplay` enters restoration; the ordered final
+`LoadSnapshot(MM)` restores the saved live cursor and returns to live mode.
+Ring frontiers remain monotonic throughout these transitions.

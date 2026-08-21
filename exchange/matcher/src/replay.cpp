@@ -8,6 +8,141 @@
 #include <limits>
 
 namespace fexma::matcher {
+namespace {
+
+inline constexpr std::uint64_t fnv_offset = 14695981039346656037ull;
+inline constexpr std::uint64_t fnv_prime = 1099511628211ull;
+
+void hash_u8(std::uint64_t& hash, std::uint8_t value) noexcept {
+  hash = (hash ^ value) * fnv_prime;
+}
+
+void hash_u32(std::uint64_t& hash, std::uint32_t value) noexcept {
+  for (std::uint32_t index = 0; index < 4; ++index) {
+    hash_u8(hash, static_cast<std::uint8_t>(value >> (index * 8)));
+  }
+}
+
+void hash_u64(std::uint64_t& hash, std::uint64_t value) noexcept {
+  for (std::uint32_t index = 0; index < 8; ++index) {
+    hash_u8(hash, static_cast<std::uint8_t>(value >> (index * 8)));
+  }
+}
+
+} // namespace
+
+PersistenceAction ReplayPersistenceState::action() const noexcept {
+  return mode_ == ReplayMode::Live ? PersistenceAction::AppendAndSync
+                                   : PersistenceAction::AdvanceDurableOnly;
+}
+
+ReplayStatus ReplayPersistenceState::on_durable(
+    const CommandEnvelope& command, CommandPipeline& pipeline) noexcept {
+  const Command& message = command.payload.message;
+  if (mode_ == ReplayMode::Live && message.type == CommandType::StartReplay) {
+    const StartReplayCommand& start = message.start_replay;
+    if (start.replay_id == 0 || start.live_snapshot_id == 0 ||
+        start.replay_snapshot_id == 0 ||
+        start.live_snapshot_id == start.replay_snapshot_id ||
+        start.replay_through_command_sequence == 0 ||
+        start.replay_through_command_sequence >= command.command_sequence ||
+        command.command_sequence ==
+            (std::numeric_limits<CommandSequence>::max)()) {
+      return ReplayStatus::InvalidTransition;
+    }
+    replay_id_ = start.replay_id;
+    live_snapshot_id_ = start.live_snapshot_id;
+    live_resume_sequence_ = command.command_sequence + 1;
+    mode_ = ReplayMode::Replay;
+    return ReplayStatus::Ok;
+  }
+
+  if (mode_ == ReplayMode::Replay && message.type == CommandType::StopReplay) {
+    if (message.stop_replay.replay_id != replay_id_) {
+      return ReplayStatus::InvalidTransition;
+    }
+    mode_ = ReplayMode::Restoring;
+    return ReplayStatus::Ok;
+  }
+
+  if (mode_ == ReplayMode::Restoring) {
+    if (message.type != CommandType::LoadSnapshot ||
+        message.load_snapshot.snapshot_id != live_snapshot_id_) {
+      return ReplayStatus::InvalidTransition;
+    }
+    if (pipeline.restore_live_sequence(live_resume_sequence_) !=
+        CommandPipelineStatus::Ok) {
+      return ReplayStatus::PipelineFailed;
+    }
+    mode_ = ReplayMode::Live;
+  }
+  return ReplayStatus::Ok;
+}
+
+ReplayMode ReplayPersistenceState::mode() const noexcept {
+  return mode_;
+}
+
+CommandSequence ReplayPersistenceState::live_resume_sequence() const noexcept {
+  return live_resume_sequence_;
+}
+
+std::uint64_t hash_order_book_config(const OrderBookConfig& config) noexcept {
+  std::uint64_t hash = fnv_offset;
+  hash_u32(hash, config.min_price_tick);
+  hash_u32(hash, config.max_price_tick);
+  hash_u32(hash, config.max_orders);
+  return hash;
+}
+
+ReplayStatus validate_replay_manifest(
+    const ReplayManifest& manifest, const wal::WalConfig& command,
+    const wal::WalConfig& event,
+    const OrderBookConfig& book_config) noexcept {
+  if (manifest.manifest_id == 0 ||
+      manifest.manifest_id != command.manifest_id ||
+      manifest.manifest_id != event.manifest_id ||
+      manifest.epoch_id != command.epoch_id ||
+      manifest.epoch_id != event.epoch_id ||
+      manifest.command_stream_id != command.stream_id ||
+      manifest.event_stream_id != event.stream_id ||
+      manifest.command_schema_version != command.payload_schema_version ||
+      manifest.event_schema_version != event.payload_schema_version ||
+      manifest.configuration_hash != hash_order_book_config(book_config)) {
+    return ReplayStatus::ManifestMismatch;
+  }
+  return ReplayStatus::Ok;
+}
+
+ReplayResult make_matcher_state_checkpoint(
+    const order_book::OrderBook& book, const OrderBookConfig& book_config,
+    OrderId last_order_id, EventSequence next_event_sequence,
+    std::span<order_book::OrderView> scratch,
+    MatcherStateCheckpoint& checkpoint) noexcept {
+  if (scratch.size() < book.order_count()) {
+    return {ReplayStatus::CheckpointCapacityExceeded, 0};
+  }
+  const order_book::SnapshotResult copied = book.snapshot_into(scratch);
+  if (!copied.ok()) {
+    return {ReplayStatus::CheckpointCapacityExceeded, 0};
+  }
+
+  std::uint64_t hash = fnv_offset;
+  hash_u64(hash, last_order_id);
+  hash_u64(hash, next_event_sequence);
+  hash_u64(hash, hash_order_book_config(book_config));
+  hash_u32(hash, copied.copied);
+  for (std::uint32_t index = 0; index < copied.copied; ++index) {
+    const order_book::OrderView& order = scratch[index];
+    hash_u64(hash, order.id);
+    hash_u64(hash, order.owner_id);
+    hash_u8(hash, static_cast<std::uint8_t>(order.side));
+    hash_u32(hash, order.price);
+    hash_u32(hash, order.remaining);
+  }
+  checkpoint = {last_order_id, next_event_sequence, copied.copied, hash};
+  return {ReplayStatus::Ok, copied.copied};
+}
 
 ReplayStatus WalFileReplaySource::open(
     const std::filesystem::path& path, const wal::WalConfig& expected,

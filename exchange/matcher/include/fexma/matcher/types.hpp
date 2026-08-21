@@ -141,6 +141,12 @@ enum class CheckDecision : std::uint8_t {
   Skipped
 };
 
+enum class ReplayMode : std::uint8_t {
+  Live,
+  Replay,
+  Restoring
+};
+
 struct RiskResult {
   CheckDecision decision{CheckDecision::Pending};
   std::uint32_t reason_code{};
@@ -177,6 +183,7 @@ struct MatcherSnapshotView {
   CommandSequence command_sequence{};
   EpochId epoch_id{};
   OrderId last_order_id{};
+  EventSequence next_event_sequence{};
   OrderBookConfig book_config{};
   const order_book::OrderBook* book{};
 };
@@ -186,6 +193,7 @@ struct MatcherSnapshotImage {
   CommandSequence command_sequence{};
   EpochId epoch_id{};
   OrderId last_order_id{};
+  EventSequence next_event_sequence{};
   OrderBookConfig book_config{};
   std::span<const order_book::OrderView> orders{};
 };

@@ -72,6 +72,7 @@ public:
     image.command_sequence = snapshot.command_sequence;
     image.epoch_id = command.snapshot_epoch_id;
     image.last_order_id = snapshot.last_order_id;
+    image.next_event_sequence = snapshot.next_event_sequence;
     image.book_config = snapshot.book_config;
     orders.resize(snapshot.book->order_count());
 
@@ -516,6 +517,69 @@ public:
          repeated.fatal_reason == FatalReason::NonMonotonicOrderId;
 }
 
+[[nodiscard]] bool replay_restores_nn_then_live_mm_cursors() {
+  ShutdownCommandReader reader;
+  CollectingEventWriter writer;
+  MemorySnapshotStore snapshots;
+  Matcher<ShutdownCommandReader, CollectingEventWriter, MemorySnapshotStore>
+      matcher(reader, writer, snapshots, OrderBookConfig{100, 200, 8});
+
+  if (matcher.process(new_limit(1, 1, 101, Side::Bid, 150, 10)).fatal() ||
+      matcher.process(save_snapshot(2, 41, 7)).fatal()) {
+    return false;
+  }
+  const MatcherSnapshotImage replay_image = snapshots.image;
+  const std::vector<fexma::order_book::OrderView> replay_orders =
+      snapshots.orders;
+
+  if (matcher.process(new_limit(3, 2, 202, Side::Bid, 151, 20)).fatal() ||
+      matcher.process(save_snapshot(4, 42, 7)).fatal()) {
+    return false;
+  }
+  const MatcherSnapshotImage live_image = snapshots.image;
+  const std::vector<fexma::order_book::OrderView> live_orders =
+      snapshots.orders;
+
+  if (matcher.process(envelope(
+          5, Command{StartReplayCommand{9, 42, 41, 3}})).fatal() ||
+      matcher.replay_mode() != ReplayMode::Replay ||
+      matcher.next_event_sequence() != 8) {
+    return false;
+  }
+
+  snapshots.image = replay_image;
+  snapshots.orders = replay_orders;
+  if (matcher.process(load_snapshot(6, 41, 7)).fatal() ||
+      matcher.replay_mode() != ReplayMode::Replay ||
+      matcher.next_event_sequence() != 4 ||
+      matcher.book().order_count() != 1 || matcher.last_order_id() != 1) {
+    return false;
+  }
+
+  if (matcher.process(new_limit(3, 2, 202, Side::Bid, 151, 20)).fatal() ||
+      matcher.next_event_sequence() != 6 ||
+      matcher.process(envelope(7, Command{StopReplayCommand{9}})).fatal() ||
+      matcher.replay_mode() != ReplayMode::Restoring ||
+      matcher.next_event_sequence() != 7) {
+    return false;
+  }
+
+  snapshots.image = live_image;
+  snapshots.orders = live_orders;
+  if (matcher.process(load_snapshot(8, 42, 7)).fatal() ||
+      matcher.replay_mode() != ReplayMode::Live ||
+      matcher.next_event_sequence() != 8 ||
+      matcher.book().order_count() != 2 || matcher.last_order_id() != 2) {
+    return false;
+  }
+
+  if (matcher.process(new_limit(6, 3, 303, Side::Ask, 160, 5)).fatal()) {
+    return false;
+  }
+  return event_metadata_is(writer, 12, 8, 6, 0, false) &&
+         event_metadata_is(writer, 13, 9, 6, 1, true);
+}
+
 [[nodiscard]] bool snapshot_barrier_publish_failure_is_terminal() {
   ShutdownCommandReader reader;
   CollectingEventWriter writer;
@@ -600,6 +664,9 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!load_snapshot_restores_book_and_order_id_boundary()) {
+    return EXIT_FAILURE;
+  }
+  if (!replay_restores_nn_then_live_mm_cursors()) {
     return EXIT_FAILURE;
   }
   if (!snapshot_capture_failure_is_terminal()) {

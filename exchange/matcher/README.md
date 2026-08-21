@@ -122,6 +122,18 @@ The deterministic replay cold path is exposed by `replay.hpp`:
 - source backpressure retains the decoded command instead of advancing or
   dropping it;
 - comparison stops at the first missing, extra, malformed, or different event.
+- `ReplayPersistenceState` selects append-and-sync in live mode and
+  durable-frontier-only publication during replay and live-state restoration;
+- `ReplayManifest` validates epoch, stream identities, schema versions, and the
+  canonical OrderBook configuration hash before replay starts;
+- matcher state checkpoints hash explicit configuration, sequence, identity,
+  and ordered-book fields without hashing native object representation;
+- the replay FSM restores business state from NN for verification, then from
+  MM for return to live operation, while Command/Event live cursors resume
+  immediately after the persisted `StartReplay` records.
+
+The physical snapshot envelope and atomic snapshot publication are deliberately
+outside this component's replay primitives.
 
 ## Benchmark
 

@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 
 namespace fexma::matcher {
 
@@ -25,7 +26,10 @@ enum class ReplayStatus : std::uint8_t {
   PipelineFailed,
   ExpectedEventMissing,
   UnexpectedEvent,
-  EventMismatch
+  EventMismatch,
+  InvalidTransition,
+  ManifestMismatch,
+  CheckpointCapacityExceeded
 };
 
 struct ReplayResult {
@@ -36,6 +40,58 @@ struct ReplayResult {
     return status == ReplayStatus::Ok;
   }
 };
+
+enum class PersistenceAction : std::uint8_t {
+  AppendAndSync,
+  AdvanceDurableOnly
+};
+
+class ReplayPersistenceState final {
+public:
+  [[nodiscard]] PersistenceAction action() const noexcept;
+  [[nodiscard]] ReplayStatus
+  on_durable(const CommandEnvelope& command,
+             CommandPipeline& pipeline) noexcept;
+  [[nodiscard]] ReplayMode mode() const noexcept;
+  [[nodiscard]] CommandSequence live_resume_sequence() const noexcept;
+
+private:
+  ReplayMode mode_{ReplayMode::Live};
+  ReplayId replay_id_{};
+  SnapshotId live_snapshot_id_{};
+  CommandSequence live_resume_sequence_{};
+};
+
+struct ReplayManifest {
+  wal::ManifestId manifest_id{};
+  wal::EpochId epoch_id{};
+  wal::StreamId command_stream_id{};
+  wal::StreamId event_stream_id{};
+  CommandSchemaVersion command_schema_version{};
+  EventSchemaVersion event_schema_version{};
+  std::uint64_t configuration_hash{};
+};
+
+[[nodiscard]] std::uint64_t
+hash_order_book_config(const OrderBookConfig& config) noexcept;
+
+[[nodiscard]] ReplayStatus validate_replay_manifest(
+    const ReplayManifest& manifest, const wal::WalConfig& command,
+    const wal::WalConfig& event,
+    const OrderBookConfig& book_config) noexcept;
+
+struct MatcherStateCheckpoint {
+  OrderId last_order_id{};
+  EventSequence next_event_sequence{};
+  std::uint32_t order_count{};
+  std::uint64_t canonical_hash{};
+};
+
+[[nodiscard]] ReplayResult make_matcher_state_checkpoint(
+    const order_book::OrderBook& book, const OrderBookConfig& book_config,
+    OrderId last_order_id, EventSequence next_event_sequence,
+    std::span<order_book::OrderView> scratch,
+    MatcherStateCheckpoint& checkpoint) noexcept;
 
 class WalFileReplaySource final {
 public:

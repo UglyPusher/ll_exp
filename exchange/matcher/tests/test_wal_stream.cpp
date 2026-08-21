@@ -179,7 +179,8 @@ public:
 
 [[nodiscard]] bool replay_first_command(
     const std::filesystem::path& command_path,
-    const std::filesystem::path& event_path) {
+    const std::filesystem::path& event_path,
+    MatcherStateCheckpoint& checkpoint) {
   CommandPipeline pipeline;
   WalFileReplaySource source;
   EventWalComparator comparator;
@@ -205,10 +206,15 @@ public:
     return false;
   }
 
+  std::array<fexma::order_book::OrderView, 8> scratch{};
   return slot.command.command_sequence == 1 &&
          slot.risk.decision == CheckDecision::Accepted &&
          slot.reserve.decision == CheckDecision::Accepted &&
-         matcher.book().order_count() == 1;
+         matcher.book().order_count() == 1 &&
+         make_matcher_state_checkpoint(
+             matcher.book(), OrderBookConfig{100, 200, 8},
+             matcher.last_order_id(), matcher.next_event_sequence(), scratch,
+             checkpoint).ok();
 }
 
 [[nodiscard]] bool detects_first_event_mismatch(
@@ -224,6 +230,97 @@ public:
          comparator.result().sequence == 1;
 }
 
+[[nodiscard]] bool replay_fsm_restores_live_cursor() {
+  CommandPipeline pipeline;
+  ReplayPersistenceState state;
+  if (pipeline.open({8, 100}) != CommandPipelineStatus::Ok) {
+    return false;
+  }
+  const CommandPipelineResult start = pipeline.try_publish(
+      {17, Command{StartReplayCommand{9, 8, 7, 50}}});
+  CommandEnvelope command{};
+  if (start.sequence != 100 ||
+      state.action() != PersistenceAction::AppendAndSync ||
+      !pipeline.copy_pending_for_persistence(0, command).ok() ||
+      !pipeline.publish_durable(1).ok() ||
+      state.on_durable(command, pipeline) != ReplayStatus::Ok ||
+      state.mode() != ReplayMode::Replay ||
+      state.live_resume_sequence() != 101 ||
+      state.action() != PersistenceAction::AdvanceDurableOnly) {
+    return false;
+  }
+
+  if (!pipeline.try_replay(
+          {1, {17, Command{NewLimitOrder{1, 1, Side::Bid, 150, 1}}}}).ok() ||
+      !pipeline.publish_durable(1).ok()) {
+    return false;
+  }
+  const CommandPipelineResult stop =
+      pipeline.try_publish({17, Command{StopReplayCommand{9}}});
+  if (stop.sequence != 101 || !pipeline.publish_durable(1).ok() ||
+      state.on_durable({101, {17, Command{StopReplayCommand{9}}}}, pipeline) !=
+          ReplayStatus::Ok ||
+      state.mode() != ReplayMode::Restoring) {
+    return false;
+  }
+
+  const CommandPipelineResult restore = pipeline.try_publish(
+      {17, Command{LoadSnapshotCommand{8, 7}}});
+  if (restore.sequence != 102 || !pipeline.publish_durable(1).ok() ||
+      state.on_durable(
+          {102, {17, Command{LoadSnapshotCommand{8, 7}}}}, pipeline) !=
+          ReplayStatus::Ok ||
+      state.mode() != ReplayMode::Live) {
+    return false;
+  }
+  return pipeline.try_publish({17, Command{ShutdownCommand{}}}).sequence ==
+         101;
+}
+
+[[nodiscard]] bool validates_manifest_and_config_hash() {
+  const OrderBookConfig book{100, 200, 8};
+  const ReplayManifest manifest{1001, 7, 101, 201, 2, 2,
+                                hash_order_book_config(book)};
+  if (validate_replay_manifest(manifest, command_config(), event_config(),
+                               book) != ReplayStatus::Ok) {
+    return false;
+  }
+  ReplayManifest wrong = manifest;
+  ++wrong.configuration_hash;
+  return validate_replay_manifest(wrong, command_config(), event_config(),
+                                  book) == ReplayStatus::ManifestMismatch;
+}
+
+[[nodiscard]] bool matcher_checkpoint_is_canonical_and_bounded() {
+  UnusedCommandReader reader;
+  EventWalComparator unused_writer;
+  Matcher matcher(reader, unused_writer, OrderBookConfig{100, 200, 8});
+  std::array<fexma::order_book::OrderView, 8> scratch{};
+  std::array<fexma::order_book::OrderView, 0> no_capacity{};
+  MatcherStateCheckpoint empty{};
+  MatcherStateCheckpoint changed{};
+
+  if (!make_matcher_state_checkpoint(
+           matcher.book(), OrderBookConfig{100, 200, 8},
+           matcher.last_order_id(), matcher.next_event_sequence(), scratch,
+           empty).ok()) {
+    return false;
+  }
+
+  fexma::order_book::OrderBook book(OrderBookConfig{100, 200, 8});
+  if (!book.insert({1, 11, Side::Bid, 150, 10}).ok() ||
+      !make_matcher_state_checkpoint(
+           book, OrderBookConfig{100, 200, 8}, 1, 3, scratch, changed).ok()) {
+    return false;
+  }
+  MatcherStateCheckpoint rejected{};
+  const ReplayResult bounded = make_matcher_state_checkpoint(
+      book, OrderBookConfig{100, 200, 8}, 1, 3, no_capacity, rejected);
+  return empty.canonical_hash != changed.canonical_hash &&
+         changed.order_count == 1 &&
+         bounded.status == ReplayStatus::CheckpointCapacityExceeded;
+}
+
 } // namespace
 
 int main() {
@@ -232,13 +329,20 @@ int main() {
   const std::filesystem::path event_path =
       test_path("fexma_matcher_event_stream.wal");
 
+  MatcherStateCheckpoint first{};
+  MatcherStateCheckpoint second{};
   const bool passed = write_command_stream(command_path) &&
                       read_command_stream(command_path) &&
                       write_event_stream(event_path) &&
                       read_event_stream(event_path) &&
-                      replay_first_command(command_path, event_path) &&
-                      replay_first_command(command_path, event_path) &&
-                      detects_first_event_mismatch(event_path);
+                      replay_first_command(command_path, event_path, first) &&
+                      replay_first_command(command_path, event_path, second) &&
+                      first.canonical_hash == second.canonical_hash &&
+                      first.order_count == second.order_count &&
+                      detects_first_event_mismatch(event_path) &&
+                      replay_fsm_restores_live_cursor() &&
+                      validates_manifest_and_config_hash() &&
+                      matcher_checkpoint_is_canonical_and_bounded();
   std::filesystem::remove(command_path);
   std::filesystem::remove(event_path);
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

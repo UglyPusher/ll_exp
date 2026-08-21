@@ -127,11 +127,21 @@ public:
               command.start_replay.replay_through_command_sequence})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
+      if (replay_mode_ == ReplayMode::Live) {
+        replay_id_ = command.start_replay.replay_id;
+        live_snapshot_id_ = command.start_replay.live_snapshot_id;
+        replay_snapshot_id_ = command.start_replay.replay_snapshot_id;
+        deferred_start_replay_ = true;
+      }
       break;
     case CommandType::StopReplay:
       if (!events.add(
               StopReplayEvent{command.stop_replay.replay_id})) {
         return {ProcessStatus::Fatal, fatal_reason_};
+      }
+      if (replay_mode_ == ReplayMode::Replay &&
+          command.stop_replay.replay_id == replay_id_) {
+        deferred_mode_ = ReplayMode::Restoring;
       }
       break;
     default:
@@ -155,6 +165,7 @@ public:
     if (!events.failed() && !events.finish()) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
+    apply_deferred_replay_transition();
     return processed;
   }
 
@@ -168,6 +179,18 @@ public:
 
   [[nodiscard]] const order_book::OrderBook& book() const noexcept {
     return book_;
+  }
+
+  [[nodiscard]] OrderId last_order_id() const noexcept {
+    return last_order_id_;
+  }
+
+  [[nodiscard]] EventSequence next_event_sequence() const noexcept {
+    return next_event_sequence_;
+  }
+
+  [[nodiscard]] ReplayMode replay_mode() const noexcept {
+    return replay_mode_;
   }
 
 private:
@@ -234,6 +257,7 @@ private:
                                        command_sequence,
                                        command.snapshot_epoch_id,
                                        last_order_id_,
+                                       next_event_sequence_ + 1,
                                        book_config_,
                                        &book_};
     const SnapshotOperationResult captured =
@@ -276,6 +300,14 @@ private:
     }
 
     last_order_id_ = snapshot.last_order_id;
+    if (replay_mode_ == ReplayMode::Replay &&
+        command.snapshot_id == replay_snapshot_id_) {
+      deferred_event_sequence_ = snapshot.next_event_sequence;
+    } else if (replay_mode_ == ReplayMode::Restoring &&
+               command.snapshot_id == live_snapshot_id_) {
+      deferred_event_sequence_ = live_resume_event_sequence_;
+      deferred_mode_ = ReplayMode::Live;
+    }
     if (!events.add(LoadSnapshotEvent{command.snapshot_id,
                                       command.snapshot_epoch_id})) {
       return {ProcessStatus::Fatal, fatal_reason_};
@@ -420,6 +452,22 @@ private:
     fatal_reason_ = reason;
   }
 
+  void apply_deferred_replay_transition() noexcept {
+    if (deferred_start_replay_) {
+      live_resume_event_sequence_ = next_event_sequence_;
+      replay_mode_ = ReplayMode::Replay;
+      deferred_start_replay_ = false;
+    }
+    if (deferred_event_sequence_ != 0) {
+      next_event_sequence_ = deferred_event_sequence_;
+      deferred_event_sequence_ = 0;
+    }
+    if (deferred_mode_.has_value()) {
+      replay_mode_ = *deferred_mode_;
+      deferred_mode_.reset();
+    }
+  }
+
   CommandReader& command_reader_;
   EventWriter& event_writer_;
   SnapshotStore* snapshot_store_{};
@@ -427,6 +475,14 @@ private:
   order_book::OrderBook book_;
   OrderId last_order_id_{};
   EventSequence next_event_sequence_{1};
+  EventSequence live_resume_event_sequence_{};
+  EventSequence deferred_event_sequence_{};
+  ReplayId replay_id_{};
+  SnapshotId live_snapshot_id_{};
+  SnapshotId replay_snapshot_id_{};
+  ReplayMode replay_mode_{ReplayMode::Live};
+  std::optional<ReplayMode> deferred_mode_{};
+  bool deferred_start_replay_{};
   bool running_{true};
   bool fatal_{false};
   FatalReason fatal_reason_{FatalReason::None};
