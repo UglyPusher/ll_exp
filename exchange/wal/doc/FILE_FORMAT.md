@@ -109,4 +109,8 @@ record to the end offset of that trusted prefix. It physically synchronizes the
 truncation and validates the retained file again. An incomplete or invalid file
 header, a complete invalid record (including the final record), middle
 corruption, a sequence error, or an identity mismatch is never truncated or
-repaired. Writer reopen and automatic format migration are not implemented.
+repaired. After crash, every complete record in the maximal contiguous
+CRC-valid prefix is authoritative history and participates in replay. The
+format contains no batch commit record or commit marker; batching is a
+live-writer append-and-sync policy only. Writer reopen and automatic format
+migration are not implemented.

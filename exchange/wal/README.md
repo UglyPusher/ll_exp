@@ -35,6 +35,11 @@ that truncation, and validate the complete file again. Complete invalid records,
 middle corruption, sequence errors, and identity mismatches are refused without
 mutation.
 
+After crash, the maximal contiguous CRC-valid prefix is the authoritative WAL:
+every complete record in it participates in replay and rebuild regardless of
+client acknowledgement. Batches are live append-and-sync units only. The file
+contains no batch commit records or commit markers.
+
 Start with [CONTRACT.md](doc/CONTRACT.md), then see
 [DESIGN.md](doc/DESIGN.md) and [INVARIANTS.md](doc/INVARIANTS.md).
 The physical layout is in [FILE_FORMAT.md](doc/FILE_FORMAT.md); build and test

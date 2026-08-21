@@ -29,8 +29,9 @@ open. It returns `Record` only after complete physical validation.
 
 The file must be quiescent: no writer may append, synchronize, truncate, or
 replace it while a reader or scanner is active. Validation proves physical
-integrity, not the still-open runtime writer's durable frontier. Post-crash
-commit-boundary semantics are a separate recovery-policy decision.
+integrity, not the still-open runtime writer's durable frontier. After a crash,
+the maximal contiguous CRC-valid prefix is the authoritative recovered WAL and
+all of its records participate in replay and rebuild.
 
 The reader validates file identity, format, header CRC, record header CRC,
 contiguous sequence, payload CRC, record boundaries, and zero padding. Any
@@ -65,8 +66,11 @@ returns `IoError`; callers must not infer successful durability from that
 result. If synchronization fails after truncation, the reported current size
 may already differ from the original size; the process must remain fail-closed
 instead of treating a subsequent clean scan as proof of durable recovery.
-Recovery does not decide whether a complete CRC-valid post-crash tail was
-acknowledged or committed; that remains the separate durable-tail policy.
+Every complete record in the validated post-crash trusted prefix is part of
+history regardless of whether a client received an acknowledgement. Batches
+are live-writer append-and-sync units only; the physical format has no batch
+commit records or commit markers. Client retry and ingress idempotency are
+outside the WAL tail contract.
 
 ## Roles
 

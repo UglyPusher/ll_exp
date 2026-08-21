@@ -139,9 +139,12 @@ Resolve these in order; later items depend on earlier ones:
 - [ ] **6. Snapshot boundary.** A snapshot must identify the exact inclusive or
   exclusive Command WAL and Event WAL boundaries it represents for every
   stateful module.
-- [ ] **7. Canonical encoding.** Define endian, fixed/variable payload policy,
-  field widths, schema evolution, unknown-type behavior, and checksums for both
-  WAL payload schemas.
+- [x] **7. Canonical encoding.** Schema version 1 uses explicit little-endian
+  fixed-width fields, a 48-byte Command payload, a 64-byte Event payload,
+  validated tags/enums, canonical boolean values, and a zeroed unused tail.
+  Unknown or non-canonical values are rejected before a domain object is
+  returned. Physical WAL supplies the payload CRC. Exact offsets and schema
+  evolution rules are frozen in `exchange/matcher/WAL_PAYLOAD_FORMAT.md`.
 
 ### Sequence facts already implied by the design
 

@@ -65,3 +65,12 @@ No frontier operation uses `seq_cst`.
 - `close()` never releases storage while `tail != durable`.
 - After an I/O failure, `close()` returns `PendingConsumption` until durable
   backlog is consumed, then releases resources and returns `IoError`.
+
+## Post-Crash Tail
+
+- The maximal contiguous CRC-valid prefix is the authoritative recovered WAL.
+- Every complete record in that prefix participates in replay and rebuild.
+- Client acknowledgement state does not change the recovered tail.
+- Batches and the runtime `durable` frontier are not persisted as separate
+  commit metadata.
+- The physical format has no batch commit record or commit marker.
