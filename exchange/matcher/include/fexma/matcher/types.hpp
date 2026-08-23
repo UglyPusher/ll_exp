@@ -19,8 +19,6 @@ using order_book::PriceTick;
 using order_book::Quantity;
 using order_book::Side;
 
-using SnapshotId = std::uint64_t;
-using ReplayId = std::uint64_t;
 using ClientId = std::uint64_t;
 using CommandSequence = std::uint64_t;
 using EventSequence = std::uint64_t;
@@ -50,28 +48,18 @@ struct NewLimitOrder {
   Quantity quantity{};
 };
 
-struct SaveSnapshotCommand {
-  SnapshotId snapshot_id{};
-  EpochId snapshot_epoch_id{};
-};
+struct SaveSnapshotCommand {};
 
 struct LoadSnapshotCommand {
-  SnapshotId snapshot_id{};
+  CommandSequence save_snapshot_command_sequence{};
   EpochId snapshot_epoch_id{};
 };
 
 struct ShutdownCommand {};
 
-struct StartReplayCommand {
-  ReplayId replay_id{};
-  SnapshotId live_snapshot_id{};
-  SnapshotId replay_snapshot_id{};
-  CommandSequence replay_through_command_sequence{};
-};
+struct StartReplayCommand {};
 
-struct StopReplayCommand {
-  ReplayId replay_id{};
-};
+struct StopReplayCommand {};
 
 struct Command {
   constexpr Command() noexcept : type(CommandType::None), none{} {}
@@ -179,9 +167,7 @@ static_assert(std::is_trivially_copyable_v<CommandRingSlot>);
 static_assert(std::is_standard_layout_v<CommandRingSlot>);
 
 struct MatcherSnapshotView {
-  SnapshotId snapshot_id{};
-  CommandSequence command_sequence{};
-  EpochId epoch_id{};
+  CommandSequence save_snapshot_command_sequence{};
   OrderId last_order_id{};
   EventSequence next_event_sequence{};
   OrderBookConfig book_config{};
@@ -189,8 +175,7 @@ struct MatcherSnapshotView {
 };
 
 struct MatcherSnapshotImage {
-  SnapshotId snapshot_id{};
-  CommandSequence command_sequence{};
+  CommandSequence save_snapshot_command_sequence{};
   EpochId epoch_id{};
   OrderId last_order_id{};
   EventSequence next_event_sequence{};
@@ -350,28 +335,18 @@ struct MatcherFatalEvent {
   OrderId last_order_id{};
 };
 
-struct SaveSnapshotEvent {
-  SnapshotId snapshot_id{};
-  EpochId snapshot_epoch_id{};
-};
+struct SaveSnapshotEvent {};
 
 struct LoadSnapshotEvent {
-  SnapshotId snapshot_id{};
+  CommandSequence save_snapshot_command_sequence{};
   EpochId snapshot_epoch_id{};
 };
 
 struct ShutdownEvent {};
 
-struct StartReplayEvent {
-  ReplayId replay_id{};
-  SnapshotId live_snapshot_id{};
-  SnapshotId replay_snapshot_id{};
-  CommandSequence replay_through_command_sequence{};
-};
+struct StartReplayEvent {};
 
-struct StopReplayEvent {
-  ReplayId replay_id{};
-};
+struct StopReplayEvent {};
 
 struct Event {
   constexpr Event() noexcept : type(EventType::None), none{} {}

@@ -63,9 +63,8 @@ public:
   const std::array<CommandWalPayload, 4> commands{
       CommandWalPayload{17,
                         Command{NewLimitOrder{1, 11, Side::Bid, 150, 10}}},
-      CommandWalPayload{17, Command{SaveSnapshotCommand{5, 7}}},
-      CommandWalPayload{17,
-                        Command{StartReplayCommand{9, 5, 3, 2}}},
+      CommandWalPayload{17, Command{SaveSnapshotCommand{}}},
+      CommandWalPayload{17, Command{StartReplayCommand{}}},
       CommandWalPayload{17, Command{ShutdownCommand{}}}};
   std::array<std::byte, command_wal_payload_size_v2> bytes{};
 
@@ -125,7 +124,7 @@ public:
       EventWalPayload{17, 1, 1, true,
                       Event{OrderRestedEvent{1, 11, Side::Bid, 150, 10}}},
       EventWalPayload{17, 3, 0, true,
-                      Event{StartReplayEvent{9, 5, 3, 2}}}};
+                      Event{StartReplayEvent{}}}};
   std::array<std::byte, event_wal_payload_size_v2> bytes{};
 
   for (const EventWalPayload& event : events) {
@@ -237,7 +236,7 @@ public:
     return false;
   }
   const CommandPipelineResult start = pipeline.try_publish(
-      {17, Command{StartReplayCommand{9, 8, 7, 50}}});
+      {17, Command{StartReplayCommand{}}});
   CommandEnvelope command{};
   if (start.sequence != 100 ||
       state.action() != PersistenceAction::AppendAndSync ||
@@ -256,9 +255,9 @@ public:
     return false;
   }
   const CommandPipelineResult stop =
-      pipeline.try_publish({17, Command{StopReplayCommand{9}}});
+      pipeline.try_publish({17, Command{StopReplayCommand{}}});
   if (stop.sequence != 101 || !pipeline.publish_durable(1).ok() ||
-      state.on_durable({101, {17, Command{StopReplayCommand{9}}}}, pipeline) !=
+      state.on_durable({101, {17, Command{StopReplayCommand{}}}}, pipeline) !=
           ReplayStatus::Ok ||
       state.mode() != ReplayMode::Restoring) {
     return false;

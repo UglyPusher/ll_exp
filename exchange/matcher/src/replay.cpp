@@ -40,34 +40,22 @@ ReplayStatus ReplayPersistenceState::on_durable(
     const CommandEnvelope& command, CommandPipeline& pipeline) noexcept {
   const Command& message = command.payload.message;
   if (mode_ == ReplayMode::Live && message.type == CommandType::StartReplay) {
-    const StartReplayCommand& start = message.start_replay;
-    if (start.replay_id == 0 || start.live_snapshot_id == 0 ||
-        start.replay_snapshot_id == 0 ||
-        start.live_snapshot_id == start.replay_snapshot_id ||
-        start.replay_through_command_sequence == 0 ||
-        start.replay_through_command_sequence >= command.command_sequence ||
-        command.command_sequence ==
+    if (command.command_sequence ==
             (std::numeric_limits<CommandSequence>::max)()) {
       return ReplayStatus::InvalidTransition;
     }
-    replay_id_ = start.replay_id;
-    live_snapshot_id_ = start.live_snapshot_id;
     live_resume_sequence_ = command.command_sequence + 1;
     mode_ = ReplayMode::Replay;
     return ReplayStatus::Ok;
   }
 
   if (mode_ == ReplayMode::Replay && message.type == CommandType::StopReplay) {
-    if (message.stop_replay.replay_id != replay_id_) {
-      return ReplayStatus::InvalidTransition;
-    }
     mode_ = ReplayMode::Restoring;
     return ReplayStatus::Ok;
   }
 
   if (mode_ == ReplayMode::Restoring) {
-    if (message.type != CommandType::LoadSnapshot ||
-        message.load_snapshot.snapshot_id != live_snapshot_id_) {
+    if (message.type != CommandType::LoadSnapshot) {
       return ReplayStatus::InvalidTransition;
     }
     if (pipeline.restore_live_sequence(live_resume_sequence_) !=

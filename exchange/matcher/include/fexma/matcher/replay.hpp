@@ -57,8 +57,6 @@ public:
 
 private:
   ReplayMode mode_{ReplayMode::Live};
-  ReplayId replay_id_{};
-  SnapshotId live_snapshot_id_{};
   CommandSequence live_resume_sequence_{};
 };
 

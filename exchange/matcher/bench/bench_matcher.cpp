@@ -164,12 +164,10 @@ public:
       g_sink += event.done.id;
       break;
     case EventType::SaveSnapshot:
-      g_sink += event.save_snapshot.snapshot_id +
-                envelope.payload.caused_by_command_sequence +
-                event.save_snapshot.snapshot_epoch_id;
+      g_sink += envelope.payload.caused_by_command_sequence;
       break;
     case EventType::LoadSnapshot:
-      g_sink += event.load_snapshot.snapshot_id +
+      g_sink += event.load_snapshot.save_snapshot_command_sequence +
                 envelope.payload.caused_by_command_sequence +
                 event.load_snapshot.snapshot_epoch_id;
       break;

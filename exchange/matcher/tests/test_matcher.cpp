@@ -59,7 +59,7 @@ public:
 class MemorySnapshotStore {
 public:
   [[nodiscard]] SnapshotOperationResult
-  capture(const SaveSnapshotCommand& command,
+  capture(const SaveSnapshotCommand&,
           const MatcherSnapshotView& snapshot) {
     if (fail_capture) {
       return {SnapshotOperationStatus::Fatal};
@@ -68,9 +68,9 @@ public:
       return {SnapshotOperationStatus::Invalid};
     }
 
-    image.snapshot_id = command.snapshot_id;
-    image.command_sequence = snapshot.command_sequence;
-    image.epoch_id = command.snapshot_epoch_id;
+    image.save_snapshot_command_sequence =
+        snapshot.save_snapshot_command_sequence;
+    image.epoch_id = epoch_id;
     image.last_order_id = snapshot.last_order_id;
     image.next_event_sequence = snapshot.next_event_sequence;
     image.book_config = snapshot.book_config;
@@ -92,7 +92,8 @@ public:
     if (fail_load) {
       return {SnapshotOperationStatus::Unavailable};
     }
-    if (image.snapshot_id != command.snapshot_id ||
+    if (image.save_snapshot_command_sequence !=
+            command.save_snapshot_command_sequence ||
         image.epoch_id != command.snapshot_epoch_id) {
       return {SnapshotOperationStatus::Unavailable};
     }
@@ -109,6 +110,7 @@ public:
   std::uint32_t load_count{};
   bool fail_capture{false};
   bool fail_load{false};
+  EpochId epoch_id{3};
 };
 
 [[nodiscard]] CommandEnvelope new_limit(CommandSequence command_sequence,
@@ -119,29 +121,26 @@ public:
                   Command{NewLimitOrder{id, owner_id, side, price, quantity}});
 }
 
-[[nodiscard]] CommandEnvelope save_snapshot(CommandSequence command_sequence,
-                                            SnapshotId snapshot_id,
-                                            EpochId snapshot_epoch_id) noexcept {
-  return envelope(
-      command_sequence,
-      Command{SaveSnapshotCommand{snapshot_id, snapshot_epoch_id}});
+[[nodiscard]] CommandEnvelope
+save_snapshot(CommandSequence command_sequence) noexcept {
+  return envelope(command_sequence, Command{SaveSnapshotCommand{}});
 }
 
 [[nodiscard]] CommandEnvelope load_snapshot(CommandSequence command_sequence,
-                                            SnapshotId snapshot_id,
-                                            EpochId snapshot_epoch_id) noexcept {
-  return envelope(
-      command_sequence,
-      Command{LoadSnapshotCommand{snapshot_id, snapshot_epoch_id}});
+                                            CommandSequence
+                                                save_snapshot_sequence,
+                                            EpochId snapshot_epoch_id = 3) noexcept {
+  return envelope(command_sequence,
+                  Command{LoadSnapshotCommand{save_snapshot_sequence,
+                                              snapshot_epoch_id}});
 }
 
 [[nodiscard]] bool replay_commands_are_forwarded() {
   ShutdownCommandReader reader;
   CollectingEventWriter writer;
   Matcher matcher(reader, writer, OrderBookConfig{100, 200, 8});
-  const CommandEnvelope start = envelope(
-      1, Command{StartReplayCommand{9, 8, 7, 6}});
-  const CommandEnvelope stop = envelope(2, Command{StopReplayCommand{9}});
+  const CommandEnvelope start = envelope(1, Command{StartReplayCommand{}});
+  const CommandEnvelope stop = envelope(2, Command{StopReplayCommand{}});
   if (matcher.process(start).fatal() || matcher.process(stop).fatal() ||
       writer.event_count != 2) {
     return false;
@@ -151,15 +150,9 @@ public:
   return started.event_sequence == 1 &&
          started.payload.caused_by_command_sequence == 1 &&
          started.payload.message.type == EventType::StartReplay &&
-         started.payload.message.start_replay.replay_id == 9 &&
-         started.payload.message.start_replay.live_snapshot_id == 8 &&
-         started.payload.message.start_replay.replay_snapshot_id == 7 &&
-         started.payload.message.start_replay
-                 .replay_through_command_sequence == 6 &&
          stopped.event_sequence == 2 &&
          stopped.payload.caused_by_command_sequence == 2 &&
-         stopped.payload.message.type == EventType::StopReplay &&
-         stopped.payload.message.stop_replay.replay_id == 9;
+         stopped.payload.message.type == EventType::StopReplay;
 }
 
 [[nodiscard]] bool event_type_is(const CollectingEventWriter& writer,
@@ -274,7 +267,7 @@ public:
 
 [[nodiscard]] bool command_wal_payload_preserves_client_id() {
   const CommandEnvelope command =
-      envelope(7, Command{SaveSnapshotCommand{42, 3}});
+      envelope(7, Command{SaveSnapshotCommand{}});
   return command.command_sequence == 7 &&
          command.payload.client_id == test_client_id &&
          command.payload.message.type == CommandType::SaveSnapshot;
@@ -456,18 +449,15 @@ public:
   if (matcher.process(new_limit(1, 1, 101, Side::Bid, 150, 10)).fatal()) {
     return false;
   }
-  const ProcessResult saved = matcher.process(save_snapshot(2, 42, 3));
+  const ProcessResult saved = matcher.process(save_snapshot(2));
   if (saved.status != ProcessStatus::Continue ||
       snapshots.capture_count != 1 || snapshots.orders.size() != 1 ||
       snapshots.image.last_order_id != 1 ||
       !event_type_is(writer, writer.event_count - 1,
                      EventType::SaveSnapshot) ||
       writer.events[writer.event_count - 1]
-              .payload.message.save_snapshot.snapshot_id != 42 ||
-      writer.events[writer.event_count - 1]
               .payload.caused_by_command_sequence != 2 ||
-      writer.events[writer.event_count - 1]
-              .payload.message.save_snapshot.snapshot_epoch_id != 3) {
+      snapshots.image.save_snapshot_command_sequence != 2) {
     return false;
   }
 
@@ -488,21 +478,22 @@ public:
       matcher(reader, writer, snapshots, OrderBookConfig{100, 200, 8});
 
   if (matcher.process(new_limit(1, 1, 101, Side::Bid, 150, 10)).fatal() ||
-      matcher.process(save_snapshot(2, 42, 3)).fatal() ||
+      matcher.process(save_snapshot(2)).fatal() ||
       matcher.process(new_limit(3, 2, 202, Side::Bid, 151, 20)).fatal()) {
     return false;
   }
 
-  const ProcessResult loaded = matcher.process(load_snapshot(4, 42, 3));
+  const ProcessResult loaded = matcher.process(load_snapshot(4, 2));
   if (loaded.status != ProcessStatus::Continue || snapshots.load_count != 1 ||
       !event_type_is(writer, writer.event_count - 1,
                      EventType::LoadSnapshot) ||
       writer.events[writer.event_count - 1]
-              .payload.message.load_snapshot.snapshot_id != 42 ||
+              .payload.message.load_snapshot.save_snapshot_command_sequence !=
+          2 ||
       writer.events[writer.event_count - 1]
-              .payload.caused_by_command_sequence != 4 ||
+              .payload.message.load_snapshot.snapshot_epoch_id != 3 ||
       writer.events[writer.event_count - 1]
-              .payload.message.load_snapshot.snapshot_epoch_id != 3) {
+              .payload.caused_by_command_sequence != 4) {
     return false;
   }
 
@@ -525,7 +516,7 @@ public:
       matcher(reader, writer, snapshots, OrderBookConfig{100, 200, 8});
 
   if (matcher.process(new_limit(1, 1, 101, Side::Bid, 150, 10)).fatal() ||
-      matcher.process(save_snapshot(2, 41, 7)).fatal()) {
+      matcher.process(save_snapshot(2)).fatal()) {
     return false;
   }
   const MatcherSnapshotImage replay_image = snapshots.image;
@@ -533,15 +524,14 @@ public:
       snapshots.orders;
 
   if (matcher.process(new_limit(3, 2, 202, Side::Bid, 151, 20)).fatal() ||
-      matcher.process(save_snapshot(4, 42, 7)).fatal()) {
+      matcher.process(save_snapshot(4)).fatal()) {
     return false;
   }
   const MatcherSnapshotImage live_image = snapshots.image;
   const std::vector<fexma::order_book::OrderView> live_orders =
       snapshots.orders;
 
-  if (matcher.process(envelope(
-          5, Command{StartReplayCommand{9, 42, 41, 3}})).fatal() ||
+  if (matcher.process(envelope(5, Command{StartReplayCommand{}})).fatal() ||
       matcher.replay_mode() != ReplayMode::Replay ||
       matcher.next_event_sequence() != 8) {
     return false;
@@ -549,7 +539,7 @@ public:
 
   snapshots.image = replay_image;
   snapshots.orders = replay_orders;
-  if (matcher.process(load_snapshot(6, 41, 7)).fatal() ||
+  if (matcher.process(load_snapshot(6, 2)).fatal() ||
       matcher.replay_mode() != ReplayMode::Replay ||
       matcher.next_event_sequence() != 4 ||
       matcher.book().order_count() != 1 || matcher.last_order_id() != 1) {
@@ -558,7 +548,7 @@ public:
 
   if (matcher.process(new_limit(3, 2, 202, Side::Bid, 151, 20)).fatal() ||
       matcher.next_event_sequence() != 6 ||
-      matcher.process(envelope(7, Command{StopReplayCommand{9}})).fatal() ||
+      matcher.process(envelope(7, Command{StopReplayCommand{}})).fatal() ||
       matcher.replay_mode() != ReplayMode::Restoring ||
       matcher.next_event_sequence() != 7) {
     return false;
@@ -566,7 +556,7 @@ public:
 
   snapshots.image = live_image;
   snapshots.orders = live_orders;
-  if (matcher.process(load_snapshot(8, 42, 7)).fatal() ||
+  if (matcher.process(load_snapshot(8, 4)).fatal() ||
       matcher.replay_mode() != ReplayMode::Live ||
       matcher.next_event_sequence() != 8 ||
       matcher.book().order_count() != 2 || matcher.last_order_id() != 2) {
@@ -592,7 +582,7 @@ public:
     return false;
   }
 
-  const ProcessResult saved = matcher.process(save_snapshot(2, 42, 3));
+  const ProcessResult saved = matcher.process(save_snapshot(2));
   return saved.status == ProcessStatus::Fatal &&
          saved.fatal_reason == FatalReason::EventWriterFatal &&
          snapshots.capture_count == 1 && matcher.fatal();
@@ -606,7 +596,7 @@ public:
   Matcher<ShutdownCommandReader, CollectingEventWriter, MemorySnapshotStore>
       matcher(reader, writer, snapshots, OrderBookConfig{100, 200, 8});
 
-  const ProcessResult saved = matcher.process(save_snapshot(1, 42, 3));
+  const ProcessResult saved = matcher.process(save_snapshot(1));
   return saved.status == ProcessStatus::Fatal &&
          saved.fatal_reason == FatalReason::SnapshotCaptureFailed &&
          matcher.fatal_reason() == FatalReason::SnapshotCaptureFailed;

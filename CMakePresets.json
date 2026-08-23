@@ -39,5 +39,16 @@
       "configurePreset": "windows-msvc",
       "configuration": "Release"
     }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Test Windows MSVC Release",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

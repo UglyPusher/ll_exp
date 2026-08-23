@@ -89,12 +89,12 @@ PayloadCodecStatus encode_command_wal_payload_v1(
     return PayloadCodecStatus::Ok;
   }
   case CommandType::SaveSnapshot:
-    write_u64(bytes, 16, payload.message.save_snapshot.snapshot_id);
-    write_u64(bytes, 24, payload.message.save_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case CommandType::LoadSnapshot:
-    write_u64(bytes, 16, payload.message.load_snapshot.snapshot_id);
-    write_u64(bytes, 24, payload.message.load_snapshot.snapshot_epoch_id);
+    write_u64(bytes, 16,
+              payload.message.load_snapshot.save_snapshot_command_sequence);
+    write_u64(bytes, 24,
+              payload.message.load_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case CommandType::Shutdown:
     return PayloadCodecStatus::Ok;
@@ -128,8 +128,7 @@ PayloadCodecStatus decode_command_wal_payload_v1(
     break;
   }
   case CommandType::SaveSnapshot:
-    decoded.message = Command{SaveSnapshotCommand{
-        read_u64(bytes, 16), read_u64(bytes, 24)}};
+    decoded.message = Command{SaveSnapshotCommand{}};
     break;
   case CommandType::LoadSnapshot:
     decoded.message = Command{LoadSnapshotCommand{
@@ -212,12 +211,12 @@ PayloadCodecStatus encode_event_wal_payload_v1(
     write_u64(bytes, 24, payload.message.done.id);
     return PayloadCodecStatus::Ok;
   case EventType::SaveSnapshot:
-    write_u64(bytes, 24, payload.message.save_snapshot.snapshot_id);
-    write_u64(bytes, 32, payload.message.save_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case EventType::LoadSnapshot:
-    write_u64(bytes, 24, payload.message.load_snapshot.snapshot_id);
-    write_u64(bytes, 32, payload.message.load_snapshot.snapshot_epoch_id);
+    write_u64(bytes, 24,
+              payload.message.load_snapshot.save_snapshot_command_sequence);
+    write_u64(bytes, 32,
+              payload.message.load_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case EventType::Shutdown:
     return PayloadCodecStatus::Ok;
@@ -290,8 +289,7 @@ PayloadCodecStatus decode_event_wal_payload_v1(
     decoded.message = Event{OrderDoneEvent{read_u64(bytes, 24)}};
     break;
   case EventType::SaveSnapshot:
-    decoded.message = Event{SaveSnapshotEvent{
-        read_u64(bytes, 24), read_u64(bytes, 32)}};
+    decoded.message = Event{SaveSnapshotEvent{}};
     break;
   case EventType::LoadSnapshot:
     decoded.message = Event{LoadSnapshotEvent{
@@ -347,13 +345,7 @@ PayloadCodecStatus encode_command_wal_payload_v2(
   write_u64(bytes, 0, payload.client_id);
   bytes[8] = static_cast<std::byte>(payload.message.type);
   if (payload.message.type == CommandType::StartReplay) {
-    const StartReplayCommand& command = payload.message.start_replay;
-    write_u64(bytes, 16, command.replay_id);
-    write_u64(bytes, 24, command.live_snapshot_id);
-    write_u64(bytes, 32, command.replay_snapshot_id);
-    write_u64(bytes, 40, command.replay_through_command_sequence);
-  } else {
-    write_u64(bytes, 16, payload.message.stop_replay.replay_id);
+    return PayloadCodecStatus::Ok;
   }
   return PayloadCodecStatus::Ok;
 }
@@ -372,11 +364,9 @@ PayloadCodecStatus decode_command_wal_payload_v2(
   CommandWalPayload decoded{};
   decoded.client_id = read_u64(bytes, 0);
   if (type == CommandType::StartReplay) {
-    decoded.message = Command{StartReplayCommand{
-        read_u64(bytes, 16), read_u64(bytes, 24), read_u64(bytes, 32),
-        read_u64(bytes, 40)}};
+    decoded.message = Command{StartReplayCommand{}};
   } else {
-    decoded.message = Command{StopReplayCommand{read_u64(bytes, 16)}};
+    decoded.message = Command{StopReplayCommand{}};
   }
 
   std::array<std::byte, command_wal_payload_size_v2> canonical{};
@@ -411,13 +401,7 @@ PayloadCodecStatus encode_event_wal_payload_v2(
   bytes[20] = payload.is_last_for_command ? std::byte{1} : std::byte{0};
   bytes[21] = static_cast<std::byte>(payload.message.type);
   if (payload.message.type == EventType::StartReplay) {
-    const StartReplayEvent& event = payload.message.start_replay;
-    write_u64(bytes, 24, event.replay_id);
-    write_u64(bytes, 32, event.live_snapshot_id);
-    write_u64(bytes, 40, event.replay_snapshot_id);
-    write_u64(bytes, 48, event.replay_through_command_sequence);
-  } else {
-    write_u64(bytes, 24, payload.message.stop_replay.replay_id);
+    return PayloadCodecStatus::Ok;
   }
   return PayloadCodecStatus::Ok;
 }
@@ -443,11 +427,9 @@ PayloadCodecStatus decode_event_wal_payload_v2(
   decoded.index_in_command = read_u32(bytes, 16);
   decoded.is_last_for_command = final_flag != 0;
   if (type == EventType::StartReplay) {
-    decoded.message = Event{StartReplayEvent{
-        read_u64(bytes, 24), read_u64(bytes, 32), read_u64(bytes, 40),
-        read_u64(bytes, 48)}};
+    decoded.message = Event{StartReplayEvent{}};
   } else {
-    decoded.message = Event{StopReplayEvent{read_u64(bytes, 24)}};
+    decoded.message = Event{StopReplayEvent{}};
   }
 
   std::array<std::byte, event_wal_payload_size_v2> canonical{};

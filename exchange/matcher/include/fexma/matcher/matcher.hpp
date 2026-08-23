@@ -120,27 +120,18 @@ public:
       processed = {ProcessStatus::Stop};
       break;
     case CommandType::StartReplay:
-      if (!events.add(StartReplayEvent{
-              command.start_replay.replay_id,
-              command.start_replay.live_snapshot_id,
-              command.start_replay.replay_snapshot_id,
-              command.start_replay.replay_through_command_sequence})) {
+      if (!events.add(StartReplayEvent{})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
       if (replay_mode_ == ReplayMode::Live) {
-        replay_id_ = command.start_replay.replay_id;
-        live_snapshot_id_ = command.start_replay.live_snapshot_id;
-        replay_snapshot_id_ = command.start_replay.replay_snapshot_id;
         deferred_start_replay_ = true;
       }
       break;
     case CommandType::StopReplay:
-      if (!events.add(
-              StopReplayEvent{command.stop_replay.replay_id})) {
+      if (!events.add(StopReplayEvent{})) {
         return {ProcessStatus::Fatal, fatal_reason_};
       }
-      if (replay_mode_ == ReplayMode::Replay &&
-          command.stop_replay.replay_id == replay_id_) {
+      if (replay_mode_ == ReplayMode::Replay) {
         deferred_mode_ = ReplayMode::Restoring;
       }
       break;
@@ -253,9 +244,7 @@ private:
   [[nodiscard]] ProcessResult process_save_snapshot(
       const SaveSnapshotCommand& command,
       CommandSequence command_sequence, CommandEventBatch& events) noexcept {
-    const MatcherSnapshotView snapshot{command.snapshot_id,
-                                       command_sequence,
-                                       command.snapshot_epoch_id,
+    const MatcherSnapshotView snapshot{command_sequence,
                                        last_order_id_,
                                        next_event_sequence_ + 1,
                                        book_config_,
@@ -266,8 +255,7 @@ private:
       return enter_fatal_process(FatalReason::SnapshotCaptureFailed, {},
                                  last_order_id_, events);
     }
-    if (!events.add(SaveSnapshotEvent{command.snapshot_id,
-                                      command.snapshot_epoch_id})) {
+    if (!events.add(SaveSnapshotEvent{})) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
     return {ProcessStatus::Continue};
@@ -287,7 +275,8 @@ private:
     }
 
     if (!same_config(snapshot.book_config, book_config_) ||
-        snapshot.snapshot_id != command.snapshot_id ||
+        snapshot.save_snapshot_command_sequence !=
+            command.save_snapshot_command_sequence ||
         snapshot.epoch_id != command.snapshot_epoch_id) {
       return enter_fatal_process(FatalReason::SnapshotLoadInvalid, {},
                                  last_order_id_, events);
@@ -300,16 +289,15 @@ private:
     }
 
     last_order_id_ = snapshot.last_order_id;
-    if (replay_mode_ == ReplayMode::Replay &&
-        command.snapshot_id == replay_snapshot_id_) {
+    if (replay_mode_ == ReplayMode::Replay) {
       deferred_event_sequence_ = snapshot.next_event_sequence;
-    } else if (replay_mode_ == ReplayMode::Restoring &&
-               command.snapshot_id == live_snapshot_id_) {
+    } else if (replay_mode_ == ReplayMode::Restoring) {
       deferred_event_sequence_ = live_resume_event_sequence_;
       deferred_mode_ = ReplayMode::Live;
     }
-    if (!events.add(LoadSnapshotEvent{command.snapshot_id,
-                                      command.snapshot_epoch_id})) {
+    if (!events.add(LoadSnapshotEvent{
+            command.save_snapshot_command_sequence,
+            command.snapshot_epoch_id})) {
       return {ProcessStatus::Fatal, fatal_reason_};
     }
     return {ProcessStatus::Continue};
@@ -477,9 +465,6 @@ private:
   EventSequence next_event_sequence_{1};
   EventSequence live_resume_event_sequence_{};
   EventSequence deferred_event_sequence_{};
-  ReplayId replay_id_{};
-  SnapshotId live_snapshot_id_{};
-  SnapshotId replay_snapshot_id_{};
   ReplayMode replay_mode_{ReplayMode::Live};
   std::optional<ReplayMode> deferred_mode_{};
   bool deferred_start_replay_{};

@@ -124,7 +124,7 @@ namespace {
 [[nodiscard]] bool command_variants_round_trip() {
   const std::array<CommandWalPayload, 4> payloads{
       CommandWalPayload{7, Command{NewLimitOrder{1, 2, Side::Bid, 3, 4}}},
-      CommandWalPayload{7, Command{SaveSnapshotCommand{8, 9}}},
+      CommandWalPayload{7, Command{SaveSnapshotCommand{}}},
       CommandWalPayload{7, Command{LoadSnapshotCommand{10, 11}}},
       CommandWalPayload{7, Command{ShutdownCommand{}}}};
 
@@ -150,7 +150,7 @@ namespace {
       Event{TradeEvent{1, 2, 3, 4, 5, 6}},
       Event{OrderRestedEvent{1, 2, Side::Ask, 3, 4}},
       Event{OrderDoneEvent{1}},
-      Event{SaveSnapshotEvent{1, 2}},
+      Event{SaveSnapshotEvent{}},
       Event{LoadSnapshotEvent{3, 4}},
       Event{ShutdownEvent{}},
       Event{MatcherFatalEvent{FatalReason::NonMonotonicOrderId, 5, 4}}};
@@ -174,18 +174,14 @@ namespace {
 [[nodiscard]] bool replay_commands_use_schema_v2() {
   const CommandWalPayload start{
       0x0102030405060708ull,
-      Command{StartReplayCommand{0x1112131415161718ull,
-                                 0x2122232425262728ull,
-                                 0x3132333435363738ull,
-                                 0x4142434445464748ull}}};
+      Command{StartReplayCommand{}}};
   std::array<std::byte, command_wal_payload_size_v2> bytes{};
   if (current_command_schema_version != 2 ||
       encode_command_wal_payload_v1(start, bytes) !=
           PayloadCodecStatus::InvalidType ||
       encode_command_wal_payload_v2(start, bytes) != PayloadCodecStatus::Ok ||
       bytes[8] != static_cast<std::byte>(CommandType::StartReplay) ||
-      bytes[16] != std::byte{0x18} || bytes[24] != std::byte{0x28} ||
-      bytes[32] != std::byte{0x38} || bytes[40] != std::byte{0x48}) {
+      bytes[16] != std::byte{}) {
     return false;
   }
 
@@ -194,24 +190,15 @@ namespace {
           PayloadCodecStatus::InvalidType ||
       decode_command_wal_payload_v2(bytes, decoded) !=
           PayloadCodecStatus::Ok ||
-      decoded.message.type != CommandType::StartReplay ||
-      decoded.message.start_replay.replay_id !=
-          start.message.start_replay.replay_id ||
-      decoded.message.start_replay.live_snapshot_id !=
-          start.message.start_replay.live_snapshot_id ||
-      decoded.message.start_replay.replay_snapshot_id !=
-          start.message.start_replay.replay_snapshot_id ||
-      decoded.message.start_replay.replay_through_command_sequence !=
-          start.message.start_replay.replay_through_command_sequence) {
+      decoded.message.type != CommandType::StartReplay) {
     return false;
   }
 
-  const CommandWalPayload stop{7, Command{StopReplayCommand{9}}};
+  const CommandWalPayload stop{7, Command{StopReplayCommand{}}};
   if (encode_command_wal_payload_v2(stop, bytes) != PayloadCodecStatus::Ok ||
       decode_command_wal_payload_v2(bytes, decoded) !=
           PayloadCodecStatus::Ok ||
-      decoded.message.type != CommandType::StopReplay ||
-      decoded.message.stop_replay.replay_id != 9) {
+      decoded.message.type != CommandType::StopReplay) {
     return false;
   }
   bytes[47] = std::byte{1};
@@ -222,7 +209,7 @@ namespace {
 [[nodiscard]] bool replay_events_use_schema_v2() {
   const EventWalPayload start{
       1, 2, 3, true,
-      Event{StartReplayEvent{4, 5, 6, 7}}};
+      Event{StartReplayEvent{}}};
   std::array<std::byte, event_wal_payload_size_v2> bytes{};
   if (current_event_schema_version != 2 ||
       encode_event_wal_payload_v1(start, bytes) !=
@@ -236,22 +223,16 @@ namespace {
   if (decode_event_wal_payload_v1(bytes, decoded) !=
           PayloadCodecStatus::InvalidType ||
       decode_event_wal_payload_v2(bytes, decoded) != PayloadCodecStatus::Ok ||
-      decoded.message.type != EventType::StartReplay ||
-      decoded.message.start_replay.replay_id != 4 ||
-      decoded.message.start_replay.live_snapshot_id != 5 ||
-      decoded.message.start_replay.replay_snapshot_id != 6 ||
-      decoded.message.start_replay.replay_through_command_sequence != 7) {
+      decoded.message.type != EventType::StartReplay) {
     return false;
   }
 
-  const EventWalPayload stop{8, 9, 0, true,
-                             Event{StopReplayEvent{10}}};
+  const EventWalPayload stop{8, 9, 0, true, Event{StopReplayEvent{}}};
   return encode_event_wal_payload_v2(stop, bytes) ==
              PayloadCodecStatus::Ok &&
          decode_event_wal_payload_v2(bytes, decoded) ==
              PayloadCodecStatus::Ok &&
-         decoded.message.type == EventType::StopReplay &&
-         decoded.message.stop_replay.replay_id == 10;
+         decoded.message.type == EventType::StopReplay;
 }
 
 [[nodiscard]] bool schema_v2_preserves_schema_v1_bytes() {

@@ -17,14 +17,14 @@ The project uses CMake.
 
 ```powershell
 cmake --preset windows-msvc
-cmake --build --preset windows-msvc-debug
-ctest --test-dir ../build/windows-msvc -C Debug --output-on-failure
+cmake --build --preset windows-msvc-release
+ctest --preset windows-msvc-release
 ```
 
-Release build:
+Optional Debug build:
 
 ```powershell
-cmake --build --preset windows-msvc-release
+cmake --build --preset windows-msvc-debug
 ```
 
 Build artifacts are expected to stay outside this repository, under `../build/`.
