@@ -3,12 +3,15 @@
  * @brief Contract and concurrent stress tests for the Command SPMC pipeline.
  */
 #include <fexma/matcher/command_pipeline.hpp>
+#include "../demo/tract_consumer.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <thread>
+#include <type_traits>
 
 using namespace fexma::matcher;
 
@@ -21,6 +24,101 @@ namespace {
 [[nodiscard]] CommandEnvelope replay_command(
     CommandSequence sequence, std::uint64_t value) noexcept {
   return {sequence, payload(value)};
+}
+
+class DemoArraySource final {
+public:
+  explicit DemoArraySource(
+      const std::array<CommandEnvelope, 3>& commands) noexcept
+      : commands_(commands) {}
+
+  [[nodiscard]] const CommandEnvelope&
+  at(demo::TractPosition position) const noexcept {
+    return commands_[static_cast<std::size_t>(position - 1)];
+  }
+
+private:
+  const std::array<CommandEnvelope, 3>& commands_;
+};
+
+class DemoRecordingModule final {
+public:
+  void process(const CommandEnvelope& command) noexcept {
+    observed_[count_] = command.command_sequence;
+    ++count_;
+  }
+
+  [[nodiscard]] std::size_t count() const noexcept { return count_; }
+
+  [[nodiscard]] std::uint64_t observed(std::size_t index) const noexcept {
+    return observed_[index];
+  }
+
+private:
+  std::array<std::uint64_t, 3> observed_{};
+  std::size_t count_{};
+};
+
+class DemoMissingProcess final {};
+
+class DemoThrowingProcess final {
+public:
+  void process(const CommandEnvelope&) {}
+};
+
+static_assert(demo::TractModule<DemoRecordingModule>);
+static_assert(!demo::TractModule<DemoMissingProcess>);
+static_assert(!demo::TractModule<DemoThrowingProcess>);
+static_assert(!std::is_polymorphic_v<DemoRecordingModule>);
+using TestDemoTract =
+    demo::StaticTract<DemoRecordingModule, DemoRecordingModule>;
+static_assert(TestDemoTract::module_count == 2);
+
+[[nodiscard]] std::array<CommandEnvelope, 3> demo_commands() noexcept {
+  return {{{1, CommandWalPayload{}},
+           {2, CommandWalPayload{}},
+           {3, CommandWalPayload{}}}};
+}
+
+[[nodiscard]] bool compile_time_consumer_obeys_frontiers() noexcept {
+  demo::Frontier monotonic;
+  if (!monotonic.publish(3) || monotonic.publish(2) ||
+      monotonic.acquire() != 3) {
+    return false;
+  }
+
+  const auto commands = demo_commands();
+  const DemoArraySource source(commands);
+  DemoRecordingModule module;
+  demo::Frontier upstream;
+  demo::Frontier downstream;
+  demo::TractConsumer consumer(module, source, upstream, downstream);
+
+  if (!upstream.publish(2)) {
+    return false;
+  }
+  const demo::ConsumeResult first = consumer.process_available();
+  if (first.status != demo::ConsumeStatus::Processed ||
+      first.processed_count != 2 || first.processed_through != 2 ||
+      consumer.current() != 2 || downstream.acquire() != 2 ||
+      module.count() != 2 || module.observed(0) != 1 ||
+      module.observed(1) != 2) {
+    return false;
+  }
+
+  const demo::ConsumeResult empty = consumer.process_available();
+  if (empty.status != demo::ConsumeStatus::Empty || module.count() != 2) {
+    return false;
+  }
+
+  if (!upstream.publish(3)) {
+    return false;
+  }
+  const demo::ConsumeResult last = consumer.process_available();
+  return last.status == demo::ConsumeStatus::Processed &&
+         last.processed_count == 1 && last.processed_through == 3 &&
+         module.count() == 3 && module.observed(2) == 3 &&
+         downstream.acquire() == 3;
 }
 
 [[nodiscard]] bool opens_only_valid_configuration() {
@@ -375,6 +473,9 @@ namespace {
 } // namespace
 
 int main() {
+  if (!compile_time_consumer_obeys_frontiers()) {
+    return EXIT_FAILURE;
+  }
   if (!opens_only_valid_configuration()) {
     return EXIT_FAILURE;
   }
