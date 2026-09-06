@@ -1,0 +1,373 @@
+# Demo 006 — implementation plan
+
+Status: working plan  
+Updated: 2026-09-06  
+Target branch: `demo/simple-snapshot`
+
+## Objective
+
+Build the FTTh Demo 006 application incrementally from existing parts while
+preserving a working, testable system after every structural change.
+
+The implementation order is:
+
+```text
+WAL core
+-> generic slider mechanics
+-> persistence as a slider
+-> two stateful modules
+-> snapshot semantics
+-> bootstrap restore
+-> later rebuild/replay integration
+```
+
+## Step 0 — freeze the baseline
+
+Before restructuring:
+
+1. Build the current branch.
+2. Run all WAL tests.
+3. Record compiler, configuration, and results.
+4. Do not change file format, reader, scanner, or recovery semantics during the
+   initial extraction.
+
+Gate:
+
+```text
+Existing WAL tests pass unchanged.
+```
+
+## Step 1 — separate the WAL string from persistence
+
+Retain in the WAL core:
+
+- bounded storage;
+- `head`;
+- `tail`;
+- producer publication;
+- absolute-position-to-slot mapping;
+- read-only access to a retained position;
+- reclamation and capacity checks;
+- producer sequence exhaustion handling.
+
+Move out of the WAL core:
+
+- `durable_frontier_`;
+- `durable_slot_`;
+- live physical writer ownership;
+- `io_failed_` as persistence state;
+- the persistence work currently performed by `advance_durable()`.
+
+Do not discard:
+
+- physical file format;
+- `PhysicalWalAdapter`;
+- `WalReader`;
+- scanner;
+- recovery;
+- physical identity and CRC contracts.
+
+Split lifecycle conceptually:
+
+```cpp
+wal.open(runtime_config);
+persistence.open(path, physical_config);
+```
+
+Gate:
+
+- producer can publish positions;
+- retained positions can be read by absolute position;
+- no slot is reused before `tail`;
+- wraparound remains correct;
+- hot path remains allocation-free.
+
+## Step 2 — provide safe position access
+
+Add a read-only position API over the existing storage.
+
+Conceptually:
+
+```cpp
+AccessResult try_view(Position position) const noexcept;
+```
+
+The API must:
+
+- accept an absolute position or sequence, not a slot number;
+- reject a position before `tail`;
+- reject a position at or after `head`;
+- return immutable access;
+- define view lifetime through reclamation;
+- prevent wraparound/ABA confusion.
+
+`Storage::block_at_slot()` remains the low-level addressing primitive.
+
+Gate:
+
+- first, middle, last, reclaimed, unpublished, and wrapped positions are tested;
+- two readers of a retained position observe identical immutable input.
+
+## Step 3 — implement generic slider mechanics
+
+Implement one common stage-mechanics template parameterized by:
+
+```text
+WAL/view
+UpstreamProgress
+OwnProgress
+Module
+AcquirePolicy
+PublishPolicy
+```
+
+The slider must:
+
+1. observe the upstream frontier;
+2. obtain an allowed consecutive range;
+3. obtain each full WAL data object;
+4. synchronously invoke its concrete module;
+5. advance its current position only after successful processing;
+6. publish its own frontier according to `PublishPolicy`.
+
+The slider must not:
+
+- inspect record/domain type;
+- implement persistence;
+- recognize `SaveSnapshot` or `LoadSnapshot`;
+- own a worker thread;
+- own polling, spin, yield, sleep, or scheduling policy;
+- know the previous or next module type;
+- perform snapshot file I/O.
+
+Use typed progress roles or separate reader/writer capabilities so that each
+frontier has exactly one writer.
+
+## Step 4 — prove the bare pipeline
+
+Create a trivial `NoOpModule`.
+
+Composition:
+
+```text
+Producer -> head -> NoOpSlider -> tail
+```
+
+The composition/reclaimer advances `tail` only through the last published
+module frontier.
+
+Tests:
+
+- strict ordering;
+- no gaps or duplicates;
+- wraparound;
+- bounded backpressure;
+- stopped slider stops reclamation and eventually the producer;
+- producer and slider concurrency;
+- slot contents remain stable until reclamation;
+- final `tail == slider_frontier == head`.
+
+Gate:
+
+```text
+A large deterministic command sequence passes from head to tail without loss,
+duplication, reordering, or premature reuse.
+```
+
+## Step 5 — rebuild persistence as a module
+
+Construct `PersistenceModule` from the extracted physical writer behavior.
+
+Composition:
+
+```text
+Producer
+  -> head
+  -> PersistenceSlider
+  -> durable frontier
+  -> NoOpSlider
+  -> tail
+```
+
+Persistence processing:
+
+1. obtain positions from `(current, head]`;
+2. append the corresponding immutable WAL data;
+3. complete the selected batch;
+4. perform one physical synchronization;
+5. publish the persistence frontier only after successful sync.
+
+Required tests:
+
+- downstream cannot pass the persistence frontier;
+- empty batch performs no sync;
+- one non-empty batch performs one sync;
+- append failure does not publish progress;
+- sync failure does not publish progress;
+- persistence failure is fail-closed for further production;
+- already published durable data can drain downstream;
+- resulting files pass the existing reader/scanner;
+- incomplete-tail recovery behavior is preserved;
+- physical format and identity remain compatible.
+
+Gate:
+
+```text
+The refactored pipeline reproduces the guarantees of the original monolithic
+WAL.
+```
+
+## Step 6 — attach stateful modules
+
+Implement:
+
+- `HashChainModule`;
+- `BitAccumulatorModule`.
+
+Composition:
+
+```text
+head
+  -> PersistenceSlider
+  -> HashChainSlider
+  -> BitAccumulatorSlider
+  -> tail
+```
+
+Initial policies for both stateful stages:
+
+```text
+AvailableRangeAcquire
+OnePositionPublish
+```
+
+Tests:
+
+- `tail <= BitF <= HashF <= DurableF <= head`;
+- BitAccumulator never passes HashChain;
+- both modules process identical ordered WAL positions;
+- changed payload changes terminal state;
+- skipped, repeated, or reordered position changes terminal state;
+- different stage speeds preserve correctness;
+- reclamation follows only the last mandatory frontier.
+
+Gate:
+
+```text
+Both modules deterministically reach M over the same WAL while occupying
+different pipeline positions during execution.
+```
+
+## Step 7 — introduce SaveSnapshot semantics
+
+Add an application-specific record kind:
+
+```text
+SaveSnapshot
+```
+
+The slider remains unaware of this meaning.
+
+For `SaveSnapshot` at position `N`, each stateful module must:
+
+1. apply the normal deterministic transition for position `N`;
+2. reach `StateAfter(N)`;
+3. create an immutable module capture bound to generation `N`;
+4. return successful completion;
+5. only then allow the slider to publish frontier `N`.
+
+Support exactly one capture generation in flight for the first milestone.
+
+Gate:
+
+- no capture before `StateAfter(N)`;
+- both captures use the same logical boundary;
+- one missing participant prevents complete generation publication.
+
+## Step 8 — implement the composition snapshot sink
+
+Persist:
+
+```text
+snapshot-N/
+    hash_chain.snapshot
+    bit_accumulator.snapshot
+    snapshot.description
+```
+
+The description is published last and contains at least:
+
+- snapshot format version;
+- epoch and WAL identity;
+- application composition identity;
+- snapshot sequence;
+- required module identities;
+- module snapshot schema versions;
+- file sizes;
+- checksums.
+
+A directory without a valid final description or any required module file is
+not a usable snapshot.
+
+Measure independently:
+
+- module capture;
+- generation completion;
+- serialization;
+- write;
+- flush;
+- fsync;
+- publication;
+- total save latency.
+
+## Step 9 — implement bootstrap restore
+
+Before worker threads start:
+
+1. read and validate `snapshot.description`;
+2. validate the complete required file set;
+3. validate identities, schemas, sizes, and checksums;
+4. prepare both module states in isolation;
+5. publish neither state if any preparation fails;
+6. publish the complete prepared composition;
+7. initialize both slider positions/frontiers to `N`;
+8. begin processing at `N + 1`.
+
+Gate:
+
+```text
+continuous(1..M)
+==
+restore(snapshot@N) + process(N+1..M)
+```
+
+Compare both module terminal states and final progress values.
+
+## Step 10 — negative and stress scenarios
+
+Test at minimum:
+
+- missing module capture;
+- corrupted capture;
+- incompatible module schema;
+- incompatible WAL identity;
+- captures from different boundaries;
+- repeat of position `N`;
+- omission of position `N + 1`;
+- downstream progress beyond upstream;
+- premature tail advancement;
+- repeated snapshots at deterministic and randomized positions;
+- synthetic module state sizes of 1, 10, 100, and 500 MiB.
+
+## Later work
+
+After the first milestone is frozen:
+
+1. Formalize rebuild as snapshot load plus WAL suffix processing.
+2. Add replay source and replay persistence policy.
+3. Reuse existing replay comparison/checkpoint code.
+4. Attach Matcher as a later concrete module.
+5. Add Event WAL only after the command-side mechanics are stable.
+
+These steps must not be allowed to expand the scope of the first Demo 006
+milestone.
