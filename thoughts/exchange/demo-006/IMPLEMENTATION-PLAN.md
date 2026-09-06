@@ -37,6 +37,53 @@ Gate:
 Existing WAL tests pass unchanged.
 ```
 
+Baseline recorded on 2026-09-06 at commit
+`9ac9b906320ad4ab43d52d44badd3ba458d358fa`; working tree was clean.
+
+- Windows / Visual Studio 2022 / MSVC 19.44.35215.0 / x64 / C++20 / Release.
+- `cmake --preset windows-msvc`: passed.
+- `cmake --build --preset windows-msvc-release`: passed (whole branch).
+- `ctest --preset windows-msvc-release -R "^test_wal_(frontier_ring|reader|recovery)$"`:
+  3/3 passed, 3.66 seconds total; existing tests unchanged.
+- Individual times: frontier ring 3.30 s, reader 0.15 s, recovery 0.16 s.
+- CMake/CTest were invoked from the installed Visual Studio CMake bin directory
+  because they were absent from the Windows shell PATH.
+
+### Approved first patch order
+
+The owner approved adding the Step 2 absolute read-only position API before
+the Step 1 persistence extraction. This provides the tested access boundary
+needed for that extraction while retaining the existing three-role API.
+
+The first patch adds `Position`, `RecordView`, `AccessResult`, and
+`Wal::try_view()`, documents caller-owned retention and coordinate conversion,
+and registers `test_wal_position_view`. Existing WAL test sources, physical
+format, adapter, reader, scanner, recovery, and CRC contracts are unchanged.
+Persistence extraction and generic slider implementation remain pending.
+
+First patch status: IMPLEMENTED; independent review remains pending.
+
+Verification on 2026-09-06, Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release:
+
+- `cmake --preset windows-msvc`: passed.
+- `cmake --build --preset windows-msvc-release`: passed (whole branch).
+- `ctest --preset windows-msvc-release -R "^test_wal_(frontier_ring|reader|recovery|position_view)$"`:
+  4/4 passed, 4.12 seconds total.
+- Individual times: frontier ring 3.30 s, reader 0.18 s, recovery 0.20 s,
+  position view 0.38 s.
+- The original three WAL test sources are unchanged.
+
+The new test verifies closed/unpublished/reclaimed positions, first/middle/last
+views, unchanged frontiers, pending access before durability, stability until
+reclamation, repeated capacity-1/capacity-3 wraparound, identical input and
+addresses for two readers concurrent with producer publication, non-default
+and maximal physical sequences, maximal rejected positions, immutable payload
+access, and allocation-free success/failure paths.
+
+Both readers finish before reclamation; this verifies the documented retention
+contract, not safety of uncoordinated readers. Other test suites, benchmarks,
+additional toolchains, and sanitizers were not run.
+
 ## Step 1 — separate the WAL string from persistence
 
 Retain in the WAL core:

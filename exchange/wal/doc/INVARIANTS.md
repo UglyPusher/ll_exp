@@ -9,8 +9,10 @@ tail <= durable <= head
 head - tail <= capacity
 ```
 
-- `[tail, durable)` is readable.
-- `[durable, head)` is published by the producer but not readable.
+- `[tail, durable)` is readable by `try_consume()`.
+- `[durable, head)` is published but not readable by `try_consume()`.
+- `[tail, head)` is accessible through read-only `try_view()` under the
+  caller-owned retention contract; availability does not prove durability.
 - `[head, tail + capacity)` is free capacity.
 - Position `p` maps to block `p % capacity`.
 - Position `p` maps to physical sequence `first_sequence + p` without unsigned
@@ -31,6 +33,12 @@ and only the consumer writes `tail`.
 A block cannot be overwritten until `tail` passes its previous absolute
 position.
 
+Borrowed view readers do not own or advance a frontier. Before obtaining a view
+and throughout its use, they must ensure reclamation cannot pass its position.
+The view neither pins the slot nor survives close/destruction/reopen. Absolute
+range validation precedes slot mapping, preventing a reclaimed position from
+being interpreted as the new record in a reused slot under this contract.
+
 ## Publication Order
 
 ```text
@@ -38,6 +46,7 @@ producer --head--> durability writer --durable--> consumer --tail--> producer
 ```
 
 - Payload copy happens before `head.store(..., release)`.
+- Retained view access acquires `head` before exposing payload bytes.
 - Durability acquires `head` before reading pending blocks.
 - Record append and physical sync happen before
   `durable.store(..., release)`.
@@ -53,13 +62,14 @@ No frontier operation uses `seq_cst`.
 - Every block address satisfies configured `alignment`.
 - The complete allocation is zeroed during `open()` to commit and touch every
   page before role threads start.
-- No allocation occurs in publish, durability advance, or consume.
+- No allocation occurs in publish, durability advance, consume, or position view.
 
 ## Failure
 
 - Empty durability batches do not append or synchronize.
 - A failed append or sync does not move `durable`.
-- No position at or above `durable` is returned by the consumer.
+- No position at or above `durable` is returned by `try_consume()`; retained
+  views remain independent of durability and do not grant downstream permission.
 - I/O failure stops producer and durability progress, but not reading below the
   existing durable frontier.
 - `close()` never releases storage while `tail != durable`.

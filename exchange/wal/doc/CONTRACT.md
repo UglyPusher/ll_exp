@@ -11,6 +11,7 @@ public:
   PublishResult try_publish(std::span<const std::byte> payload) noexcept;
   DurabilityResult advance_durable(std::uint32_t batch_size) noexcept;
   ConsumeResult try_consume(std::span<std::byte> payload) noexcept;
+  AccessResult try_view(Position position) const noexcept;
 
   CloseResult close() noexcept;
 
@@ -98,9 +99,68 @@ individual payload length. Application schemas that encode shorter logical
 values into the fixed payload are responsible for deterministic initialization
 of every remaining byte.
 
-Input and output spans remain owned by the caller. Each operation finishes its
-copy synchronously and never retains the span or accesses caller memory after
-return.
+Publish input and consume output spans remain owned by the caller. These
+operations finish their copies synchronously and never retain the span or
+access caller memory after return.
+
+## Retained Position View
+
+`try_view(position)` is a non-blocking, allocation-free borrowed read of the
+runtime WAL. `Position` is an absolute zero-based position, never a slot number
+or a physical sequence. The result contains `ViewStatus` and a `RecordView`
+with `position`, physical `sequence`, and the complete fixed-size
+`std::span<const std::byte> payload`. It does not copy payload bytes or move any
+frontier. The current storage has no additional per-position service fields or
+stage pockets.
+
+Status checks precede address calculation:
+
+- `Closed`: the WAL is not open;
+- `Reclaimed`: `position < tail`;
+- `Unpublished`: `position >= head`;
+- `Ok`: `tail <= position < head`.
+
+Unsuccessful results contain an empty payload and zero position/sequence.
+Status reflects the observed frontiers; publication may advance concurrently.
+The operation acquires `head` before exposing producer-written bytes. It does
+not require persistence success or consult `durable`: retained pending records
+are accessible to persistence and other appropriately coordinated readers.
+`try_consume()` retains its existing durable-only contract. A downstream stage
+must separately acquire and obey its upstream frontier before using a view.
+
+Coordinates remain:
+
+```text
+retained positions                  [tail, head)
+physical sequence of position p     first_sequence + p
+exclusive frontier after position p p + 1
+exclusive frontier after sequence N N - first_sequence + 1
+```
+
+The last conversion applies to a sequence in this WAL. Publication checks
+sequence exhaustion, so a successfully viewed position has a representable
+physical sequence. Only the implementation maps `position % capacity` to a
+block. A reclaimed absolute identity cannot be used to read its replacement
+after ring wraparound.
+
+**Caller-owned retention is a precondition, not a feature of the view.** Before
+requesting a potentially accessible position, the caller must coordinate with
+the sole reclaimer so that `tail` cannot pass that position during the call or
+while any returned view is used. Multiple readers may borrow the same retained
+position under that condition. The range checks do not pin storage, register a
+reader, or protect against concurrent reclamation. Rechecking atomics does not
+make an uncoordinated reader safe.
+
+For the current API, `try_consume()` advances `tail`: callers must finish using
+all views of its position before allowing that consume operation to reclaim it.
+For a linear slider composition, the reclaimer may follow the final mandatory
+published frontier only after all readers of those positions have finished.
+
+The view expires when `tail` passes its position. All view users must also stop
+and retire their views before `close()`, destruction, or a subsequent reopen.
+The existing lifecycle operations do not track outstanding views; in particular
+failure-close may discard the non-durable range without advancing `tail`.
+Views and runtime positions from a previous open lifetime cannot be reused.
 
 ## Publish
 

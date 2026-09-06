@@ -3,8 +3,8 @@
 ## Components
 
 `Wal` owns lifecycle, storage, frontiers, failure state, and the selected
-physical WAL adapter. It exposes only lifecycle, the three role operations,
-and a diagnostic snapshot.
+physical WAL adapter. It exposes lifecycle, the three role operations,
+a diagnostic snapshot, and borrowed read-only access by absolute position.
 
 `Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
@@ -19,6 +19,18 @@ It does not implement frontier policy or persistence.
 sequence numbers. It keeps separate slot indexes for block addressing, so the
 hot path advances slots with a simple increment-and-wrap instead of deriving a
 slot from `position % capacity` on every access.
+
+`try_view(position)` validates the absolute position against `tail` and `head`
+before mapping it with `position % capacity`. It returns position, derived
+physical sequence, and a const span over the existing payload block. There is
+no second data store or per-reader payload copy. Unlike `try_consume()`, it may
+expose retained records that are not durable yet and never reclaims them.
+
+The caller owns retention coordination: no reclaimer may pass a borrowed
+position during access or use. The view is not a reader registration or a slot
+pin. Lifecycle operations require all views to be retired. A future slider
+must enforce its upstream permission separately from this storage-access check.
+The existing producer, durability, consume, and close paths remain unchanged.
 
 `PhysicalWalAdapter` owns the hardware-specific persistence mechanics. The
 default filesystem implementation owns the native OS file handle, creates the

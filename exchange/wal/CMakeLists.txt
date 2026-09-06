@@ -51,3 +51,8 @@ target_link_libraries(test_wal_recovery PRIVATE fexma::wal)
 target_include_directories(test_wal_recovery PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 fexma_wal_apply_warnings(test_wal_recovery)
 add_test(NAME test_wal_recovery COMMAND test_wal_recovery)
+
+add_executable(test_wal_position_view tests/test_wal_position_view.cpp)
+target_link_libraries(test_wal_position_view PRIVATE fexma::wal)
+fexma_wal_apply_warnings(test_wal_position_view)
+add_test(NAME test_wal_position_view COMMAND test_wal_position_view)

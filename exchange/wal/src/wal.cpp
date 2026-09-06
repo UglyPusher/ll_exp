@@ -292,6 +292,28 @@ ConsumeResult Wal::try_consume(std::span<std::byte> payload) noexcept {
   return {ConsumeStatus::Ok, sequence};
 }
 
+AccessResult Wal::try_view(Position position) const noexcept {
+  if (!open_.load(std::memory_order_acquire)) {
+    return {ViewStatus::Closed};
+  }
+
+  const Position tail = tail_frontier_.value.load(std::memory_order_acquire);
+  if (position < tail) {
+    return {ViewStatus::Reclaimed};
+  }
+  const Position head = head_frontier_.value.load(std::memory_order_acquire);
+  if (position >= head) {
+    return {ViewStatus::Unpublished};
+  }
+
+  // Publication already checked sequence exhaustion. Check the absolute range
+  // before mapping to a slot, so a reclaimed identity cannot alias a new one.
+  const auto slot = static_cast<std::uint32_t>(position % config_.capacity);
+  return {ViewStatus::Ok,
+          {position, config_.first_sequence + position,
+           storage_.block_at_slot(slot)}};
+}
+
 CloseResult Wal::close() noexcept {
   if (!open_.load(std::memory_order_acquire)) {
     return {CloseStatus::AlreadyClosed};

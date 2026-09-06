@@ -50,6 +50,11 @@ public:
 
   [[nodiscard]] ConsumeResult try_consume(std::span<std::byte> payload) noexcept;
 
+  // Borrows a published retained record, including records not yet durable.
+  // Caller must prevent reclamation past position throughout access and use.
+  // All views must be retired before close/destruction; views do not pin slots.
+  [[nodiscard]] AccessResult try_view(Position position) const noexcept;
+
   [[nodiscard]] CloseResult close() noexcept;
 
   [[nodiscard]] bool is_open() const noexcept;
