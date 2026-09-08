@@ -1,7 +1,7 @@
 # Demo 006 — current context
 
 Status: working context  
-Updated: 2026-09-06  
+Updated: 2026-09-08
 Repository: `UglyPusher/ll_exp`  
 Branch: `demo/simple-snapshot`
 
@@ -33,9 +33,19 @@ owns append/sync failure. Runtime capacity is absent from its
 `PhysicalWalConfig`.
 
 The public `Wal` class remains temporarily as a compatibility composition. It
-preserves all previous three-role behavior and tests while the generic slider
-is not yet available. Its `durable_frontier_` is transitional and will become
-the frontier of `PersistenceSlider`; it is no longer part of `WalCore`.
+preserves all previous three-role behavior and tests until persistence is
+attached through the generic slider. Its `durable_frontier_` is transitional
+and will become the frontier of `PersistenceSlider`; it is no longer part of
+`WalCore`.
+
+Generic slider mechanics are now available in
+`exchange/wal/include/fexma/wal/slider.hpp`.
+`Progress` separates read-only and writer capabilities over one exclusive-end
+frontier. `Slider` reads one upstream frontier, obtains immutable absolute WAL
+views, synchronously invokes one statically bound module, and exclusively
+publishes its own frontier according to compile-time acquire and publish
+policies. Repeated execution, waiting, reclamation, and lifecycle remain
+composition responsibilities.
 
 Before this extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
@@ -167,6 +177,11 @@ Module& module;
 Position current;
 OwnProgress& published;
 ```
+
+In the implementation, `current` and every frontier are exclusive ends. A
+value `N` means positions `[0, N)` have completed. The supplied
+`OnePositionPublish` policy therefore authorizes publication of `p + 1` only
+after the module successfully processes absolute position `p`.
 
 A downstream slider does not know the type of the upstream module. It knows
 only its read-only progress interface.

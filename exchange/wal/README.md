@@ -12,6 +12,12 @@ tail <= retained positions < head
 bounded reclamation, and sequence exhaustion handling. `PersistenceModule`
 owns live append/sync and its failure state. Their lifecycles are independent.
 
+`Slider` provides generic synchronous stage mechanics over the same retained
+positions. It reads an upstream progress capability, invokes one statically
+bound module, and is the sole user of its own progress writer capability.
+Acquire and publish policies select the bounded range and publication cadence;
+the slider owns no worker, polling loop, wait strategy, or domain semantics.
+
 The existing `Wal` class remains as a transitional compatibility composition:
 
 ```text

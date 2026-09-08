@@ -1,7 +1,7 @@
 # Demo 006 — implementation plan
 
 Status: working plan  
-Updated: 2026-09-06  
+Updated: 2026-09-08
 Target branch: `demo/simple-snapshot`
 
 ## Objective
@@ -199,6 +199,13 @@ Gate:
 - first, middle, last, reclaimed, unpublished, and wrapped positions are tested;
 - two readers of a retained position observe identical immutable input.
 
+Step 2 status: IMPLEMENTED in Stage 1; independent review remains pending.
+
+The absolute-position API is `WalCore::try_view(Position)`. It returns an
+immutable `RecordView`, rejects reclaimed and unpublished identities before
+slot mapping, and documents caller-owned retention through reclamation. Its
+contract and verification are recorded under the approved first patch above.
+
 ## Step 3 — implement generic slider mechanics
 
 Implement one common stage-mechanics template parameterized by:
@@ -233,6 +240,44 @@ The slider must not:
 
 Use typed progress roles or separate reader/writer capabilities so that each
 frontier has exactly one writer.
+
+Step 3 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
+
+Implemented in `exchange/wal/include/fexma/wal/slider.hpp`:
+
+- `Progress` owns one cache-line-isolated atomic exclusive-end frontier and
+  exposes distinct embedded `Reader` and `Writer` capabilities;
+- `WalHeadProgress` adapts the core head as a read-only upstream frontier;
+- `Slider` is parameterized by view source, upstream progress, own progress,
+  module, acquire policy, and publish policy;
+- `AvailableRangeAcquire` selects the consecutive range visible in one
+  upstream observation;
+- `OnePositionPublish` authorizes publication after each successful module
+  call;
+- a publish policy returns `Hold`, `Publish`, or `Failed`, while only `Slider`
+  receives and invokes the own frontier writer;
+- one `process_available()` call is bounded by one acquired range and owns no
+  worker, polling/wait strategy, persistence, snapshot semantics, registry, or
+  virtual dispatch.
+
+`test_wal_slider` verifies strict range order, exclusive progress publication,
+upstream limits, empty ranges, retry after module failure, whole-range deferred
+publication, progress mismatch, upstream regression, invalid policy ranges,
+reclaimed and unpublished views, and publication failure.
+
+Verification on 2026-09-08, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|frontier_ring|position_view|reader|recovery)$"`:
+  6/6 passed, 3.86 seconds total;
+- `ctest --preset windows-msvc-release`: 17/17 registered tests passed,
+  7.05 seconds total.
+
+The physical WAL format, adapter, reader, scanner, recovery, and CRC contracts
+were not changed. Step 4 remains responsible for the concurrent bare pipeline,
+backpressure, reclamation, and wraparound proof.
 
 ## Step 4 — prove the bare pipeline
 

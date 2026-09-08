@@ -21,6 +21,30 @@ head - tail <= capacity
 The core contains no `durable` frontier, file writer, or persistence failure
 state.
 
+## Slider Progress
+
+Every slider frontier and current value is an exclusive end:
+
+```text
+own frontier <= slider current <= observed upstream frontier
+```
+
+- The upstream capability is read-only.
+- Only the slider holding the own writer capability publishes its frontier.
+- A range must begin at `current` and end no later than the acquired upstream
+  frontier.
+- A record view is obtained by its absolute zero-based position.
+- The module must complete position `p` successfully before current becomes
+  `p + 1`.
+- A publish decision is applied only after successful module completion.
+- Release publication of exclusive end `p + 1` makes module output for
+  position `p` visible to an acquire-reading downstream stage.
+- The composition may reclaim only through the last mandatory published
+  frontier and only after all borrowed views have been retired.
+
+The generic mechanics allocate no storage, copy no payload, interpret no
+record kind, and perform no persistence, snapshot I/O, waiting, or scheduling.
+
 ## Compatibility Composition Frontier Order
 
 The transitional `Wal` composition preserves the previous three frontiers:

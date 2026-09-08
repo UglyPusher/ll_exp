@@ -16,6 +16,18 @@ position, select a batch, or publish progress.
 `PersistenceModule`. It retains the old three-role API, durable frontier, and
 lifecycle/failure behavior while generic sliders are developed.
 
+`Slider` is a header-only, statically bound mechanics template. Its parameters
+are the WAL view source, upstream progress reader, own progress writer, concrete
+module, acquire policy, and publish policy. One call processes at most the
+range allowed by one upstream observation. The caller owns repeated execution
+and all waiting or scheduling.
+
+`Progress` separates capabilities: its `Reader` can only acquire an exclusive
+end, while its single embedded `Writer` can publish a monotonic exclusive end.
+The publish policy returns a decision to `Slider`; it never receives the writer.
+This preserves one runtime publisher for every intermediate frontier while
+allowing later batch policies to complete module work before publication.
+
 `WalCore::Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
 
@@ -36,10 +48,10 @@ physical sequence, and a const span over the existing payload block. There is
 no second data store or per-reader payload copy. Unlike `try_consume()`, it may
 expose retained records that are not durable yet and never reclaims them.
 
-The caller owns retention coordination: no reclaimer may pass a borrowed
+The caller or composition owns retention coordination: no reclaimer may pass a borrowed
 position during access or use. The view is not a reader registration or a slot
-pin. Lifecycle operations require all views to be retired. A future slider
-must enforce its upstream permission separately from this storage-access check.
+pin. Lifecycle operations require all views to be retired. `Slider` enforces
+its upstream permission separately from this storage-access check.
 The compatibility producer, durability, consume, and close behavior remains
 unchanged externally.
 

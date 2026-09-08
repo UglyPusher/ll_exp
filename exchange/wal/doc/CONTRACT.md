@@ -40,6 +40,44 @@ does not contain runtime capacity. `PersistenceModule` owns the selected live
 physical writer and its terminal failure state. It does not own or publish a
 frontier and does not select batches.
 
+Generic stage mechanics are provided by `slider.hpp`:
+
+```cpp
+Progress progress(initial_exclusive_end);
+WalHeadProgress upstream(wal);
+Slider slider(wal, upstream, progress.writer(), module);
+
+SliderResult result = slider.process_available();
+Position visible_downstream = progress.reader().acquire();
+```
+
+Every progress value is an exclusive end: value `N` certifies completion of
+positions `[0, N)`. `Progress` owns one cache-line-isolated atomic and exposes
+one embedded read-only `Reader` capability and one embedded `Writer`
+capability. A composition gives downstream stages only the reader. Each slider
+holds its own writer and is the only runtime publisher for that frontier.
+
+`process_available()` is one bounded synchronous call. It snapshots the
+upstream exclusive end, asks `AcquirePolicy` for a consecutive subrange,
+validates that the range starts at the slider's current position and does not
+pass upstream, obtains each immutable `RecordView`, and calls
+`module.process(record)`. The module returns `true` only after processing that
+position is complete. Only then does the slider advance its current position
+and apply `PublishPolicy`.
+
+`PublishPolicy` returns `Hold`, `Publish`, or `Failed`; it never receives the
+frontier writer. This lets a policy perform a synchronous module-level batch
+completion operation before authorizing publication while keeping the slider
+as the sole frontier publisher. The supplied `AvailableRangeAcquire` selects
+the whole observed range, and `OnePositionPublish` publishes after each
+successfully processed position.
+
+The slider owns no thread, scheduling loop, wait/spin/yield behavior, runtime
+registry, virtual dispatch, neighbor type, persistence operation, or snapshot
+interpretation. Calling and retry cadence belongs to the composition. A
+`ViewUnavailable` result indicates a violated upstream/retention composition
+contract or lifecycle transition; the slider does not reclaim WAL storage.
+
 The following class is a compatibility composition retained while slider
 mechanics are introduced:
 

@@ -64,3 +64,8 @@ add_executable(test_wal_core tests/test_wal_core.cpp)
 target_link_libraries(test_wal_core PRIVATE fexma::wal)
 fexma_wal_apply_warnings(test_wal_core)
 add_test(NAME test_wal_core COMMAND test_wal_core)
+
+add_executable(test_wal_slider tests/test_wal_slider.cpp)
+target_link_libraries(test_wal_slider PRIVATE fexma::wal)
+fexma_wal_apply_warnings(test_wal_slider)
+add_test(NAME test_wal_slider COMMAND test_wal_slider)
