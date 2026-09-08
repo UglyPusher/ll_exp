@@ -129,6 +129,50 @@ Gate:
 - wraparound remains correct;
 - hot path remains allocation-free.
 
+Step 1 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
+
+Implemented:
+
+- `WalCore` owns only warmed bounded storage, `head`, `tail`, producer
+  publication, absolute-position views, reclamation, and producer sequence
+  exhaustion;
+- `WalRuntimeConfig` contains only runtime storage and sequence fields;
+- `PersistenceModule` owns the selected physical writer and terminal I/O
+  failure state;
+- `PhysicalWalConfig` contains physical layout and persisted identity without
+  runtime capacity;
+- `Wal` remains a transitional compatibility composition over `WalCore` and
+  `PersistenceModule`, preserving its existing three-role API and failure and
+  lifecycle behavior;
+- `durable_frontier_` remains only in that compatibility composition until the
+  generic `PersistenceSlider` is attached in Step 5;
+- `durable_slot_` was removed; compatibility persistence reads the core by
+  absolute position;
+- shared `valid_config()` logic moved to `config.cpp` without changing the
+  physical configuration contract.
+
+Verification on 2026-09-08, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `ctest --preset windows-msvc-release -R "^test_wal_(core|frontier_ring|position_view|reader|recovery)$"`:
+  5/5 passed, 3.50 seconds total;
+- individual times: frontier ring 2.63 s, reader 0.25 s, recovery 0.18 s,
+  position view 0.34 s, core 0.07 s.
+- `ctest --preset windows-msvc-release`: 16/16 registered tests passed,
+  6.79 seconds total, including `test_matcher_wal_stream` and the unchanged
+  `CommandPipeline` tests.
+
+`test_wal_core` verifies persistence-free open, bounded publish/view/reclaim,
+invalid reclamation, wraparound, sequence exhaustion, concurrent producer and
+reclaimer operation, independent core/persistence lifecycles, and compatibility
+of the resulting physical file with the unchanged `WalReader`.
+
+The existing physical format, physical adapter implementation, reader, scanner,
+recovery, and CRC code were not changed. Benchmarks, additional toolchains, and
+sanitizers were not run.
+
 ## Step 2 — provide safe position access
 
 Add a read-only position API over the existing storage.
@@ -221,9 +265,10 @@ A large deterministic command sequence passes from head to tail without loss,
 duplication, reordering, or premature reuse.
 ```
 
-## Step 5 — rebuild persistence as a module
+## Step 5 — attach persistence through a slider
 
-Construct `PersistenceModule` from the extracted physical writer behavior.
+Attach the extracted `PersistenceModule` to the generic slider mechanics and
+move the transitional durable frontier out of the compatibility composition.
 
 Composition:
 

@@ -4,8 +4,8 @@ From the repository root:
 
 ```powershell
 cmake -S . -B ../build/wal
-cmake --build ../build/wal --config Debug --target test_wal_frontier_ring test_wal_reader test_wal_recovery
-ctest --test-dir ../build/wal -C Debug -R "^test_wal_(frontier_ring|reader|recovery)$" --output-on-failure
+cmake --build ../build/wal --config Debug --target test_wal_core test_wal_frontier_ring test_wal_position_view test_wal_reader test_wal_recovery
+ctest --test-dir ../build/wal -C Debug -R "^test_wal_(core|frontier_ring|position_view|reader|recovery)$" --output-on-failure
 ```
 
 The WAL target enables the repository's maximum standard warning set: `/W4`

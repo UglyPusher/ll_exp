@@ -17,8 +17,29 @@ This is an implementation working note. It does not replace FTTh ADRs.
 
 ### WAL
 
-The existing component in [`exchange/wal`](../../../exchange/wal) is a
-well-tested monolithic three-stage construction:
+Step 1 of the implementation plan is now implemented in the working tree:
+
+```text
+WalCore                 PersistenceModule
+head / tail / storage   physical writer / I/O failure
+        \                 /
+         compatibility Wal
+```
+
+`WalCore` has independent runtime lifecycle and no path, physical writer,
+durable frontier, or persistence failure state. `PersistenceModule` has an
+independent physical lifecycle, accepts immutable `RecordView` values, and
+owns append/sync failure. Runtime capacity is absent from its
+`PhysicalWalConfig`.
+
+The public `Wal` class remains temporarily as a compatibility composition. It
+preserves all previous three-role behavior and tests while the generic slider
+is not yet available. Its `durable_frontier_` is transitional and will become
+the frontier of `PersistenceSlider`; it is no longer part of `WalCore`.
+
+Before this extraction, the component in
+[`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
+three-stage construction:
 
 ```text
 Producer -> Persistence -> Consumer
@@ -45,14 +66,15 @@ test_wal_reader:        PASS
 test_wal_recovery:      PASS
 ```
 
-The low-level storage access already exists:
+The low-level storage access remains:
 
 ```cpp
 Storage::block_at_slot(std::uint32_t slot)
 ```
 
-but it is private, slot-based, and has a mutable overload. It is not yet a safe
-public contract for a module that addresses an absolute WAL position.
+It is private and slot-based. Public module access now uses
+`WalCore::try_view(Position)`, which validates the absolute position against
+`tail` and `head` before returning immutable payload access.
 
 ### CommandPipeline
 

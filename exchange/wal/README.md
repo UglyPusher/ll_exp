@@ -1,12 +1,24 @@
 # WAL
 
-A bounded WAL frontier ring with an intermediate physical durability stage:
+A bounded runtime WAL string with separately composable physical persistence.
+
+The core owns only:
+
+```text
+tail <= retained positions < head
+```
+
+`WalCore` provides producer publication, absolute-position immutable views,
+bounded reclamation, and sequence exhaustion handling. `PersistenceModule`
+owns live append/sync and its failure state. Their lifecycles are independent.
+
+The existing `Wal` class remains as a transitional compatibility composition:
 
 ```text
 producer -> [durable, head) -> physical sync -> [tail, durable) -> consumer
 ```
 
-The ring owns fixed-size opaque payload blocks and three absolute frontiers:
+That compatibility composition exposes three absolute frontiers:
 
 ```text
 tail <= durable <= head

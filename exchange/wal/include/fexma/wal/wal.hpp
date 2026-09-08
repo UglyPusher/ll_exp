@@ -2,11 +2,12 @@
 
 /**
  * @file wal.hpp
- * @brief Bounded WAL frontier ring with an explicit durability stage.
+ * @brief Compatibility composition of the WAL core and persistence module.
  */
 
+#include <fexma/wal/core.hpp>
 #include <fexma/wal/format.hpp>
-#include <fexma/wal/types.hpp>
+#include <fexma/wal/persistence.hpp>
 
 #include <array>
 #include <atomic>
@@ -14,23 +15,21 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
-#include <memory>
 #include <span>
 
 namespace fexma::wal {
-
-namespace detail {
-class PhysicalWalAdapter;
-}
 
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4324) // Intentional cache-line frontier isolation.
 #endif
 
+// Transitional compatibility facade. WalCore owns the runtime string,
+// PersistenceModule owns physical I/O, and this composition preserves the
+// original three-role API until generic slider mechanics replace it.
 class Wal final {
 public:
-  Wal();
+  Wal() = default;
   ~Wal();
 
   Wal(const Wal&) = delete;
@@ -40,21 +39,13 @@ public:
 
   [[nodiscard]] OpenResult open(const std::filesystem::path& path,
                                 const WalConfig& config) noexcept;
-
   [[nodiscard]] PublishResult
   try_publish(std::span<const std::byte> payload) noexcept;
-
   [[nodiscard]] DurabilityResult advance_durable(
       std::uint32_t batch_size = std::numeric_limits<std::uint32_t>::max())
       noexcept;
-
   [[nodiscard]] ConsumeResult try_consume(std::span<std::byte> payload) noexcept;
-
-  // Borrows a published retained record, including records not yet durable.
-  // Caller must prevent reclamation past position throughout access and use.
-  // All views must be retired before close/destruction; views do not pin slots.
   [[nodiscard]] AccessResult try_view(Position position) const noexcept;
-
   [[nodiscard]] CloseResult close() noexcept;
 
   [[nodiscard]] bool is_open() const noexcept;
@@ -65,58 +56,20 @@ private:
   static constexpr std::size_t frontier_cache_line_size = 64;
 
   struct alignas(frontier_cache_line_size) Frontier {
-    std::atomic<std::uint64_t> value{0};
+    std::atomic<Position> value{0};
     std::array<std::byte,
-               frontier_cache_line_size - sizeof(std::atomic<std::uint64_t>)>
+               frontier_cache_line_size - sizeof(std::atomic<Position>)>
         padding{};
   };
 
-  static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
   static_assert(sizeof(Frontier) == frontier_cache_line_size);
-
-  class Storage final {
-  public:
-    Storage() = default;
-    ~Storage();
-
-    Storage(const Storage&) = delete;
-    Storage& operator=(const Storage&) = delete;
-
-    [[nodiscard]] OpenStatus initialize(const WalConfig& config) noexcept;
-    void release() noexcept;
-
-    [[nodiscard]] std::span<std::byte> block_at_slot(std::uint32_t slot) noexcept;
-    [[nodiscard]] std::span<const std::byte>
-    block_at_slot(std::uint32_t slot) const noexcept;
-    [[nodiscard]] std::uint32_t next_slot(std::uint32_t slot) const noexcept;
-
-  private:
-    std::byte* data_{};
-    std::size_t size_{};
-    std::size_t stride_{};
-    std::uint32_t payload_size_{};
-    std::uint32_t capacity_{};
-    std::uint32_t alignment_{default_alignment};
-  };
 
   void release_resources() noexcept;
 
-  // Frontiers are absolute positions used for ordering, capacity checks,
-  // sequences, and cross-thread publication.
-  Frontier tail_frontier_{};
+  WalCore core_{};
+  PersistenceModule persistence_{};
   Frontier durable_frontier_{};
-  Frontier head_frontier_{};
-
-  // Slots are cached ring indexes used only to address storage without
-  // recomputing position % capacity on the hot path.
-  std::uint32_t tail_slot_{};
-  std::uint32_t durable_slot_{};
-  std::uint32_t head_slot_{};
-  Storage storage_{};
-  std::unique_ptr<detail::PhysicalWalAdapter> physical_wal_{};
   WalConfig config_{};
-  std::atomic<bool> sequence_exhausted_{false};
-  std::atomic<bool> io_failed_{false};
   std::atomic<bool> open_{false};
 
   friend class WalTestAccess;

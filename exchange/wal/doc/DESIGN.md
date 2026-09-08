@@ -2,11 +2,21 @@
 
 ## Components
 
-`Wal` owns lifecycle, storage, frontiers, failure state, and the selected
-physical WAL adapter. It exposes lifecycle, the three role operations,
-a diagnostic snapshot, and borrowed read-only access by absolute position.
+`WalCore` owns runtime lifecycle, bounded storage, `head`, `tail`, producer
+publication, reclamation, sequence exhaustion, and borrowed read-only position
+access. It has no filesystem path, physical writer, durable frontier, or I/O
+failure state.
 
-`Storage` owns one aligned allocation. It implements exactly four lifecycle and
+`PersistenceModule` owns the selected live physical WAL adapter and persistence
+failure state. It accepts immutable `RecordView` values, appends them using the
+unchanged physical format, and synchronizes when instructed. It does not own a
+position, select a batch, or publish progress.
+
+`Wal` is a transitional compatibility composition over `WalCore` and
+`PersistenceModule`. It retains the old three-role API, durable frontier, and
+lifecycle/failure behavior while generic sliders are developed.
+
+`WalCore::Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
 
 ```text
@@ -15,10 +25,10 @@ initialize/allocate -> warm/touch -> block_at_slot(slot) -> release
 
 It does not implement frontier policy or persistence.
 
-`Wal` keeps absolute `tail`, `durable`, and `head` frontiers for ordering and
-sequence numbers. It keeps separate slot indexes for block addressing, so the
-hot path advances slots with a simple increment-and-wrap instead of deriving a
-slot from `position % capacity` on every access.
+`WalCore` keeps absolute `tail` and `head` boundaries. The producer keeps a
+cached head slot for its sequential hot path. Absolute view access derives the
+slot only after validating the position. Reclamation publishes an exclusive
+absolute boundary and needs no slot cursor.
 
 `try_view(position)` validates the absolute position against `tail` and `head`
 before mapping it with `position % capacity`. It returns position, derived
@@ -30,7 +40,8 @@ The caller owns retention coordination: no reclaimer may pass a borrowed
 position during access or use. The view is not a reader registration or a slot
 pin. Lifecycle operations require all views to be retired. A future slider
 must enforce its upstream permission separately from this storage-access check.
-The existing producer, durability, consume, and close paths remain unchanged.
+The compatibility producer, durability, consume, and close behavior remains
+unchanged externally.
 
 `PhysicalWalAdapter` owns the hardware-specific persistence mechanics. The
 default filesystem implementation owns the native OS file handle, creates the
@@ -40,8 +51,9 @@ ring frontiers.
 
 `physical_wal_adapter.hpp` is the single compile-time selection point. A
 filesystem or direct-NVMe version is selected by including its concrete header
-and building its corresponding source. `Wal` uses direct non-virtual calls;
-there is no CRTP, runtime registry, or runtime backend selection.
+and building its corresponding source. `PersistenceModule` uses the selected
+concrete type directly; there is no CRTP, runtime registry, virtual dispatch,
+or runtime backend selection.
 
 `WalReader` is the cold-path validated sequential reader. Its selected
 `PhysicalWalReaderAdapter` performs only hardware-specific byte reads;
@@ -58,19 +70,22 @@ again; it never repairs, skips, or resynchronizes around corruption.
 
 ## Operation Walkthrough
 
-`try_publish()` validates the call, uses the block at `head`, fills it,
+`WalCore::try_publish()` validates the call, uses the block at `head`, fills it,
 publishes `head + 1`, and returns the derived physical sequence.
 
-`advance_durable()` selects a bounded pending range, passes each immutable block
-to the selected `PhysicalWalAdapter`, requests one physical sync, and publishes
-the range end as `durable` only after success.
+The compatibility `advance_durable()` selects a bounded pending range, obtains
+each `RecordView` from the core, calls `PersistenceModule::append()`, requests
+one sync, and publishes the range end as `durable` only after success. This
+coordination moves to generic slider mechanics in a later step.
 
-`try_consume()` uses the readable block at `tail`, copies it to caller memory,
-publishes `tail + 1`, and returns the derived physical sequence.
+The compatibility `try_consume()` obtains the readable block at `tail`, copies
+it to caller memory, calls core reclamation with `tail + 1`, and returns the
+physical sequence.
 
 ## Frontier Layout
 
-Each frontier is stored in its own explicitly padded 64-byte aligned `Frontier`.
+Each core boundary and compatibility frontier is stored in its own explicitly
+padded 64-byte aligned object.
 The layout removes false sharing caused by unrelated owners writing `tail`,
 `durable`, and `head` in one cache line.
 

@@ -2,6 +2,47 @@
 
 ## Public API
 
+The runtime WAL string is independent of persistence:
+
+```cpp
+class WalCore {
+public:
+  OpenResult open(const WalRuntimeConfig& config) noexcept;
+  PublishResult try_publish(std::span<const std::byte> payload) noexcept;
+  AccessResult try_view(Position position) const noexcept;
+  ReclaimStatus reclaim(Position end) noexcept;
+  void close() noexcept;
+
+  Position head() const noexcept;
+  Position tail() const noexcept;
+};
+
+class PersistenceModule {
+public:
+  OpenResult open(const std::filesystem::path& path,
+                  const PhysicalWalConfig& config) noexcept;
+  bool append(const RecordView& record) noexcept;
+  bool sync() noexcept;
+  bool close() noexcept;
+  bool failed() const noexcept;
+};
+```
+
+`WalCore` owns bounded warmed storage and the intrinsic `head` and `tail`
+boundaries. It performs no file operation and has no durable boundary or
+persistence failure state. `reclaim(end)` accepts only monotonic exclusive
+boundaries in `[tail, head]`; the composition is responsible for proving that
+all mandatory readers have finished below `end`.
+
+`WalRuntimeConfig` contains runtime storage and sequence fields only.
+`PhysicalWalConfig` contains persisted identity and physical layout fields and
+does not contain runtime capacity. `PersistenceModule` owns the selected live
+physical writer and its terminal failure state. It does not own or publish a
+frontier and does not select batches.
+
+The following class is a compatibility composition retained while slider
+mechanics are introduced:
+
 ```cpp
 class Wal {
 public:
@@ -22,6 +63,9 @@ public:
 ```
 
 `snapshot()` is diagnostic. Its frontiers are not mutable controls.
+`Wal` composes one `WalCore`, one `PersistenceModule`, and a transitional
+durable frontier. It preserves the existing three-role behavior and statuses;
+new tract code should compose the core and modules directly.
 
 The cold-path API in `reader.hpp` provides `WalReader` and `scan_wal()`.
 `WalReader::open()` requires the expected persisted WAL configuration; runtime
@@ -75,7 +119,12 @@ outside the WAL tail contract.
 
 ## Roles
 
-One producer calls `try_publish()`, one durability writer calls
+For `WalCore`, one producer owns `try_publish()` and one composition reclaimer
+owns `reclaim()`. Coordinated read-only users may call `try_view()` while the
+retention precondition is maintained. `open()` and `close()` require all these
+roles to be stopped.
+
+For the compatibility `Wal`, one producer calls `try_publish()`, one durability writer calls
 `advance_durable()`, and one consumer calls `try_consume()`. The three roles may run
 concurrently on separate threads. A second caller for any role is outside the
 contract.
@@ -171,8 +220,10 @@ sequence `first_sequence + position`.
 It returns `Full` when `head - tail == capacity`. Success does not mean the
 payload is durable or visible to the consumer.
 
-After a durability I/O failure, producer calls return `IoError` without
-publishing more data.
+The persistence-free `WalCore` does not infer downstream failure. A composition
+must stop production when its mandatory persistence module fails. The
+compatibility `Wal` preserves this rule: after a durability I/O failure,
+producer calls return `IoError` without publishing more data.
 
 Exhausting the physical sequence domain puts the WAL into a distinct
 fail-closed `SequenceExhausted` producer state; no wrapped sequence is

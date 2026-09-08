@@ -1,8 +1,29 @@
 # WAL Invariants
 
-## Frontier Order
+## WAL Core Frontier Order
 
-The three frontiers are monotonic absolute zero-based positions:
+The WAL core intrinsically owns only two monotonic absolute zero-based
+boundaries:
+
+```text
+tail <= head
+head - tail <= capacity
+```
+
+- `[tail, head)` contains published retained positions.
+- `[head, tail + capacity)` is free capacity.
+- Only the producer writes `head`.
+- Only the composition/reclaimer writes `tail`.
+- `reclaim(end)` cannot move backward or beyond observed `head`.
+- The composition advances `tail` only after every mandatory reader has
+  finished the reclaimed positions.
+
+The core contains no `durable` frontier, file writer, or persistence failure
+state.
+
+## Compatibility Composition Frontier Order
+
+The transitional `Wal` composition preserves the previous three frontiers:
 
 ```text
 tail <= durable <= head
@@ -18,14 +39,14 @@ head - tail <= capacity
 - Position `p` maps to physical sequence `first_sequence + p` without unsigned
   wraparound.
 
-Only the producer writes `head`, only the durability writer writes `durable`,
-and only the consumer writes `tail`.
+Only the producer writes `head`, only the compatibility durability coordinator
+writes `durable`, and only the compatibility consumer writes `tail`.
 
 ## Ownership
 
 - A free block is owned by the producer while it fills the payload.
 - Publication of `head` transfers the immutable block to the pending range.
-- The durability writer borrows pending blocks without modifying them.
+- `PersistenceModule` borrows pending blocks without modifying them.
 - Publication of `durable` makes the block available to the consumer.
 - The consumer owns the block while copying its payload.
 - Publication of `tail` releases the block for producer reuse.
@@ -75,6 +96,11 @@ No frontier operation uses `seq_cst`.
 - `close()` never releases storage while `tail != durable`.
 - After an I/O failure, `close()` returns `PendingConsumption` until durable
   backlog is consumed, then releases resources and returns `IoError`.
+
+These persistence failure rules belong to the compatibility composition.
+`PersistenceModule` owns its terminal failure state; `WalCore` remains unaware
+of it. Any direct composition with mandatory persistence must stop its producer
+after observing that failure.
 
 ## Post-Crash Tail
 

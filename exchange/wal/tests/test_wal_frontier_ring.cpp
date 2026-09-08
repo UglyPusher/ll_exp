@@ -108,7 +108,7 @@ public:
   [[nodiscard]] static std::span<const std::byte>
   block_at(const Wal& wal, std::uint64_t position) noexcept {
     const auto slot = static_cast<std::uint32_t>(position % wal.config_.capacity);
-    return wal.storage_.block_at_slot(slot);
+    return wal.core_.storage_.block_at_slot(slot);
   }
 };
 
