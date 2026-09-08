@@ -5,7 +5,6 @@
 
 #include <fexma/wal/wal.hpp>
 
-#include <algorithm>
 #include <cstring>
 
 namespace fexma::wal {
@@ -36,7 +35,8 @@ OpenResult Wal::open(const std::filesystem::path& path,
   }
 
   config_ = config;
-  durable_frontier_.value.store(0, std::memory_order_relaxed);
+  durable_progress_.reset_quiescent(0);
+  persistence_slider_.reset_quiescent(0);
   open_.store(true, std::memory_order_release);
   return {OpenStatus::Ok};
 }
@@ -54,27 +54,15 @@ PublishResult Wal::try_publish(std::span<const std::byte> payload) noexcept {
 }
 
 DurabilityResult Wal::advance_durable(std::uint32_t batch_size) noexcept {
-  const Position durable =
-      durable_frontier_.value.load(std::memory_order_relaxed);
+  const Position durable = durable_progress_.reader().acquire();
   if (!is_open()) return {DurabilityStatus::Closed, durable, 0};
   if (persistence_.failed()) return {DurabilityStatus::IoError, durable, 0};
 
-  const Position head = core_.head();
-  const Position count =
-      std::min<Position>(head - durable, batch_size);
-  const Position end = durable + count;
-  if (count == 0) return {DurabilityStatus::Ok, durable, 0};
-
-  for (Position position = durable; position < end; ++position) {
-    const AccessResult access = core_.try_view(position);
-    if (!access.ok() || !persistence_.append(access.record)) {
-      return {DurabilityStatus::IoError, durable, 0};
-    }
-  }
-  if (!persistence_.sync()) return {DurabilityStatus::IoError, durable, 0};
-
-  durable_frontier_.value.store(end, std::memory_order_release);
-  return {DurabilityStatus::Ok, end, static_cast<std::uint32_t>(count)};
+  persistence_slider_.acquire_policy().set_maximum_count(batch_size);
+  const SliderResult result = persistence_slider_.process_available();
+  if (!result.ok()) return {DurabilityStatus::IoError, durable, 0};
+  return {DurabilityStatus::Ok, durable_progress_.reader().acquire(),
+          static_cast<std::uint32_t>(result.processed_count)};
 }
 
 ConsumeResult Wal::try_consume(std::span<std::byte> payload) noexcept {
@@ -84,8 +72,7 @@ ConsumeResult Wal::try_consume(std::span<std::byte> payload) noexcept {
   }
 
   const Position tail = core_.tail();
-  const Position durable =
-      durable_frontier_.value.load(std::memory_order_acquire);
+  const Position durable = durable_progress_.reader().acquire();
   if (tail == durable) return {ConsumeStatus::Empty, 0};
 
   const AccessResult access = core_.try_view(tail);
@@ -105,8 +92,7 @@ CloseResult Wal::close() noexcept {
   if (!is_open()) return {CloseStatus::AlreadyClosed};
 
   const Position tail = core_.tail();
-  const Position durable =
-      durable_frontier_.value.load(std::memory_order_acquire);
+  const Position durable = durable_progress_.reader().acquire();
   if (tail != durable) return {CloseStatus::PendingConsumption};
 
   const bool persistence_failed = persistence_.failed();
@@ -131,8 +117,7 @@ const WalConfig& Wal::config() const noexcept { return config_; }
 
 WalSnapshot Wal::snapshot() const noexcept {
   const Position tail = core_.tail();
-  const Position durable =
-      durable_frontier_.value.load(std::memory_order_acquire);
+  const Position durable = durable_progress_.reader().acquire();
   const Position head = core_.head();
   return {tail, durable, head};
 }

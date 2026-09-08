@@ -7,9 +7,8 @@
 
 #include <fexma/wal/core.hpp>
 #include <fexma/wal/format.hpp>
-#include <fexma/wal/persistence.hpp>
+#include <fexma/wal/persistence_slider.hpp>
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -53,22 +52,15 @@ public:
   [[nodiscard]] WalSnapshot snapshot() const noexcept;
 
 private:
-  static constexpr std::size_t frontier_cache_line_size = 64;
-
-  struct alignas(frontier_cache_line_size) Frontier {
-    std::atomic<Position> value{0};
-    std::array<std::byte,
-               frontier_cache_line_size - sizeof(std::atomic<Position>)>
-        padding{};
-  };
-
-  static_assert(sizeof(Frontier) == frontier_cache_line_size);
-
   void release_resources() noexcept;
 
   WalCore core_{};
   PersistenceModule persistence_{};
-  Frontier durable_frontier_{};
+  WalHeadProgress head_progress_{core_};
+  Progress durable_progress_{};
+  PersistenceSlider persistence_slider_{
+      core_, head_progress_, durable_progress_.writer(), persistence_, 0,
+      BoundedRangeAcquire{}, PersistenceBatchPublish{}};
   WalConfig config_{};
   std::atomic<bool> open_{false};
 

@@ -12,9 +12,15 @@ failure state. It accepts immutable `RecordView` values, appends them using the
 unchanged physical format, and synchronizes when instructed. It does not own a
 position, select a batch, or publish progress.
 
-`Wal` is a transitional compatibility composition over `WalCore` and
-`PersistenceModule`. It retains the old three-role API, durable frontier, and
-lifecycle/failure behavior while generic sliders are developed.
+`PersistenceSlider` binds `PersistenceModule` to `WalCore::head` with
+`BoundedRangeAcquire` and `PersistenceBatchPublish`. Appends hold progress; one
+successful sync of the complete selected batch permits the slider to publish
+its durable frontier.
+
+`Wal` is a compatibility facade over a static `WalCore`,
+`PersistenceModule`, `PersistenceSlider`, and durable `Progress`. It retains
+the old three-role API and lifecycle/failure behavior without owning a separate
+special durable atomic.
 
 `Slider` is a header-only, statically bound mechanics template. Its parameters
 are the WAL view source, upstream progress reader, own progress writer, concrete
@@ -59,10 +65,10 @@ physical sequence, and a const span over the existing payload block. There is
 no second data store or per-reader payload copy. Unlike `try_consume()`, it may
 expose retained records that are not durable yet and never reclaims them.
 
-The caller or composition owns retention coordination: no reclaimer may pass a borrowed
-position during access or use. The view is not a reader registration or a slot
-pin. Lifecycle operations require all views to be retired. `Slider` enforces
-its upstream permission separately from this storage-access check.
+The caller or composition owns retention coordination: no reclaimer may pass a
+borrowed position during access or use. The view is not a reader registration
+or a slot pin. Lifecycle operations require all views to be retired. `Slider`
+enforces its upstream permission separately from this storage-access check.
 The compatibility producer, durability, consume, and close behavior remains
 unchanged externally.
 
@@ -96,10 +102,11 @@ again; it never repairs, skips, or resynchronizes around corruption.
 `WalCore::try_publish()` validates the call, uses the block at `head`, fills it,
 publishes `head + 1`, and returns the derived physical sequence.
 
-The compatibility `advance_durable()` selects a bounded pending range, obtains
-each `RecordView` from the core, calls `PersistenceModule::append()`, requests
-one sync, and publishes the range end as `durable` only after success. This
-coordination moves to generic slider mechanics in a later step.
+The compatibility `advance_durable()` sets the persistence slider's bounded
+range size and invokes `process_available()`. Generic slider mechanics obtain
+each `RecordView` and call `PersistenceModule::process()`. The persistence
+publish policy requests one sync and permits publication of the range end as
+`durable` only after success.
 
 The compatibility `try_consume()` obtains the readable block at `tail`, copies
 it to caller memory, calls core reclamation with `tail + 1`, and returns the
@@ -107,8 +114,8 @@ physical sequence.
 
 ## Frontier Layout
 
-Each core boundary and compatibility frontier is stored in its own explicitly
-padded 64-byte aligned object.
+Each core boundary and slider `Progress` frontier is stored in its own
+explicitly padded 64-byte aligned object.
 The layout removes false sharing caused by unrelated owners writing `tail`,
 `durable`, and `head` in one cache line.
 

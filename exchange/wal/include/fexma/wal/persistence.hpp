@@ -7,6 +7,7 @@
 
 #include <fexma/wal/types.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <memory>
 
@@ -39,6 +40,7 @@ public:
 
   [[nodiscard]] OpenResult open(const std::filesystem::path& path,
                                 const PhysicalWalConfig& config) noexcept;
+  [[nodiscard]] bool process(const RecordView& record) noexcept;
   [[nodiscard]] bool append(const RecordView& record) noexcept;
   [[nodiscard]] bool sync() noexcept;
   [[nodiscard]] bool close() noexcept;
@@ -47,7 +49,7 @@ public:
 
 private:
   std::unique_ptr<detail::PhysicalWalAdapter> physical_wal_{};
-  bool failed_{};
+  std::atomic<bool> failed_{false};
 };
 
 } // namespace fexma::wal

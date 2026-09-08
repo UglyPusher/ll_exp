@@ -73,6 +73,11 @@ public:
   [[nodiscard]] const Reader& reader() const noexcept { return reader_; }
   [[nodiscard]] Writer& writer() noexcept { return writer_; }
 
+  // Cold-path initialization: no reader or writer may be active.
+  void reset_quiescent(Position initial) noexcept {
+    cell_.value.store(initial, std::memory_order_relaxed);
+  }
+
 private:
   static constexpr std::size_t cache_line_size = 64;
 
@@ -113,6 +118,28 @@ struct AvailableRangeAcquire final {
                                       Position available_end) const noexcept {
     return {current, available_end};
   }
+};
+
+class BoundedRangeAcquire final {
+public:
+  explicit BoundedRangeAcquire(Position maximum_count = 0) noexcept
+      : maximum_count_(maximum_count) {}
+
+  void set_maximum_count(Position maximum_count) noexcept {
+    maximum_count_ = maximum_count;
+  }
+
+  [[nodiscard]] PositionRange acquire(Position current,
+                                      Position available_end) const noexcept {
+    if (available_end <= current) return {current, current};
+    const Position available_count = available_end - current;
+    const Position count =
+        available_count < maximum_count_ ? available_count : maximum_count_;
+    return {current, current + count};
+  }
+
+private:
+  Position maximum_count_{};
 };
 
 enum class PublishDecision : std::uint8_t {
@@ -258,6 +285,12 @@ public:
   }
 
   [[nodiscard]] Position current() const noexcept { return current_; }
+  // Cold-path initialization: process_available() must not be active.
+  void reset_quiescent(Position initial) noexcept { current_ = initial; }
+
+  [[nodiscard]] AcquirePolicy& acquire_policy() noexcept {
+    return acquire_policy_;
+  }
 
 private:
   [[nodiscard]] bool

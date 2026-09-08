@@ -21,11 +21,16 @@ class PersistenceModule {
 public:
   OpenResult open(const std::filesystem::path& path,
                   const PhysicalWalConfig& config) noexcept;
+  bool process(const RecordView& record) noexcept;
   bool append(const RecordView& record) noexcept;
   bool sync() noexcept;
   bool close() noexcept;
   bool failed() const noexcept;
 };
+
+using PersistenceSlider =
+    Slider<WalCore, WalHeadProgress, Progress::Writer, PersistenceModule,
+           BoundedRangeAcquire, PersistenceBatchPublish>;
 ```
 
 `WalCore` owns bounded warmed storage and the intrinsic `head` and `tail`
@@ -38,7 +43,9 @@ all mandatory readers have finished below `end`.
 `PhysicalWalConfig` contains persisted identity and physical layout fields and
 does not contain runtime capacity. `PersistenceModule` owns the selected live
 physical writer and its terminal failure state. It does not own or publish a
-frontier and does not select batches.
+frontier and does not select batches. `process(record)` is its slider-facing
+append operation. Persistence failure publication is atomic so the producer
+role can stop after observing a terminal append or sync failure.
 
 Generic stage mechanics are provided by `slider.hpp`:
 
@@ -72,6 +79,13 @@ as the sole frontier publisher. The supplied `AvailableRangeAcquire` selects
 the whole observed range, and `OnePositionPublish` publishes after each
 successfully processed position.
 
+`BoundedRangeAcquire` selects at most its configured maximum count.
+`PersistenceBatchPublish` holds progress after every successful append, calls
+`PersistenceModule::sync()` once after the complete non-empty selected range,
+and authorizes publication of the range end only after that sync succeeds. An
+empty range never reaches the policy and performs no sync. Append or sync
+failure leaves the durable progress unchanged and is terminal for the module.
+
 The slider owns no thread, scheduling loop, wait/spin/yield behavior, runtime
 registry, virtual dispatch, neighbor type, persistence operation, or snapshot
 interpretation. Calling and retry cadence belongs to the composition. A
@@ -85,8 +99,8 @@ bare pipeline, the composition may call
 returned and all views from the reclaimed range are retired. Publishing the
 module frontier alone does not release storage or remove producer backpressure.
 
-The following class is a compatibility composition retained while slider
-mechanics are introduced:
+The following class is the retained compatibility facade over that static
+composition:
 
 ```cpp
 class Wal {
@@ -108,9 +122,10 @@ public:
 ```
 
 `snapshot()` is diagnostic. Its frontiers are not mutable controls.
-`Wal` composes one `WalCore`, one `PersistenceModule`, and a transitional
-durable frontier. It preserves the existing three-role behavior and statuses;
-new tract code should compose the core and modules directly.
+`Wal` statically composes one `WalCore`, one `PersistenceModule`, one
+`PersistenceSlider`, and its `Progress` frontier. It preserves the existing
+three-role behavior and statuses; new tract code may wire that durable progress
+reader directly to its next slider.
 
 The cold-path API in `reader.hpp` provides `WalReader` and `scan_wal()`.
 `WalReader::open()` requires the expected persisted WAL configuration; runtime
@@ -169,10 +184,10 @@ owns `reclaim()`. Coordinated read-only users may call `try_view()` while the
 retention precondition is maintained. `open()` and `close()` require all these
 roles to be stopped.
 
-For the compatibility `Wal`, one producer calls `try_publish()`, one durability writer calls
-`advance_durable()`, and one consumer calls `try_consume()`. The three roles may run
-concurrently on separate threads. A second caller for any role is outside the
-contract.
+For the compatibility `Wal`, one producer calls `try_publish()`, one
+persistence-slider role calls `advance_durable()`, and one consumer calls
+`try_consume()`. The three roles may run concurrently on separate threads. A
+second caller for any role is outside the contract.
 
 `open()` and `close()` require all role threads to be stopped.
 
@@ -277,9 +292,10 @@ valid prefix before close reports `SequenceExhausted`.
 
 ## Advance Durable
 
-`advance_durable(batch_size)` selects at most `batch_size` positions from
-`[durable, head)`. An empty selection is a successful no-op and performs no
-physical sync.
+`advance_durable(batch_size)` configures `BoundedRangeAcquire` and invokes the
+statically owned `PersistenceSlider`, which selects at most `batch_size`
+positions from `[durable, head)`. An empty selection is a successful no-op and
+performs no physical sync.
 
 For a non-empty batch the physical writer:
 

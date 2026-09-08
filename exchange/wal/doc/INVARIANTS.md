@@ -59,7 +59,8 @@ backpressure.
 
 ## Compatibility Composition Frontier Order
 
-The transitional `Wal` composition preserves the previous three frontiers:
+The compatibility `Wal` facade preserves the previous three observable
+frontiers while `durable` is owned by `PersistenceSlider`:
 
 ```text
 tail <= durable <= head
@@ -75,14 +76,15 @@ head - tail <= capacity
 - Position `p` maps to physical sequence `first_sequence + p` without unsigned
   wraparound.
 
-Only the producer writes `head`, only the compatibility durability coordinator
-writes `durable`, and only the compatibility consumer writes `tail`.
+Only the producer writes `head`, only `PersistenceSlider` writes `durable`, and
+only the compatibility consumer writes `tail`.
 
 ## Ownership
 
 - A free block is owned by the producer while it fills the payload.
 - Publication of `head` transfers the immutable block to the pending range.
-- `PersistenceModule` borrows pending blocks without modifying them.
+- `PersistenceModule` borrows pending blocks without modifying them and appends
+  their immutable contents to physical storage.
 - Publication of `durable` makes the block available to the consumer.
 - The consumer owns the block while copying its payload.
 - Publication of `tail` releases the block for producer reuse.
@@ -106,7 +108,7 @@ producer --head--> durability writer --durable--> consumer --tail--> producer
 - Retained view access acquires `head` before exposing payload bytes.
 - Durability acquires `head` before reading pending blocks.
 - Record append and physical sync happen before
-  `durable.store(..., release)`.
+  the persistence slider's `durable.store(..., release)`.
 - Consumer acquires `durable` before reading a block.
 - Consumer copy happens before `tail.store(..., release)`.
 - Producer acquires `tail` before reusing capacity.

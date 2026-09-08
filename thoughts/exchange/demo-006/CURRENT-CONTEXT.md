@@ -17,13 +17,15 @@ This is an implementation working note. It does not replace FTTh ADRs.
 
 ### WAL
 
-Step 1 of the implementation plan is now implemented in the working tree:
+Steps 1 through 5 now provide this static runtime structure:
 
 ```text
-WalCore                 PersistenceModule
-head / tail / storage   physical writer / I/O failure
-        \                 /
-         compatibility Wal
+WalCore::head -> PersistenceSlider -> DurableF
+                       |
+                       v
+              PersistenceModule
+
+WalCore::tail <- composition reclaimer <- downstream sliders
 ```
 
 `WalCore` has independent runtime lifecycle and no path, physical writer,
@@ -32,11 +34,15 @@ independent physical lifecycle, accepts immutable `RecordView` values, and
 owns append/sync failure. Runtime capacity is absent from its
 `PhysicalWalConfig`.
 
-The public `Wal` class remains temporarily as a compatibility composition. It
-preserves all previous three-role behavior and tests until persistence is
-attached through the generic slider. Its `durable_frontier_` is transitional
-and will become the frontier of `PersistenceSlider`; it is no longer part of
-`WalCore`.
+Persistence is now attached through the generic slider. `PersistenceSlider`
+uses a bounded acquire policy, calls `PersistenceModule::process()` for every
+immutable WAL position in the selected batch, performs one sync through its
+publish policy, and publishes `DurableF` only after success.
+
+The public `Wal` class remains as a compatibility facade. It statically owns
+`WalCore`, `PersistenceModule`, `PersistenceSlider`, and the slider's durable
+`Progress`, preserving the previous three-role API and failure behavior. The
+old special `durable_frontier_` no longer exists.
 
 Generic slider mechanics are now available in
 `exchange/wal/include/fexma/wal/slider.hpp`.
@@ -58,7 +64,7 @@ advancing `tail` remain separate actions; the composition reclaims only after
 the synchronous slider invocation has retired every view in the processed
 range.
 
-Before this extraction, the component in
+Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:
 
@@ -67,7 +73,7 @@ Producer -> Persistence -> Consumer
    head       durable       tail
 ```
 
-It currently owns:
+It owned:
 
 - a bounded preallocated ring of fixed-size payload blocks;
 - absolute `head`, `durable`, and `tail` frontiers;

@@ -32,22 +32,27 @@ OpenResult PersistenceModule::open(const std::filesystem::path& path,
     physical_wal_.reset();
     return {status};
   }
-  failed_ = false;
+  failed_.store(false, std::memory_order_relaxed);
   return {OpenStatus::Ok};
 }
 
+bool PersistenceModule::process(const RecordView& record) noexcept {
+  return append(record);
+}
+
 bool PersistenceModule::append(const RecordView& record) noexcept {
-  if (!is_open() || failed_ ||
+  if (!is_open() || failed_.load(std::memory_order_acquire) ||
       !physical_wal_->append_record(record.sequence, record.payload)) {
-    failed_ = true;
+    failed_.store(true, std::memory_order_release);
     return false;
   }
   return true;
 }
 
 bool PersistenceModule::sync() noexcept {
-  if (!is_open() || failed_ || !physical_wal_->sync()) {
-    failed_ = true;
+  if (!is_open() || failed_.load(std::memory_order_acquire) ||
+      !physical_wal_->sync()) {
+    failed_.store(true, std::memory_order_release);
     return false;
   }
   return true;
@@ -64,6 +69,8 @@ bool PersistenceModule::is_open() const noexcept {
   return physical_wal_ && physical_wal_->is_open();
 }
 
-bool PersistenceModule::failed() const noexcept { return failed_; }
+bool PersistenceModule::failed() const noexcept {
+  return failed_.load(std::memory_order_acquire);
+}
 
 } // namespace fexma::wal

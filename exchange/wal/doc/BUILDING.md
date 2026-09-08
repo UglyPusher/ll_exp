@@ -4,8 +4,8 @@ From the repository root:
 
 ```powershell
 cmake -S . -B ../build/wal
-cmake --build ../build/wal --config Debug --target test_wal_core test_wal_slider test_wal_bare_pipeline test_wal_frontier_ring test_wal_position_view test_wal_reader test_wal_recovery
-ctest --test-dir ../build/wal -C Debug -R "^test_wal_(core|slider|bare_pipeline|frontier_ring|position_view|reader|recovery)$" --output-on-failure
+cmake --build ../build/wal --config Debug --target test_wal_core test_wal_slider test_wal_bare_pipeline test_wal_persistence_slider test_wal_frontier_ring test_wal_position_view test_wal_reader test_wal_recovery
+ctest --test-dir ../build/wal -C Debug -R "^test_wal_(core|slider|bare_pipeline|persistence_slider|frontier_ring|position_view|reader|recovery)$" --output-on-failure
 ```
 
 The WAL target enables the repository's maximum standard warning set: `/W4`
@@ -20,4 +20,6 @@ linear reclamation, stopped-stage backpressure, retained-slot stability,
 wraparound, and concurrent producer/slider operation. The reader and recovery
 executables cover validated scanning, corruption classification, conservative
 incomplete-tail truncation, physical synchronization, and refusal without
-mutation.
+mutation. The persistence-slider executable covers bounded batches, sync-before
+publication, downstream gating, append/sync failure, durable-prefix draining,
+reader/scanner compatibility, and facade reopen.

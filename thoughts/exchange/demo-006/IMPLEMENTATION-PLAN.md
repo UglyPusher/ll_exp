@@ -144,8 +144,9 @@ Implemented:
 - `Wal` remains a transitional compatibility composition over `WalCore` and
   `PersistenceModule`, preserving its existing three-role API and failure and
   lifecycle behavior;
-- `durable_frontier_` remains only in that compatibility composition until the
-  generic `PersistenceSlider` is attached in Step 5;
+- at Step 1 completion, `durable_frontier_` remained only in that compatibility
+  composition; Step 5 subsequently replaced it with `PersistenceSlider`'s
+  ordinary `Progress` frontier;
 - `durable_slot_` was removed; compatibility persistence reads the core by
   absolute position;
 - shared `valid_config()` logic moved to `config.cpp` without changing the
@@ -366,7 +367,7 @@ Producer
 
 Persistence processing:
 
-1. obtain positions from `(current, head]`;
+1. obtain positions from `[current, head)` using exclusive-end frontiers;
 2. append the corresponding immutable WAL data;
 3. complete the selected batch;
 4. perform one physical synchronization;
@@ -391,6 +392,53 @@ Gate:
 The refactored pipeline reproduces the guarantees of the original monolithic
 WAL.
 ```
+
+Step 5 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
+
+Implemented:
+
+- `PersistenceModule::process(RecordView)` supplies the ordinary slider module
+  contract while retaining `append()` and `sync()` as persistence operations;
+- `BoundedRangeAcquire` selects at most the requested batch size;
+- `PersistenceBatchPublish` holds the frontier after each append, performs one
+  sync after a complete non-empty range, and authorizes publication only after
+  successful sync;
+- `PersistenceSlider` is a static specialization of the generic `Slider` over
+  `WalCore`, `WalHeadProgress`, `PersistenceModule`, and those two policies;
+- `Wal` now statically owns that slider and its ordinary durable `Progress`;
+  the special `durable_frontier_` implementation was removed while the legacy
+  public API and statuses were preserved;
+- persistence failure publication is atomic so the producer role observes the
+  terminal failure without a data race;
+- quiescent reset of `Progress` and `Slider` preserves facade reopen behavior
+  and provides the initialization primitive later needed by bootstrap restore.
+
+`test_wal_persistence_slider` proves the direct tract:
+
+```text
+head -> PersistenceSlider -> DurableF -> NoOpSlider -> tail
+```
+
+It verifies empty batches, bounded batches of 2/2/1, exactly one sync per
+non-empty batch, downstream gating, append failure, sync failure, unchanged
+durable progress on failure, durable-prefix draining, facade reopen, and
+compatibility of the produced file with the unchanged `WalReader` and scanner.
+The existing compatibility tests continue to verify fail-closed production,
+durable-prefix consumption, physical layout/CRC, recovery, sequence exhaustion,
+and concurrent producer/persistence/consumer roles.
+
+Verification on 2026-09-08, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|bare_pipeline|persistence_slider|frontier_ring|position_view|reader|recovery)$"`:
+  8/8 passed, 3.66 seconds total;
+- `ctest --preset windows-msvc-release`: 19/19 registered tests passed,
+  6.47 seconds total.
+
+The physical writer implementation, file format, reader, scanner, recovery,
+and CRC contracts were not changed.
 
 ## Step 6 — attach stateful modules
 
