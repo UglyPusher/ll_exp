@@ -47,6 +47,17 @@ publishes its own frontier according to compile-time acquire and publish
 policies. Repeated execution, waiting, reclamation, and lifecycle remain
 composition responsibilities.
 
+The first bare composition is now implemented and tested as:
+
+```text
+WalCore::head -> NoOpSlider -> NoOpF -> composition reclaimer -> tail
+```
+
+`NoOpModule` supplies the minimal successful module. Publishing `NoOpF` and
+advancing `tail` remain separate actions; the composition reclaims only after
+the synchronous slider invocation has retired every view in the processed
+range.
+
 Before this extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:

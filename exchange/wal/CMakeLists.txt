@@ -69,3 +69,8 @@ add_executable(test_wal_slider tests/test_wal_slider.cpp)
 target_link_libraries(test_wal_slider PRIVATE fexma::wal)
 fexma_wal_apply_warnings(test_wal_slider)
 add_test(NAME test_wal_slider COMMAND test_wal_slider)
+
+add_executable(test_wal_bare_pipeline tests/test_wal_bare_pipeline.cpp)
+target_link_libraries(test_wal_bare_pipeline PRIVATE fexma::wal)
+fexma_wal_apply_warnings(test_wal_bare_pipeline)
+add_test(NAME test_wal_bare_pipeline COMMAND test_wal_bare_pipeline)

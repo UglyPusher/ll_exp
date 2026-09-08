@@ -17,6 +17,8 @@ positions. It reads an upstream progress capability, invokes one statically
 bound module, and is the sole user of its own progress writer capability.
 Acquire and publish policies select the bounded range and publication cadence;
 the slider owns no worker, polling loop, wait strategy, or domain semantics.
+`NoOpModule` is the trivial successful stage used to prove the first bare
+composition: `head -> NoOpSlider -> tail`.
 
 The existing `Wal` class remains as a transitional compatibility composition:
 

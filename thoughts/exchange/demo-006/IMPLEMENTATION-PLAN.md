@@ -310,6 +310,44 @@ A large deterministic command sequence passes from head to tail without loss,
 duplication, reordering, or premature reuse.
 ```
 
+Step 4 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
+
+Implemented:
+
+- `NoOpModule` is a trivial statically bound module that completes every full
+  `RecordView` synchronously;
+- the bare composition wires `WalHeadProgress`, `Slider<NoOpModule>`, its own
+  `Progress`, and composition-owned `WalCore::reclaim()` without another queue
+  or payload copy;
+- publication of the NoOp frontier and advancement of `tail` are distinct;
+  only the composition reclaims after the slider invocation and its borrowed
+  views have completed.
+
+`test_wal_bare_pipeline` verifies deterministic bounded backpressure with a
+stopped slider, continued producer blocking after module publication but before
+reclamation, retained address and payload stability, slot reuse only after
+reclamation, and wraparound. Its concurrent scenario sends 200,000 records
+through capacity 127, checking every absolute position, physical sequence, and
+payload for gaps, duplicates, reordering, or premature reuse. It finishes with:
+
+```text
+tail == NoOpF == head == 200000
+```
+
+Verification on 2026-09-08, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `test_wal_bare_pipeline` passed 10 consecutive runs;
+- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|bare_pipeline|frontier_ring|position_view|reader|recovery)$"`:
+  7/7 passed, 3.58 seconds total;
+- `ctest --preset windows-msvc-release`: 18/18 registered tests passed,
+  5.62 seconds total.
+
+The physical WAL format, adapter, reader, scanner, recovery, CRC contracts,
+and transitional persistence compatibility composition were not changed.
+
 ## Step 5 — attach persistence through a slider
 
 Attach the extracted `PersistenceModule` to the generic slider mechanics and

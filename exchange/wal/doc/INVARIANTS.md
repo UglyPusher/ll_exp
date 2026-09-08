@@ -45,6 +45,18 @@ own frontier <= slider current <= observed upstream frontier
 The generic mechanics allocate no storage, copy no payload, interpret no
 record kind, and perform no persistence, snapshot I/O, waiting, or scheduling.
 
+For the bare linear composition:
+
+```text
+tail <= NoOpF <= head
+```
+
+Publication of `NoOpF` certifies module completion but does not reclaim a
+position. Only the composition writes `tail`, after the corresponding slider
+call has returned and its borrowed views are retired. Stopping either slider
+execution or composition reclamation therefore preserves bounded
+backpressure.
+
 ## Compatibility Composition Frontier Order
 
 The transitional `Wal` composition preserves the previous three frontiers:

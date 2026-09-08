@@ -78,6 +78,13 @@ interpretation. Calling and retry cadence belongs to the composition. A
 `ViewUnavailable` result indicates a violated upstream/retention composition
 contract or lifecycle transition; the slider does not reclaim WAL storage.
 
+`NoOpModule` accepts every complete `RecordView` without changing application
+state. It exists as the minimal module for composition tests. In the linear
+bare pipeline, the composition may call
+`wal.reclaim(no_op_progress.reader().acquire())` only after the slider call has
+returned and all views from the reclaimed range are retired. Publishing the
+module frontier alone does not release storage or remove producer backpressure.
+
 The following class is a compatibility composition retained while slider
 mechanics are introduced:
 

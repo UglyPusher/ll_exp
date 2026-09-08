@@ -28,6 +28,17 @@ The publish policy returns a decision to `Slider`; it never receives the writer.
 This preserves one runtime publisher for every intermediate frontier while
 allowing later batch policies to complete module work before publication.
 
+The first concrete static composition uses `NoOpModule`:
+
+```text
+producer -> WalCore::head -> Slider<NoOpModule> -> Progress -> reclaimer -> tail
+```
+
+The slider publishes its `Progress`; after the synchronous slider call retires
+all borrowed views, the composition reads that frontier and advances `tail`.
+These are distinct operations. If the composition does not run the slider or
+does not reclaim, the bounded producer eventually observes `Full`.
+
 `WalCore::Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
 
