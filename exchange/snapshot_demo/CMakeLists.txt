@@ -1,5 +1,6 @@
 add_library(fexma_snapshot_demo STATIC
   src/snapshot_format.cpp
+  src/snapshot_loader.cpp
   src/snapshot_sink.cpp
 )
 add_library(fexma::snapshot_demo ALIAS fexma_snapshot_demo)
@@ -73,3 +74,15 @@ fexma_snapshot_demo_apply_warnings(test_snapshot_demo_snapshot_sink)
 
 add_test(NAME test_snapshot_demo_snapshot_sink
          COMMAND test_snapshot_demo_snapshot_sink)
+
+add_executable(test_snapshot_demo_bootstrap_restore
+  tests/test_bootstrap_restore.cpp
+)
+target_link_libraries(test_snapshot_demo_bootstrap_restore
+  PRIVATE
+    fexma::snapshot_demo
+)
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_bootstrap_restore)
+
+add_test(NAME test_snapshot_demo_bootstrap_restore
+         COMMAND test_snapshot_demo_bootstrap_restore)

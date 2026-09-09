@@ -44,4 +44,12 @@ module schema, size, and checksum identities. It writes and synchronizes a
 files, then atomically renames the directory to `snapshot-N`. Failed saves keep
 the coordinator and both module capture slots intact; a retry removes the stale
 staging directory. A successfully published generation is never overwritten.
-Bootstrap validation and restore remain the next implementation step.
+
+`SnapshotLoader` reads a published generation into an isolated
+`PreparedSnapshot`. It validates the description CRC, expected WAL and
+composition identity, generation boundary, required module identities and
+schemas, exact sizes, file checksums, module encodings, and matching capture
+boundaries before exposing prepared state. `restore_snapshot_quiescent()` then
+publishes both module states together and initializes both stateful sliders and
+frontiers to the exclusive resume position `N + 1`. Loading failures leave the
+existing composition untouched.

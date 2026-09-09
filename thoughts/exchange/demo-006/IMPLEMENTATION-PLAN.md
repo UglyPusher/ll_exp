@@ -541,7 +541,7 @@ For `SaveSnapshot` at position `N`, each stateful module must:
 2. reach `StateAfter(N)`;
 3. create an immutable module capture bound to generation `N`;
 4. return successful completion;
-5. only then allow the slider to publish frontier `N`.
+5. only then allow the slider to publish exclusive frontier `N + 1`.
 
 Support exactly one capture generation in flight for the first milestone.
 
@@ -681,7 +681,7 @@ Before worker threads start:
 4. prepare both module states in isolation;
 5. publish neither state if any preparation fails;
 6. publish the complete prepared composition;
-7. initialize both slider positions/frontiers to `N`;
+7. initialize both slider positions/frontiers to exclusive end `N + 1`;
 8. begin processing at `N + 1`.
 
 Gate:
@@ -693,6 +693,51 @@ restore(snapshot@N) + process(N+1..M)
 ```
 
 Compare both module terminal states and final progress values.
+
+Step 9 status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+Implemented in `exchange/snapshot_demo`:
+
+- `SnapshotLoader` reads only an explicitly named published `snapshot-N`
+  directory; staging directories are never restore candidates;
+- the description is fully read and CRC-validated before its identities or
+  module declarations are trusted;
+- expected stream kind, stream, epoch, manifest, and application composition
+  identities must match exactly;
+- generation `N`, record position `N`, exclusive processed end `N + 1`, both
+  required module identities and schemas, exact file sizes, and CRC32 file
+  checksums are validated before module decoding;
+- decoded captures must agree with the description in generation, position,
+  processed end, and physical sequence, and neither captured state may be
+  failed;
+- successful loading produces an isolated `PreparedSnapshot` without changing
+  live modules, sliders, or frontiers;
+- `restore_snapshot_quiescent()` applies both prepared module states and resets
+  both stateful slider positions and frontiers to `N + 1` only after every
+  participant has passed preparation;
+- module restore hooks clear capture slots and telemetry and are explicitly
+  restricted to bootstrap while all execution roles are stopped.
+
+`test_snapshot_demo_bootstrap_restore` proves:
+
+```text
+continuous [0, M)
+==
+restore StateAfter(N) + process [N + 1, M)
+```
+
+for both terminal module states and both final frontiers. It also verifies
+missing descriptions and module files, incompatible identity and schema, file
+checksum corruption, isolated preparation, and unchanged module states, slider
+positions, and frontiers after a failed restore.
+
+Verification on 2026-09-09:
+
+- Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release full build: passed;
+- `ctest --preset windows-msvc-release`: 23/23 registered tests passed,
+  13.06 seconds total;
+- `test_snapshot_demo_bootstrap_restore` passed 10 consecutive runs;
+- Linux / GCC 13.3 / x64 / C++20 / Release: all four Demo 006 tests passed.
 
 ## Step 10 — negative and stress scenarios
 

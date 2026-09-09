@@ -266,6 +266,9 @@ snapshot.
 - One snapshot generation in flight.
 - Snapshot state is `StateAfter(N)`.
 - Bootstrap restore for the first milestone.
+- Bootstrap preparation validates the complete generation in isolation; the
+  quiescent composition publishes both states and resumes at exclusive end
+  `N + 1` only after all validation succeeds.
 - Matcher is not part of the first milestone.
 
 ## Questions deliberately left for implementation or later work

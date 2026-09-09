@@ -104,6 +104,13 @@ public:
     return true;
   }
 
+  // Cold-path bootstrap: no slider or state reader may be active.
+  void restore_quiescent(const BitAccumulatorState& state) noexcept {
+    state_ = state;
+    capture_.reset();
+    capture_duration_ns_ = 0;
+  }
+
 private:
   void fold_byte(std::uint8_t value) noexcept {
     state_.rolling_bits =

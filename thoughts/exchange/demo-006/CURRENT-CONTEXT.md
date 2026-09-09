@@ -106,7 +106,15 @@ staging data. An existing published generation is never overwritten.
 
 Save results report module-capture, generation-completion, serialization,
 write, flush, fsync, publication, and sink-call total durations separately.
-Bootstrap validation and state publication remain unimplemented.
+
+Bootstrap restore now loads a named published generation into an isolated
+`PreparedSnapshot`. Before exposing it, the loader validates the description,
+expected stream/epoch/manifest and composition identities, generation and
+exclusive boundary, required module identities and schema versions, exact file
+sizes, checksums, module encodings, and matching capture metadata. The
+quiescent composition helper changes nothing on load failure. On success it
+publishes both module states and resets both stateful slider positions and
+frontiers to `N + 1`, the first unprocessed absolute position.
 
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
