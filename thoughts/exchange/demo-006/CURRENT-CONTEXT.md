@@ -116,6 +116,13 @@ quiescent composition helper changes nothing on load failure. On success it
 publishes both module states and resets both stateful slider positions and
 frontiers to `N + 1`, the first unprocessed absolute position.
 
+The first Step 10 negative pass now covers semantic corruption hidden behind
+valid outer checksums: captures from different processed boundaries and a
+malformed module body are rejected after checksum validation. Identity,
+missing-file, checksum, schema, boundary, and module-decoding failures all leave
+both existing module states, slider positions, and frontiers unchanged. Replay
+that repeats `N` or omits `N + 1` stops at the resume frontier.
+
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:

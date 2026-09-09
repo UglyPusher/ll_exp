@@ -6,6 +6,7 @@
 #include <fexma/snapshot_demo/bootstrap.hpp>
 #include <fexma/snapshot_demo/record.hpp>
 #include <fexma/snapshot_demo/snapshot_sink.hpp>
+#include <fexma/wal/format.hpp>
 
 #include <array>
 #include <cstddef>
@@ -65,6 +66,27 @@ public:
 
 private:
   const Records* records_{};
+};
+
+class PositionFaultSource final {
+public:
+  PositionFaultSource(const Records& records,
+                      wal::Position supplied_position) noexcept
+      : records_(&records), supplied_position_(supplied_position) {}
+
+  [[nodiscard]] wal::AccessResult
+  try_view(wal::Position requested_position) const noexcept {
+    if (requested_position >= records_->size()) {
+      return {wal::ViewStatus::Unpublished, {}};
+    }
+    return {wal::ViewStatus::Ok,
+            {supplied_position_, first_sequence + requested_position,
+             std::span<const std::byte>{(*records_)[requested_position]}}};
+  }
+
+private:
+  const Records* records_{};
+  wal::Position supplied_position_{};
 };
 
 template <class Module>
@@ -227,6 +249,40 @@ template <std::size_t Size>
   return valid;
 }
 
+[[nodiscard]] bool position_fault_stops_at_resume(
+    const snapshot_demo::SnapshotLoader& loader, const Records& records,
+    wal::Position supplied_position) noexcept {
+  const wal::Position resume_position = snapshot_position + 1u;
+  PositionFaultSource source(records, supplied_position);
+  wal::Progress upstream(resume_position + 1u);
+  wal::Progress hash_frontier;
+  wal::Progress bit_frontier;
+  snapshot_demo::HashChainModule hash;
+  snapshot_demo::BitAccumulatorModule bits;
+  wal::Slider hash_slider(source, upstream.reader(), hash_frontier.writer(),
+                          hash);
+  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
+                         bits);
+
+  if (snapshot_demo::restore_snapshot_quiescent(
+          loader, snapshot_position, hash, bits, hash_slider, hash_frontier,
+          bit_slider, bit_frontier) != snapshot_demo::SnapshotLoadStatus::Ok) {
+    return false;
+  }
+  const snapshot_demo::BitAccumulatorState restored_bits = bits.state();
+  const wal::SliderResult hash_result = hash_slider.process_available();
+  const wal::SliderResult bit_result = bit_slider.process_available();
+  return hash_result.status == wal::SliderStatus::ModuleFailed &&
+         hash_result.processed_count == 0 && hash.state().failed &&
+         hash.state().processed_end == resume_position &&
+         hash_slider.current() == resume_position &&
+         hash_frontier.reader().acquire() == resume_position &&
+         bit_result.status == wal::SliderStatus::Empty &&
+         bits.state() == restored_bits &&
+         bit_slider.current() == resume_position &&
+         bit_frontier.reader().acquire() == resume_position;
+}
+
 [[nodiscard]] bool invalid_snapshots_are_rejected_atomically() {
   const Records records = make_records();
   const std::filesystem::path root = test_root();
@@ -246,8 +302,9 @@ template <std::size_t Size>
   ++wrong_identity.composition_id;
   const snapshot_demo::SnapshotLoader wrong_identity_loader(root,
                                                             wrong_identity);
-  if (wrong_identity_loader.load(snapshot_position).status !=
-      snapshot_demo::SnapshotLoadStatus::IdentityMismatch) {
+  if (!failed_restore_changes_nothing(
+          wrong_identity_loader,
+          snapshot_demo::SnapshotLoadStatus::IdentityMismatch, records)) {
     std::filesystem::remove_all(root);
     return false;
   }
@@ -268,8 +325,9 @@ template <std::size_t Size>
   auto corrupted_bits = original_bits;
   corrupted_bits[48] ^= std::byte{1};
   if (!write_bytes(bit_path, corrupted_bits) ||
-      loader.load(snapshot_position).status !=
-          snapshot_demo::SnapshotLoadStatus::ModuleChecksumMismatch ||
+      !failed_restore_changes_nothing(
+          loader, snapshot_demo::SnapshotLoadStatus::ModuleChecksumMismatch,
+          records) ||
       !write_bytes(bit_path, original_bits)) {
     std::filesystem::remove_all(root);
     return false;
@@ -282,22 +340,80 @@ template <std::size_t Size>
                                                        description)) {
     return false;
   }
-  ++description.hash_chain.schema_version;
-  const auto incompatible_description =
-      snapshot_demo::serialize_snapshot_description(description);
-  if (!write_bytes(description_path, incompatible_description) ||
-      loader.load(snapshot_position).status !=
-          snapshot_demo::SnapshotLoadStatus::ModuleDescriptionInvalid ||
+
+  snapshot_demo::BitAccumulatorCapture original_bit_capture{};
+  if (!snapshot_demo::deserialize_bit_accumulator_snapshot(
+          original_bits, original_bit_capture)) {
+    std::filesystem::remove_all(root);
+    return false;
+  }
+  snapshot_demo::BitAccumulatorCapture mismatched_capture =
+      original_bit_capture;
+  ++mismatched_capture.processed_end;
+  ++mismatched_capture.state.processed_end;
+  const auto mismatched_bits =
+      snapshot_demo::serialize_bit_accumulator_snapshot(mismatched_capture);
+  snapshot_demo::SnapshotDescription mismatched_description = description;
+  mismatched_description.bit_accumulator.checksum =
+      wal::crc32_bytes(mismatched_bits.data(), mismatched_bits.size());
+  const auto mismatched_description_bytes =
+      snapshot_demo::serialize_snapshot_description(mismatched_description);
+  if (!write_bytes(bit_path, mismatched_bits) ||
+      !write_bytes(description_path, mismatched_description_bytes) ||
+      !failed_restore_changes_nothing(
+          loader, snapshot_demo::SnapshotLoadStatus::CaptureBoundaryMismatch,
+          records) ||
+      !write_bytes(bit_path, original_bits) ||
       !write_bytes(description_path, original_description)) {
     std::filesystem::remove_all(root);
     return false;
   }
 
-  const bool missing_description =
-      loader.load(snapshot_position + 1u).status ==
-      snapshot_demo::SnapshotLoadStatus::DescriptionMissing;
+  auto invalid_encoding = original_bits;
+  invalid_encoding.back() = std::byte{1};
+  snapshot_demo::SnapshotDescription invalid_encoding_description =
+      description;
+  invalid_encoding_description.bit_accumulator.checksum =
+      wal::crc32_bytes(invalid_encoding.data(), invalid_encoding.size());
+  const auto invalid_encoding_description_bytes =
+      snapshot_demo::serialize_snapshot_description(
+          invalid_encoding_description);
+  if (!write_bytes(bit_path, invalid_encoding) ||
+      !write_bytes(description_path, invalid_encoding_description_bytes) ||
+      !failed_restore_changes_nothing(
+          loader, snapshot_demo::SnapshotLoadStatus::ModuleDecodeError,
+          records) ||
+      !write_bytes(bit_path, original_bits) ||
+      !write_bytes(description_path, original_description)) {
+    std::filesystem::remove_all(root);
+    return false;
+  }
+
+  ++description.hash_chain.schema_version;
+  const auto incompatible_description =
+      snapshot_demo::serialize_snapshot_description(description);
+  if (!write_bytes(description_path, incompatible_description) ||
+      !failed_restore_changes_nothing(
+          loader,
+          snapshot_demo::SnapshotLoadStatus::ModuleDescriptionInvalid,
+          records) ||
+      !write_bytes(description_path, original_description)) {
+    std::filesystem::remove_all(root);
+    return false;
+  }
+
+  const std::filesystem::path hidden_description =
+      directory / "description.hidden";
+  std::filesystem::rename(description_path, hidden_description);
+  const bool missing_description = failed_restore_changes_nothing(
+      loader, snapshot_demo::SnapshotLoadStatus::DescriptionMissing, records);
+  std::filesystem::rename(hidden_description, description_path);
+  const bool repeat_rejected =
+      position_fault_stops_at_resume(loader, records, snapshot_position);
+  const bool omission_rejected = position_fault_stops_at_resume(
+      loader, records, snapshot_position + 2u);
   std::filesystem::remove_all(root);
-  return missing_description;
+  return missing_description && repeat_rejected && omission_rejected;
 }
 
 } // namespace

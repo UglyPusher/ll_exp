@@ -755,6 +755,35 @@ Test at minimum:
 - repeated snapshots at deterministic and randomized positions;
 - synthetic module state sizes of 1, 10, 100, and 500 MiB.
 
+Step 10A status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+The bootstrap negative suite now additionally verifies:
+
+- a bit-accumulator capture from a different processed boundary, serialized
+  canonically with matching file and description checksums, is rejected as
+  `CaptureBoundaryMismatch`;
+- a malformed module reserved field with a deliberately recomputed description
+  checksum is rejected as `ModuleDecodeError`;
+- identity, missing-description, missing-module, checksum, schema, boundary,
+  and module-decoding failures publish none of the prepared state and leave
+  both existing module states, slider positions, and frontiers unchanged;
+- a suffix source that repeats absolute position `N` or supplies `N + 2` in
+  place of `N + 1` terminally fails the first stateful module without advancing
+  either restored frontier.
+
+Verification on 2026-09-09:
+
+- Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release full build: passed;
+- `ctest --preset windows-msvc-release`: 23/23 registered tests passed,
+  8.92 seconds total;
+- the expanded `test_snapshot_demo_bootstrap_restore` passed 10 consecutive
+  runs;
+- Linux / GCC 13.3 / x64 / C++20 / Release bootstrap test: passed.
+
+Step 10B remains responsible for composition progress violations and repeated
+deterministic/randomized snapshot generations. Step 10C remains responsible
+for synthetic 1, 10, 100, and 500 MiB state sizes.
+
 ## Later work
 
 After the first milestone is frozen:

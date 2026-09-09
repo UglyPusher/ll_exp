@@ -53,3 +53,8 @@ boundaries before exposing prepared state. `restore_snapshot_quiescent()` then
 publishes both module states together and initializes both stateful sliders and
 frontiers to the exclusive resume position `N + 1`. Loading failures leave the
 existing composition untouched.
+
+Negative bootstrap coverage also rebuilds valid outer checksums around
+cross-boundary captures and malformed module encodings, proving that validation
+does not rely on CRC alone. A replay source that repeats `N` or skips `N + 1`
+is rejected by the first stateful module without advancing either frontier.
