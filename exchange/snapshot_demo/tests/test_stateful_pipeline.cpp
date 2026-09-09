@@ -1,0 +1,209 @@
+/**
+ * @file test_stateful_pipeline.cpp
+ * @brief Deterministic proof of the first complete Demo 006 stateful tract.
+ */
+
+#include <fexma/snapshot_demo/bit_accumulator.hpp>
+#include <fexma/snapshot_demo/hash_chain.hpp>
+#include <fexma/wal/persistence_slider.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <span>
+
+using namespace fexma;
+
+namespace {
+
+using Payload = std::array<std::byte, 24>;
+
+[[nodiscard]] Payload payload(wal::Position position) noexcept {
+  Payload result{};
+  std::uint64_t value = position + 0x9e3779b97f4a7c15ull;
+  for (std::size_t index = 0; index < result.size(); ++index) {
+    value ^= value >> 12u;
+    value ^= value << 25u;
+    value ^= value >> 27u;
+    result[index] = static_cast<std::byte>(value & 0xffu);
+  }
+  return result;
+}
+
+[[nodiscard]] std::filesystem::path test_path(const char* name) {
+  return std::filesystem::temp_directory_path() / name;
+}
+
+[[nodiscard]] bool accepted(const wal::SliderResult& result) noexcept {
+  return result.status == wal::SliderStatus::Processed ||
+         result.status == wal::SliderStatus::Empty;
+}
+
+template <class Module>
+[[nodiscard]] bool ordering_violation_is_terminal() noexcept {
+  const Payload first_payload = payload(0);
+  const Payload second_payload = payload(1);
+
+  Module repeated;
+  if (!repeated.process({0, 10, first_payload}) ||
+      repeated.process({0, 10, first_payload}) || !repeated.state().failed ||
+      repeated.state().processed_end != 1) {
+    return false;
+  }
+
+  Module skipped;
+  if (skipped.process({1, 11, second_payload}) || !skipped.state().failed ||
+      skipped.state().processed_end != 0) {
+    return false;
+  }
+
+  Module reordered;
+  return reordered.process({0, 10, first_payload}) &&
+         !reordered.process({2, 12, second_payload}) &&
+         reordered.state().failed && reordered.state().processed_end == 1;
+}
+
+[[nodiscard]] bool payload_changes_terminal_state() noexcept {
+  snapshot_demo::HashChainModule first_hash;
+  snapshot_demo::HashChainModule second_hash;
+  snapshot_demo::BitAccumulatorModule first_bits;
+  snapshot_demo::BitAccumulatorModule second_bits;
+
+  for (wal::Position position = 0; position < 4; ++position) {
+    Payload first = payload(position);
+    Payload second = first;
+    if (position == 2) second[7] ^= std::byte{0x40};
+    const wal::RecordView first_record{position, 100 + position, first};
+    const wal::RecordView second_record{position, 100 + position, second};
+    if (!first_hash.process(first_record) || !second_hash.process(second_record) ||
+        !first_bits.process(first_record) || !second_bits.process(second_record)) {
+      return false;
+    }
+  }
+
+  return first_hash.state().digest != second_hash.state().digest &&
+         (first_bits.state().total_one_bits !=
+              second_bits.state().total_one_bits ||
+          first_bits.state().rolling_bits != second_bits.state().rolling_bits);
+}
+
+[[nodiscard]] bool complete_stateful_tract_preserves_invariants() {
+  constexpr wal::Position message_count = 2048;
+  constexpr std::uint32_t capacity = 64;
+  constexpr wal::Position first_sequence = 100;
+  const auto path = test_path("fexma_snapshot_demo_stateful_pipeline.wal");
+  std::filesystem::remove(path);
+
+  wal::WalCore source;
+  wal::PersistenceModule persistence;
+  if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
+                    wal::default_alignment, first_sequence})
+           .ok() ||
+      !persistence
+           .open(path, {static_cast<std::uint32_t>(sizeof(Payload)),
+                        wal::default_alignment, 1, wal::StreamKind::Generic,
+                        31, 7, first_sequence, 13})
+           .ok()) {
+    return false;
+  }
+
+  wal::WalHeadProgress head(source);
+  wal::Progress durable;
+  wal::PersistenceSlider persistence_slider(
+      source, head, durable.writer(), persistence, 0,
+      wal::BoundedRangeAcquire{1}, wal::PersistenceBatchPublish{});
+
+  snapshot_demo::HashChainModule hash_module;
+  wal::Progress hash_frontier;
+  wal::Slider hash_slider(source, durable.reader(), hash_frontier.writer(),
+                          hash_module);
+
+  snapshot_demo::BitAccumulatorModule bit_module;
+  wal::Progress bit_frontier;
+  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
+                         bit_module);
+
+  snapshot_demo::HashChainModule expected_hash;
+  snapshot_demo::BitAccumulatorModule expected_bits;
+  wal::Position produced = 0;
+  std::uint64_t cycle = 0;
+  bool saw_full = false;
+  bool saw_persistence_lead = false;
+  bool saw_hash_lead = false;
+
+  while (source.tail() != message_count) {
+    while (produced < message_count) {
+      const Payload bytes = payload(produced);
+      const wal::PublishResult result =
+          source.try_publish(std::span<const std::byte>{bytes});
+      if (result.status == wal::PublishStatus::Full) {
+        saw_full = true;
+        break;
+      }
+      if (!result.ok() || result.sequence != first_sequence + produced) {
+        return false;
+      }
+      const wal::RecordView expected_record{produced, result.sequence, bytes};
+      if (!expected_hash.process(expected_record) ||
+          !expected_bits.process(expected_record)) {
+        return false;
+      }
+      ++produced;
+    }
+
+    persistence_slider.acquire_policy().set_maximum_count(1 + cycle % 17);
+    if (!accepted(persistence_slider.process_available())) return false;
+    if ((cycle % 3) == 0 && !accepted(hash_slider.process_available())) {
+      return false;
+    }
+    if ((cycle % 7) == 0) {
+      if (!accepted(bit_slider.process_available()) ||
+          source.reclaim(bit_frontier.reader().acquire()) !=
+              wal::ReclaimStatus::Ok) {
+        return false;
+      }
+    }
+
+    const wal::Position tail = source.tail();
+    const wal::Position bit = bit_frontier.reader().acquire();
+    const wal::Position hash = hash_frontier.reader().acquire();
+    const wal::Position durable_end = durable.reader().acquire();
+    const wal::Position head_end = source.head();
+    if (!(tail <= bit && bit <= hash && hash <= durable_end &&
+          durable_end <= head_end)) {
+      return false;
+    }
+    saw_persistence_lead = saw_persistence_lead || durable_end > hash;
+    saw_hash_lead = saw_hash_lead || hash > bit;
+    if (++cycle > message_count * 20) return false;
+  }
+
+  const bool valid = produced == message_count && saw_full &&
+                     saw_persistence_lead && saw_hash_lead &&
+                     source.tail() == bit_frontier.reader().acquire() &&
+                     source.tail() == hash_frontier.reader().acquire() &&
+                     source.tail() == durable.reader().acquire() &&
+                     source.tail() == source.head() && !hash_module.state().failed &&
+                     !bit_module.state().failed &&
+                     hash_module.state() == expected_hash.state() &&
+                     bit_module.state() == expected_bits.state();
+  const bool persistence_closed = persistence.close();
+  source.close();
+  std::filesystem::remove(path);
+  return valid && persistence_closed;
+}
+
+} // namespace
+
+int main() {
+  if (!payload_changes_terminal_state()) return 1;
+  if (!ordering_violation_is_terminal<snapshot_demo::HashChainModule>()) {
+    return 2;
+  }
+  if (!ordering_violation_is_terminal<snapshot_demo::BitAccumulatorModule>()) {
+    return 3;
+  }
+  if (!complete_stateful_tract_preserves_invariants()) return 4;
+  return 0;
+}

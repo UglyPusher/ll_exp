@@ -1,7 +1,7 @@
 # Demo 006 — design notes and invariants
 
 Status: working decisions  
-Updated: 2026-09-06
+Updated: 2026-09-09
 
 ## Central idea
 
@@ -252,6 +252,12 @@ snapshot.
 - `AvailableRangeAcquire` and `OnePositionPublish` for the first stateful
   Demo 006 stages.
 - Two stateful modules: `HashChainModule` and `BitAccumulatorModule`.
+- `HashChainModule` uses a deterministic non-cryptographic ordered digest over
+  record identity and payload bytes.
+- `BitAccumulatorModule` keeps total payload set bits plus an order-sensitive
+  rolling fold over record identity and payload bytes.
+- Both modules fail closed unless each input absolute position equals their
+  current exclusive processed end.
 - One snapshot generation in flight.
 - Snapshot state is `StateAfter(N)`.
 - Bootstrap restore for the first milestone.

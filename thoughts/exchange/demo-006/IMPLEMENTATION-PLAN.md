@@ -1,7 +1,7 @@
 # Demo 006 — implementation plan
 
 Status: working plan  
-Updated: 2026-09-08
+Updated: 2026-09-09
 Target branch: `demo/simple-snapshot`
 
 ## Objective
@@ -480,6 +480,50 @@ Gate:
 Both modules deterministically reach M over the same WAL while occupying
 different pipeline positions during execution.
 ```
+
+Step 6 status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+Implemented in the separate `exchange/snapshot_demo` application component:
+
+- `HashChainModule` maintains a deterministic 64-bit FNV-1a-style ordered
+  digest over prior state, absolute position, physical sequence, payload size,
+  and every payload byte;
+- `BitAccumulatorModule` maintains total payload set bits and an order-sensitive
+  rolling fold over the same record identity and payload;
+- both modules require `record.position == processed_end`, complete
+  synchronously without allocation, and become terminally failed on a gap,
+  duplicate, or reordered position;
+- both sliders use `AvailableRangeAcquire` and `OnePositionPublish`;
+- the composition advances `tail` only through `BitF`, after the final slider
+  invocation has retired its borrowed views.
+
+`test_snapshot_demo_stateful_pipeline` verifies changed-payload sensitivity and
+terminal rejection of skipped, repeated, and reordered positions. Its complete
+tract sends 2,048 deterministic records through capacity 64 while persistence,
+hash, and bit stages advance at different rates. Every cycle verifies:
+
+```text
+tail <= BitF <= HashF <= DurableF <= head
+```
+
+The test observes both `DurableF > HashF` and `HashF > BitF`, forces bounded
+backpressure and wraparound, compares both terminal module states with
+independent reference executions over the same records, and finishes with all
+five frontiers at 2,048.
+
+Verification on 2026-09-09, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `test_snapshot_demo_stateful_pipeline` passed 10 consecutive runs;
+- `ctest --preset windows-msvc-release`: 20/20 registered tests passed,
+  7.66 seconds total.
+
+The digest is an application consistency state, not a cryptographic
+authenticator. Snapshot commands, captures, generation assembly, snapshot I/O,
+and restore remain Step 7 and later work. Matcher, OrderBook, Risk, Reserve, and
+Event WAL were not connected.
 
 ## Step 7 — introduce SaveSnapshot semantics
 

@@ -15,6 +15,7 @@ add_executable(cache_locality utilities/cache_locality.cpp)
 add_subdirectory(exchange/wal)
 add_subdirectory(exchange/order_book)
 add_subdirectory(exchange/matcher)
+add_subdirectory(exchange/snapshot_demo)
 
 find_package(Threads REQUIRED)
 target_link_libraries(affinity PRIVATE Threads::Threads)

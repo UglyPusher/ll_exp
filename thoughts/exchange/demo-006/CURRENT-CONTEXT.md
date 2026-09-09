@@ -1,7 +1,7 @@
 # Demo 006 — current context
 
 Status: working context  
-Updated: 2026-09-08
+Updated: 2026-09-09
 Repository: `UglyPusher/ll_exp`  
 Branch: `demo/simple-snapshot`
 
@@ -63,6 +63,23 @@ WalCore::head -> NoOpSlider -> NoOpF -> composition reclaimer -> tail
 advancing `tail` remain separate actions; the composition reclaims only after
 the synchronous slider invocation has retired every view in the processed
 range.
+
+The first two stateful application modules now live in
+`exchange/snapshot_demo`. `HashChainModule` maintains a deterministic ordered
+digest; `BitAccumulatorModule` maintains a payload set-bit count and an
+order-sensitive rolling fold. Both include absolute position, physical
+sequence, payload size, and every payload byte in their transition, require
+strictly consecutive positions, and fail closed on gaps, duplicates, or
+reordering.
+
+The tested full tract is now:
+
+```text
+head -> PersistenceSlider -> DurableF
+     -> HashChainSlider -> HashF
+     -> BitAccumulatorSlider -> BitF
+     -> composition reclaimer -> tail
+```
 
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
