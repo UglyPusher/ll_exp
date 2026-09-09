@@ -260,6 +260,9 @@ snapshot.
   current exclusive processed end.
 - A fixed canonical 64-byte application record distinguishes `Data` and
   `SaveSnapshot`; a snapshot generation equals its record's absolute position.
+- Snapshot generation files use canonical little-endian Demo 006 schema v1;
+  the checksummed description identifies the WAL, composition, generation,
+  required modules, schemas, sizes, and file checksums.
 - One snapshot generation in flight.
 - Snapshot state is `StateAfter(N)`.
 - Bootstrap restore for the first milestone.
@@ -272,7 +275,6 @@ snapshot.
 - Exact ownership representation for stage pockets.
 - Exact acquire/publish policy interfaces.
 - Worker wait strategy and CPU affinity.
-- Snapshot byte layout beyond required identity and integrity fields.
 - Reclaim policy for non-linear topology.
 - Live persisted `LoadSnapshot`.
 - Multiple snapshot generations in flight.

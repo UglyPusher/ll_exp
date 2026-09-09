@@ -1,12 +1,36 @@
-add_library(fexma_snapshot_demo INTERFACE)
+add_library(fexma_snapshot_demo STATIC
+  src/snapshot_format.cpp
+  src/snapshot_sink.cpp
+)
 add_library(fexma::snapshot_demo ALIAS fexma_snapshot_demo)
 
 target_include_directories(fexma_snapshot_demo
-  INTERFACE
+  PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(fexma_snapshot_demo INTERFACE fexma::wal)
-target_compile_features(fexma_snapshot_demo INTERFACE cxx_std_20)
+target_link_libraries(fexma_snapshot_demo PUBLIC fexma::wal)
+target_compile_features(fexma_snapshot_demo PUBLIC cxx_std_20)
+
+function(fexma_snapshot_demo_apply_warnings target_name)
+  if(MSVC)
+    target_compile_options(${target_name} PRIVATE
+      /W4
+      /permissive-
+      /EHsc
+      /FS
+      $<$<CONFIG:Release>:/O2>
+    )
+  else()
+    target_compile_options(${target_name} PRIVATE
+      -Wall
+      -Wextra
+      -Wpedantic
+      $<$<CONFIG:Release>:-O3>
+    )
+  endif()
+endfunction()
+
+fexma_snapshot_demo_apply_warnings(fexma_snapshot_demo)
 
 add_executable(test_snapshot_demo_stateful_pipeline
   tests/test_stateful_pipeline.cpp
@@ -16,22 +40,7 @@ target_link_libraries(test_snapshot_demo_stateful_pipeline
     fexma::snapshot_demo
 )
 
-if(MSVC)
-  target_compile_options(test_snapshot_demo_stateful_pipeline PRIVATE
-    /W4
-    /permissive-
-    /EHsc
-    /FS
-    $<$<CONFIG:Release>:/O2>
-  )
-else()
-  target_compile_options(test_snapshot_demo_stateful_pipeline PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-    $<$<CONFIG:Release>:-O3>
-  )
-endif()
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_stateful_pipeline)
 
 add_test(NAME test_snapshot_demo_stateful_pipeline
          COMMAND test_snapshot_demo_stateful_pipeline)
@@ -44,22 +53,23 @@ target_link_libraries(test_snapshot_demo_snapshot_semantics
     fexma::snapshot_demo
 )
 
-if(MSVC)
-  target_compile_options(test_snapshot_demo_snapshot_semantics PRIVATE
-    /W4
-    /permissive-
-    /EHsc
-    /FS
-    $<$<CONFIG:Release>:/O2>
-  )
-else()
-  target_compile_options(test_snapshot_demo_snapshot_semantics PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-    $<$<CONFIG:Release>:-O3>
-  )
-endif()
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_snapshot_semantics)
 
 add_test(NAME test_snapshot_demo_snapshot_semantics
          COMMAND test_snapshot_demo_snapshot_semantics)
+
+add_executable(test_snapshot_demo_snapshot_sink
+  tests/test_snapshot_sink.cpp
+)
+target_link_libraries(test_snapshot_demo_snapshot_sink
+  PRIVATE
+    fexma::snapshot_demo
+)
+target_include_directories(test_snapshot_demo_snapshot_sink
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_snapshot_sink)
+
+add_test(NAME test_snapshot_demo_snapshot_sink
+         COMMAND test_snapshot_demo_snapshot_sink)

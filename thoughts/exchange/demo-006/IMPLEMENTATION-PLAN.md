@@ -629,6 +629,48 @@ Measure independently:
 - publication;
 - total save latency.
 
+Step 8 status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+Implemented in `exchange/snapshot_demo`:
+
+- canonical little-endian schema-v1 encodings for the hash capture, bit
+  accumulator capture, and complete generation description;
+- the description records snapshot format version, stream/epoch/manifest WAL
+  identity, application composition identity, generation and record boundary,
+  physical snapshot sequence, required module identities, module schema
+  versions, exact file sizes, and CRC32 checksums;
+- the description carries its own CRC32 and reserved fields are required to be
+  zero by the decoder;
+- `SnapshotSink` writes and synchronizes both module files under
+  `snapshot-N.pending`, writes and synchronizes the description last, and then
+  publishes the generation by atomically renaming the directory to
+  `snapshot-N`;
+- stale staging directories are removed on retry, while an existing published
+  generation is never overwritten;
+- open, write, flush, fsync, close, and publication failures return explicit
+  statuses and do not release the in-memory generation or module capture slots;
+- composition-level `save_and_release()` releases the coordinator and both
+  captures only after the complete directory has been durably published;
+- save results expose module capture, generation completion, serialization,
+  write, flush, fsync, publication, and total sink-call durations separately.
+
+`test_snapshot_demo_snapshot_sink` verifies exact file membership, description
+and module round trips, all required identities and checksums, corrupted
+description rejection, publication-last interruption, stale-staging retry,
+published-generation collision, and retained captures across injected open,
+write, flush, and fsync failures.
+
+Verification on 2026-09-09:
+
+- Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release full build: passed;
+- `ctest --preset windows-msvc-release`: 22/22 registered tests passed,
+  9.14 seconds total;
+- `test_snapshot_demo_snapshot_sink` passed 10 consecutive runs;
+- Linux / GCC 13.3 / x64 / C++20 / Release: all three Demo 006 tests passed.
+
+Bootstrap selection, validation against expected runtime identity, isolated
+state preparation, and atomic restore remain Step 9 work.
+
 ## Step 9 — implement bootstrap restore
 
 Before worker threads start:

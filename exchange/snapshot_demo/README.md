@@ -35,5 +35,13 @@ leaves the module state and slider frontier unchanged.
 `CaptureGenerationCoordinator` belongs to the composition. It publishes an
 in-memory complete generation only when both captures have matching generation,
 record position, exclusive processed end, and physical sequence. Module slots
-remain occupied until the composition releases the complete generation. File
-serialization and snapshot publication remain the next implementation step.
+remain occupied until the composition releases the complete generation.
+
+`SnapshotSink` serializes canonical little-endian module files plus a checksummed
+description containing WAL, epoch, manifest, composition, generation, sequence,
+module schema, size, and checksum identities. It writes and synchronizes a
+`snapshot-N.pending` directory, creates `snapshot.description` after both module
+files, then atomically renames the directory to `snapshot-N`. Failed saves keep
+the coordinator and both module capture slots intact; a retry removes the stale
+staging directory. A successfully published generation is never overwritten.
+Bootstrap validation and restore remain the next implementation step.

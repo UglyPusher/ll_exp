@@ -94,7 +94,19 @@ at that position without learning snapshot semantics. The composition-owned
 `CaptureGenerationCoordinator` publishes an in-memory full generation only
 when hash and bit captures match in generation, position, processed end, and
 physical sequence. It retains both module slots until the complete generation
-is released. Snapshot file I/O remains unimplemented.
+is released.
+
+The composition-level `SnapshotSink` now persists each complete generation as
+two canonical module files plus a checksummed binary description. It assembles
+the files under `snapshot-N.pending`, flushes and synchronizes every file,
+creates the description after both required module files, and publishes the
+generation by renaming the staging directory to `snapshot-N`. A failed save
+does not release the coordinator or either module capture; retry removes stale
+staging data. An existing published generation is never overwritten.
+
+Save results report module-capture, generation-completion, serialization,
+write, flush, fsync, publication, and sink-call total durations separately.
+Bootstrap validation and state publication remain unimplemented.
 
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic

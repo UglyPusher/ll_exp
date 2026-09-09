@@ -9,6 +9,7 @@
 #include <fexma/wal/types.hpp>
 
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -68,10 +69,15 @@ public:
     }
     ++state_.processed_end;
     if (decoded.record.kind == RecordKind::SaveSnapshot) {
+      const auto capture_started = std::chrono::steady_clock::now();
       capture_.emplace(BitAccumulatorCapture{decoded.record.generation_id,
                                              record.position,
                                              state_.processed_end,
                                              record.sequence, state_});
+      capture_duration_ns_ = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - capture_started)
+              .count());
     }
     return true;
   }
@@ -82,6 +88,10 @@ public:
 
   [[nodiscard]] const BitAccumulatorCapture* pending_capture() const noexcept {
     return capture_ ? &*capture_ : nullptr;
+  }
+
+  [[nodiscard]] std::uint64_t capture_duration_ns() const noexcept {
+    return capture_duration_ns_;
   }
 
   [[nodiscard]] bool release_capture(std::uint64_t generation_id,
@@ -110,6 +120,7 @@ private:
 
   BitAccumulatorState state_{};
   std::optional<BitAccumulatorCapture> capture_{};
+  std::uint64_t capture_duration_ns_{};
 };
 
 } // namespace fexma::snapshot_demo
