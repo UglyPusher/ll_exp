@@ -5,6 +5,7 @@
 
 #include <fexma/snapshot_demo/bit_accumulator.hpp>
 #include <fexma/snapshot_demo/hash_chain.hpp>
+#include <fexma/snapshot_demo/record.hpp>
 #include <fexma/wal/persistence_slider.hpp>
 
 #include <array>
@@ -17,18 +18,18 @@ using namespace fexma;
 
 namespace {
 
-using Payload = std::array<std::byte, 24>;
+using Payload = snapshot_demo::ApplicationPayload;
 
 [[nodiscard]] Payload payload(wal::Position position) noexcept {
-  Payload result{};
+  snapshot_demo::ApplicationData data{};
   std::uint64_t value = position + 0x9e3779b97f4a7c15ull;
-  for (std::size_t index = 0; index < result.size(); ++index) {
+  for (std::size_t index = 0; index < data.size(); ++index) {
     value ^= value >> 12u;
     value ^= value << 25u;
     value ^= value >> 27u;
-    result[index] = static_cast<std::byte>(value & 0xffu);
+    data[index] = static_cast<std::byte>(value & 0xffu);
   }
-  return result;
+  return snapshot_demo::encode_data(data);
 }
 
 [[nodiscard]] std::filesystem::path test_path(const char* name) {
@@ -73,7 +74,7 @@ template <class Module>
   for (wal::Position position = 0; position < 4; ++position) {
     Payload first = payload(position);
     Payload second = first;
-    if (position == 2) second[7] ^= std::byte{0x40};
+    if (position == 2) second[23] ^= std::byte{0x40};
     const wal::RecordView first_record{position, 100 + position, first};
     const wal::RecordView second_record{position, 100 + position, second};
     if (!first_hash.process(first_record) || !second_hash.process(second_record) ||

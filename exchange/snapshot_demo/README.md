@@ -24,5 +24,16 @@ allocation, and become fail-closed on a gap, duplicate, or reordered position.
 
 Both sliders use `AvailableRangeAcquire` and `OnePositionPublish`. Only the
 composition advances `tail`, and it follows `BitF`, the last mandatory stage.
-Snapshot command interpretation and immutable capture generations are added in
-the next implementation step.
+
+The fixed 64-byte application payload distinguishes `Data` and
+`SaveSnapshot`. A snapshot generation is identified by the absolute position
+of its `SaveSnapshot` record. Each stateful module first applies its ordinary
+transition, reaches `StateAfter(position)`, and then stores one immutable
+capture. An occupied capture slot makes a later snapshot record retryable and
+leaves the module state and slider frontier unchanged.
+
+`CaptureGenerationCoordinator` belongs to the composition. It publishes an
+in-memory complete generation only when both captures have matching generation,
+record position, exclusive processed end, and physical sequence. Module slots
+remain occupied until the composition releases the complete generation. File
+serialization and snapshot publication remain the next implementation step.

@@ -5,11 +5,13 @@
  * @brief Deterministic ordered bit-accumulator module for Demo 006.
  */
 
+#include <fexma/snapshot_demo/record.hpp>
 #include <fexma/wal/types.hpp>
 
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace fexma::snapshot_demo {
 
@@ -23,11 +25,36 @@ struct BitAccumulatorState {
                          const BitAccumulatorState&) = default;
 };
 
+struct BitAccumulatorCapture {
+  std::uint64_t generation_id{};
+  wal::Position record_position{};
+  wal::Position processed_end{};
+  std::uint64_t sequence{};
+  BitAccumulatorState state{};
+
+  friend bool operator==(const BitAccumulatorCapture&,
+                         const BitAccumulatorCapture&) = default;
+};
+
 class BitAccumulatorModule final {
 public:
   [[nodiscard]] bool process(const wal::RecordView& record) noexcept {
     if (state_.failed || record.position != state_.processed_end) {
       state_.failed = true;
+      return false;
+    }
+
+    const DecodeResult decoded = decode_record(record.payload);
+    if (!decoded) {
+      state_.failed = true;
+      return false;
+    }
+    if (decoded.record.kind == RecordKind::SaveSnapshot &&
+        decoded.record.generation_id != record.position) {
+      state_.failed = true;
+      return false;
+    }
+    if (decoded.record.kind == RecordKind::SaveSnapshot && capture_) {
       return false;
     }
 
@@ -40,11 +67,31 @@ public:
       fold_byte(byte);
     }
     ++state_.processed_end;
+    if (decoded.record.kind == RecordKind::SaveSnapshot) {
+      capture_.emplace(BitAccumulatorCapture{decoded.record.generation_id,
+                                             record.position,
+                                             state_.processed_end,
+                                             record.sequence, state_});
+    }
     return true;
   }
 
   [[nodiscard]] const BitAccumulatorState& state() const noexcept {
     return state_;
+  }
+
+  [[nodiscard]] const BitAccumulatorCapture* pending_capture() const noexcept {
+    return capture_ ? &*capture_ : nullptr;
+  }
+
+  [[nodiscard]] bool release_capture(std::uint64_t generation_id,
+                                     wal::Position processed_end) noexcept {
+    if (!capture_ || capture_->generation_id != generation_id ||
+        capture_->processed_end != processed_end) {
+      return false;
+    }
+    capture_.reset();
+    return true;
   }
 
 private:
@@ -62,6 +109,7 @@ private:
   }
 
   BitAccumulatorState state_{};
+  std::optional<BitAccumulatorCapture> capture_{};
 };
 
 } // namespace fexma::snapshot_demo

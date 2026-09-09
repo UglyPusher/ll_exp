@@ -5,10 +5,12 @@
  * @brief Deterministic ordered hash-chain module for Demo 006.
  */
 
+#include <fexma/snapshot_demo/record.hpp>
 #include <fexma/wal/types.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace fexma::snapshot_demo {
 
@@ -21,11 +23,36 @@ struct HashChainState {
                          const HashChainState&) = default;
 };
 
+struct HashChainCapture {
+  std::uint64_t generation_id{};
+  wal::Position record_position{};
+  wal::Position processed_end{};
+  std::uint64_t sequence{};
+  HashChainState state{};
+
+  friend bool operator==(const HashChainCapture&,
+                         const HashChainCapture&) = default;
+};
+
 class HashChainModule final {
 public:
   [[nodiscard]] bool process(const wal::RecordView& record) noexcept {
     if (state_.failed || record.position != state_.processed_end) {
       state_.failed = true;
+      return false;
+    }
+
+    const DecodeResult decoded = decode_record(record.payload);
+    if (!decoded) {
+      state_.failed = true;
+      return false;
+    }
+    if (decoded.record.kind == RecordKind::SaveSnapshot &&
+        decoded.record.generation_id != record.position) {
+      state_.failed = true;
+      return false;
+    }
+    if (decoded.record.kind == RecordKind::SaveSnapshot && capture_) {
       return false;
     }
 
@@ -37,10 +64,30 @@ public:
       mix_byte(std::to_integer<std::uint8_t>(value));
     }
     ++state_.processed_end;
+    if (decoded.record.kind == RecordKind::SaveSnapshot) {
+      capture_.emplace(HashChainCapture{decoded.record.generation_id,
+                                        record.position,
+                                        state_.processed_end,
+                                        record.sequence, state_});
+    }
     return true;
   }
 
   [[nodiscard]] const HashChainState& state() const noexcept { return state_; }
+
+  [[nodiscard]] const HashChainCapture* pending_capture() const noexcept {
+    return capture_ ? &*capture_ : nullptr;
+  }
+
+  [[nodiscard]] bool release_capture(std::uint64_t generation_id,
+                                     wal::Position processed_end) noexcept {
+    if (!capture_ || capture_->generation_id != generation_id ||
+        capture_->processed_end != processed_end) {
+      return false;
+    }
+    capture_.reset();
+    return true;
+  }
 
 private:
   void mix_byte(std::uint8_t value) noexcept {
@@ -55,6 +102,7 @@ private:
   }
 
   HashChainState state_{};
+  std::optional<HashChainCapture> capture_{};
 };
 
 } // namespace fexma::snapshot_demo

@@ -551,6 +551,48 @@ Gate:
 - both captures use the same logical boundary;
 - one missing participant prevents complete generation publication.
 
+Step 7 status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+Implemented in `exchange/snapshot_demo`:
+
+- a canonical fixed 64-byte application codec distinguishes `Data` and
+  `SaveSnapshot` without changing the physical WAL record format;
+- a snapshot generation is the absolute position `N` carried by its
+  `SaveSnapshot` record, and modules reject a command whose encoded generation
+  differs from its WAL position;
+- both stateful modules apply their normal transition through position `N`,
+  increment their exclusive `processed_end` to `N + 1`, and only then create an
+  immutable capture containing generation, position, physical sequence, and
+  the complete `StateAfter(N)`;
+- each module has one allocation-free capture slot; a later `SaveSnapshot`
+  returns retryable failure without changing module state while that slot is
+  occupied;
+- `CaptureGenerationCoordinator` assembles an in-memory generation only after
+  both mandatory captures agree on generation, position, exclusive boundary,
+  and sequence;
+- capture slots remain occupied until the composition releases the assembled
+  generation, enforcing one generation in flight;
+- the generic slider remains unaware of record kinds and publishes `N + 1`
+  only after the module has returned success for position `N`.
+
+`test_snapshot_demo_snapshot_semantics` verifies strict codec validation,
+terminal malformed-record handling, `StateAfter(N)` capture ordering,
+immutability while later data is processed, missing-participant and mismatch
+handling, and retryable backpressure at a second snapshot. The existing
+stateful pipeline test now uses valid encoded `Data` records.
+
+Verification on 2026-09-09, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
+Release:
+
+- `cmake --preset windows-msvc`: passed;
+- `cmake --build --preset windows-msvc-release`: passed for the whole branch;
+- `test_snapshot_demo_snapshot_semantics` passed 10 consecutive runs;
+- `ctest --preset windows-msvc-release`: 21/21 registered tests passed,
+  7.35 seconds total.
+
+Snapshot file serialization, synchronization, final description publication,
+and restore remain Step 8 and later work.
+
 ## Step 8 — implement the composition snapshot sink
 
 Persist:

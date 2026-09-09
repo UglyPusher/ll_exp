@@ -258,6 +258,8 @@ snapshot.
   rolling fold over record identity and payload bytes.
 - Both modules fail closed unless each input absolute position equals their
   current exclusive processed end.
+- A fixed canonical 64-byte application record distinguishes `Data` and
+  `SaveSnapshot`; a snapshot generation equals its record's absolute position.
 - One snapshot generation in flight.
 - Snapshot state is `StateAfter(N)`.
 - Bootstrap restore for the first milestone.
@@ -268,7 +270,6 @@ snapshot.
 - Exact C++ names and concepts for typed progress readers/writers.
 - Whether position access returns a reference, span, or small view object.
 - Exact ownership representation for stage pockets.
-- Exact application record encoding used by HashChain and BitAccumulator.
 - Exact acquire/publish policy interfaces.
 - Worker wait strategy and CPU affinity.
 - Snapshot byte layout beyond required identity and integrity fields.

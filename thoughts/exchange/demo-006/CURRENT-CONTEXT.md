@@ -81,6 +81,21 @@ head -> PersistenceSlider -> DurableF
      -> composition reclaimer -> tail
 ```
 
+The application payload is now a fixed canonical 64-byte record encoding for
+`Data` and `SaveSnapshot`. A `SaveSnapshot` record at absolute position `N`
+names generation `N`. Both stateful modules apply the ordinary transition for
+that record before storing an immutable `StateAfter(N)` capture. Because
+frontiers are exclusive ends, successful processing then permits publication
+of `N + 1`.
+
+Each module owns one allocation-free capture slot. A second snapshot command
+is retryable while the first slot remains occupied, so the generic slider stays
+at that position without learning snapshot semantics. The composition-owned
+`CaptureGenerationCoordinator` publishes an in-memory full generation only
+when hash and bit captures match in generation, position, processed end, and
+physical sequence. It retains both module slots until the complete generation
+is released. Snapshot file I/O remains unimplemented.
+
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:

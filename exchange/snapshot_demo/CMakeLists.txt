@@ -35,3 +35,31 @@ endif()
 
 add_test(NAME test_snapshot_demo_stateful_pipeline
          COMMAND test_snapshot_demo_stateful_pipeline)
+
+add_executable(test_snapshot_demo_snapshot_semantics
+  tests/test_snapshot_semantics.cpp
+)
+target_link_libraries(test_snapshot_demo_snapshot_semantics
+  PRIVATE
+    fexma::snapshot_demo
+)
+
+if(MSVC)
+  target_compile_options(test_snapshot_demo_snapshot_semantics PRIVATE
+    /W4
+    /permissive-
+    /EHsc
+    /FS
+    $<$<CONFIG:Release>:/O2>
+  )
+else()
+  target_compile_options(test_snapshot_demo_snapshot_semantics PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    $<$<CONFIG:Release>:-O3>
+  )
+endif()
+
+add_test(NAME test_snapshot_demo_snapshot_semantics
+         COMMAND test_snapshot_demo_snapshot_semantics)
