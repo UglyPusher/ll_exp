@@ -99,3 +99,20 @@ fexma_snapshot_demo_apply_warnings(
 
 add_test(NAME test_snapshot_demo_progress_and_repeated_snapshots
          COMMAND test_snapshot_demo_progress_and_repeated_snapshots)
+
+add_executable(test_snapshot_demo_large_capture
+  tests/test_large_capture.cpp
+)
+target_link_libraries(test_snapshot_demo_large_capture
+  PRIVATE
+    fexma::snapshot_demo
+)
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_large_capture)
+
+add_test(NAME test_snapshot_demo_large_capture
+         COMMAND test_snapshot_demo_large_capture)
+set_tests_properties(test_snapshot_demo_large_capture PROPERTIES
+  LABELS stress
+  RUN_SERIAL TRUE
+  TIMEOUT 300
+)

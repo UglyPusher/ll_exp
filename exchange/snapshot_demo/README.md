@@ -65,3 +65,11 @@ BitAccumulator position. Repeated-generation coverage drives the complete
 WAL/persistence/hash/bit tract through deterministic and reproducibly randomized
 snapshot positions, publishes every generation, and loads every published state
 back for comparison with direct execution.
+
+`test_snapshot_demo_large_capture` is a synthetic stress harness for state
+sizes that the two fixed demo schemas do not have. It preallocates one mutable
+state and one immutable capture, verifies that the slider publishes only after
+the full `StateAfter(N)` copy, continues changing the live state while the
+capture stays unchanged, and atomically publishes and byte-verifies the full
+capture at 1, 10, 100, and 500 MiB. The harness is test-only; it does not add a
+module, widen a production snapshot file, or change the WAL format.

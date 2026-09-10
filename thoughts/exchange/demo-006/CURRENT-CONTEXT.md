@@ -130,6 +130,13 @@ unfinished bit position observably reclaimed. The complete tract publishes and
 loads every snapshot from both fixed and reproducibly randomized schedules while
 preserving `tail <= BitF <= HashF <= DurableF <= head` through WAL wraparound.
 
+The final Step 10 stress pass uses a test-only synthetic module with preallocated
+mutable state and immutable capture buffers of 1, 10, 100, and 500 MiB. Its
+slider publishes only after the entire `StateAfter(N)` copy. The live state then
+continues to change while the capture remains stable; a composition-side harness
+writes, synchronizes, publishes by rename, and byte-verifies the complete
+capture before release. This adds no production module or snapshot schema.
+
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:

@@ -806,8 +806,41 @@ Verification on 2026-09-09:
 - the new Step 10B test passed 10 consecutive runs;
 - Linux / GCC 13.3 / x64 / C++20 / Release new Step 10B test: passed.
 
-Step 10C remains responsible for synthetic 1, 10, 100, and 500 MiB state
-sizes.
+Step 10C status: IMPLEMENTED on 2026-09-10; independent review remains pending.
+
+`test_snapshot_demo_large_capture` is a test-only synthetic harness rather than
+a third production module or a change to either fixed module schema. For each
+1, 10, 100, and 500 MiB state it verifies:
+
+- mutable state and its capture are allocated before record processing, so the
+  `process()` capture path performs no allocation;
+- the slider publishes the snapshot position only after the complete
+  `StateAfter(N)` copy;
+- ordinary processing can continue while the pending capture remains immutable;
+- the composition-side harness writes and synchronizes every capture byte,
+  publishes the completed file by rename, reads every byte back, and releases
+  the capture only after successful verification;
+- scenarios run serially and discard one size before allocating the next; the
+  largest case has 500 MiB of live state, 500 MiB of capture, and a 4 MiB read
+  buffer.
+
+The test has the CTest `stress` label, runs serially, and has a 300-second
+timeout. It does not modify the WAL or production snapshot formats.
+
+Verification on 2026-09-10:
+
+- Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release full build: passed
+  without warnings;
+- `ctest --preset windows-msvc-release`: 25/25 registered tests passed,
+  21.99 seconds total; the large-capture test took 10.84 seconds;
+- direct MSVC 500 MiB measurements: 932 ms capture, 7454 ms write/sync, and
+  1574 ms read/verify;
+- Linux / GCC 13.3 / x64 / C++20 / Release large-capture test: passed;
+- direct GCC 500 MiB measurements: 547 ms capture, 15598 ms write/sync, and
+  1436 ms read/verify.
+
+All Step 10 scenarios listed above now have implemented coverage. Independent
+review of the first Demo 006 milestone remains pending.
 
 ## Later work
 
