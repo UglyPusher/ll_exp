@@ -1,8 +1,18 @@
 # Demo 006 — implementation plan
 
-Status: working plan  
-Updated: 2026-09-09
+Status: IMPLEMENTED / awaiting milestone freeze
+
+Updated: 2026-09-10
 Target branch: `demo/simple-snapshot`
+
+This plan is complete and retained as the implementation record for the
+first Demo 006 milestone. It is no longer a working plan.
+
+Current project state: implementation complete; awaiting independent review.
+The milestone remains awaiting freeze until that review is complete.
+
+Further changes to Demo 006 must be introduced and implemented through
+separate implementation plans.
 
 ## Objective
 

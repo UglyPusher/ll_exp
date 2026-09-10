@@ -1,5 +1,15 @@
 # Demo 006: простое snapshot-приложение
 
+**Document status:** CURRENT STATE / AS-BUILT
+
+Этот документ описывает текущее фактически реализованное состояние Demo 006.
+Он не является планом дальнейшей разработки или roadmap.
+
+**Project status:** implementation complete; awaiting independent review.
+После успешного review первый milestone может быть переведён в состояние
+frozen. Все дальнейшие изменения выполняются через отдельные implementation
+plans.
+
 ## Назначение
 
 Demo 006 показывает, как построить snapshot-приложение поверх одной
