@@ -18,59 +18,79 @@ constexpr std::uint32_t required_module_count = 2u;
 
 void put_u16(std::span<std::byte> out, std::size_t offset,
              std::uint16_t value) noexcept {
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    out[offset + index] =
-        static_cast<std::byte>((value >> (index * 8u)) & 0xffu);
-  }
+  out[offset] = static_cast<std::byte>(value & 0xffu);
+  out[offset + 1u] = static_cast<std::byte>((value >> 8u) & 0xffu);
 }
 
 void put_u32(std::span<std::byte> out, std::size_t offset,
              std::uint32_t value) noexcept {
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    out[offset + index] =
-        static_cast<std::byte>((value >> (index * 8u)) & 0xffu);
-  }
+  out[offset] = static_cast<std::byte>(value & 0xffu);
+  out[offset + 1u] = static_cast<std::byte>((value >> 8u) & 0xffu);
+  out[offset + 2u] = static_cast<std::byte>((value >> 16u) & 0xffu);
+  out[offset + 3u] = static_cast<std::byte>((value >> 24u) & 0xffu);
 }
 
 void put_u64(std::span<std::byte> out, std::size_t offset,
              std::uint64_t value) noexcept {
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    out[offset + index] =
-        static_cast<std::byte>((value >> (index * 8u)) & 0xffu);
-  }
+  out[offset] = static_cast<std::byte>(value & 0xffu);
+  out[offset + 1u] = static_cast<std::byte>((value >> 8u) & 0xffu);
+  out[offset + 2u] = static_cast<std::byte>((value >> 16u) & 0xffu);
+  out[offset + 3u] = static_cast<std::byte>((value >> 24u) & 0xffu);
+  out[offset + 4u] = static_cast<std::byte>((value >> 32u) & 0xffu);
+  out[offset + 5u] = static_cast<std::byte>((value >> 40u) & 0xffu);
+  out[offset + 6u] = static_cast<std::byte>((value >> 48u) & 0xffu);
+  out[offset + 7u] = static_cast<std::byte>((value >> 56u) & 0xffu);
 }
 
 [[nodiscard]] std::uint16_t get_u16(std::span<const std::byte> bytes,
                                     std::size_t offset) noexcept {
-  std::uint16_t value{};
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    value |= static_cast<std::uint16_t>(
-                 std::to_integer<std::uint8_t>(bytes[offset + index]))
-             << (index * 8u);
-  }
-  return value;
+  return static_cast<std::uint16_t>(
+      std::to_integer<std::uint8_t>(bytes[offset]) |
+      (static_cast<std::uint16_t>(
+           std::to_integer<std::uint8_t>(bytes[offset + 1u]))
+       << 8u));
 }
 
 [[nodiscard]] std::uint32_t get_u32(std::span<const std::byte> bytes,
                                     std::size_t offset) noexcept {
-  std::uint32_t value{};
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    value |= static_cast<std::uint32_t>(
-                 std::to_integer<std::uint8_t>(bytes[offset + index]))
-             << (index * 8u);
-  }
-  return value;
+  return static_cast<std::uint32_t>(
+      std::to_integer<std::uint8_t>(bytes[offset])) |
+         (static_cast<std::uint32_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 1u]))
+          << 8u) |
+         (static_cast<std::uint32_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 2u]))
+          << 16u) |
+         (static_cast<std::uint32_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 3u]))
+          << 24u);
 }
 
 [[nodiscard]] std::uint64_t get_u64(std::span<const std::byte> bytes,
                                     std::size_t offset) noexcept {
-  std::uint64_t value{};
-  for (std::size_t index = 0; index < sizeof(value); ++index) {
-    value |= static_cast<std::uint64_t>(
-                 std::to_integer<std::uint8_t>(bytes[offset + index]))
-             << (index * 8u);
-  }
-  return value;
+  return static_cast<std::uint64_t>(
+             std::to_integer<std::uint8_t>(bytes[offset])) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 1u]))
+          << 8u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 2u]))
+          << 16u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 3u]))
+          << 24u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 4u]))
+          << 32u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 5u]))
+          << 40u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 6u]))
+          << 48u) |
+         (static_cast<std::uint64_t>(
+              std::to_integer<std::uint8_t>(bytes[offset + 7u]))
+          << 56u);
 }
 
 [[nodiscard]] bool zero_range(std::span<const std::byte> bytes,
@@ -80,6 +100,17 @@ void put_u64(std::span<std::byte> out, std::size_t offset,
                      [](std::byte value) { return value == std::byte{}; });
 }
 
+// SnapshotModuleDescription embedded layout. All integers are little-endian.
+// Offset  Size  Field
+// ------  ----  -----
+//      0     8  Module ID
+//      8     4  Module schema version
+//     12     4  SnapshotFileKind
+//     16     8  Module snapshot file size
+//     24     4  CRC-32 of the complete module snapshot file [0, file_size)
+//     28     4  Reserved, zero
+// Total serialized size: 32 bytes. There is no descriptor magic or standalone
+// descriptor checksum; the enclosing SnapshotDescription CRC-32 covers it.
 void put_module_description(std::span<std::byte> out, std::size_t offset,
                             const SnapshotModuleDescription& module) noexcept {
   put_u64(out, offset, module.module_id);
@@ -100,6 +131,22 @@ get_module_description(std::span<const std::byte> bytes,
 
 } // namespace
 
+// HashChain snapshot layout. All integers are little-endian.
+// Offset  Size  Field
+// ------  ----  -----
+//      0     4  Magic 0x36485346 ("FSH6")
+//      4     2  Snapshot format version
+//      6     2  HashChain schema version
+//      8     8  HashChain module ID 0x3630305f48534148 ("HASH_006")
+//     16     8  Capture generation ID
+//     24     8  Snapshot-trigger record position
+//     32     8  Processed end position (also restored into module state)
+//     40     8  Snapshot-trigger record sequence
+//     48     8  Hash-chain digest
+//     56     1  Failed flag (0 or 1)
+//     57     7  Reserved, zero
+// Total serialized size: 64 bytes. No checksum is stored in this file; its
+// CRC-32 covers bytes [0, 64) and is stored at SnapshotDescription offset 104.
 HashChainSnapshotBytes
 serialize_hash_chain_snapshot(const HashChainCapture& capture) noexcept {
   HashChainSnapshotBytes bytes{};
@@ -116,6 +163,23 @@ serialize_hash_chain_snapshot(const HashChainCapture& capture) noexcept {
   return bytes;
 }
 
+// BitAccumulator snapshot layout. All integers are little-endian.
+// Offset  Size  Field
+// ------  ----  -----
+//      0     4  Magic 0x36425346 ("FSB6")
+//      4     2  Snapshot format version
+//      6     2  BitAccumulator schema version
+//      8     8  BitAccumulator module ID 0x3630305f54494241 ("ABIT_006")
+//     16     8  Capture generation ID
+//     24     8  Snapshot-trigger record position
+//     32     8  Processed end position (also restored into module state)
+//     40     8  Snapshot-trigger record sequence
+//     48     8  Total one-bit count
+//     56     8  Rolling bit accumulator
+//     64     1  Failed flag (0 or 1)
+//     65     7  Reserved, zero
+// Total serialized size: 72 bytes. No checksum is stored in this file; its
+// CRC-32 covers bytes [0, 72) and is stored at SnapshotDescription offset 136.
 BitAccumulatorSnapshotBytes serialize_bit_accumulator_snapshot(
     const BitAccumulatorCapture& capture) noexcept {
   BitAccumulatorSnapshotBytes bytes{};
@@ -133,6 +197,30 @@ BitAccumulatorSnapshotBytes serialize_bit_accumulator_snapshot(
   return bytes;
 }
 
+// SnapshotDescription layout. All integers are little-endian.
+// Offset  Size  Field
+// ------  ----  -----
+//      0     4  Magic 0x36445346 ("FSD6")
+//      4     2  Snapshot format version
+//      6     2  Total serialized size (152)
+//      8     8  Composition ID
+//     16     8  Stream ID
+//     24     8  Epoch ID
+//     32     8  Manifest ID
+//     40     8  Capture generation ID
+//     48     8  Snapshot-trigger record position
+//     56     8  Processed end position
+//     64     8  Snapshot-trigger record sequence
+//     72     4  Required module count (2)
+//     76     2  WAL StreamKind
+//     78     2  Reserved, zero
+//     80    32  HashChain SnapshotModuleDescription
+//    112    32  BitAccumulator SnapshotModuleDescription
+//    144     4  CRC-32 covering bytes [0, 144)
+//    148     4  Reserved, zero (not covered by the CRC-32)
+// Total serialized size: 152 bytes. Each embedded module description contains
+// its module snapshot checksum at relative offset 24 and reserved zeros at
+// relative offsets [28, 32).
 SnapshotDescriptionBytes serialize_snapshot_description(
     const SnapshotDescription& description) noexcept {
   SnapshotDescriptionBytes bytes{};

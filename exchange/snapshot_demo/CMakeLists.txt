@@ -59,6 +59,18 @@ fexma_snapshot_demo_apply_warnings(test_snapshot_demo_snapshot_semantics)
 add_test(NAME test_snapshot_demo_snapshot_semantics
          COMMAND test_snapshot_demo_snapshot_semantics)
 
+add_executable(test_snapshot_demo_snapshot_format
+  tests/test_snapshot_format.cpp
+)
+target_link_libraries(test_snapshot_demo_snapshot_format
+  PRIVATE
+    fexma::snapshot_demo
+)
+fexma_snapshot_demo_apply_warnings(test_snapshot_demo_snapshot_format)
+
+add_test(NAME test_snapshot_demo_snapshot_format
+         COMMAND test_snapshot_demo_snapshot_format)
+
 add_executable(test_snapshot_demo_snapshot_sink
   tests/test_snapshot_sink.cpp
 )
