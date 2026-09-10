@@ -58,3 +58,10 @@ Negative bootstrap coverage also rebuilds valid outer checksums around
 cross-boundary captures and malformed module encodings, proving that validation
 does not rely on CRC alone. A replay source that repeats `N` or skips `N + 1`
 is rejected by the first stateful module without advancing either frontier.
+
+Composition stress coverage rejects a downstream frontier beyond its upstream
+and demonstrates that reclaiming through `HashF` strands an unfinished
+BitAccumulator position. Repeated-generation coverage drives the complete
+WAL/persistence/hash/bit tract through deterministic and reproducibly randomized
+snapshot positions, publishes every generation, and loads every published state
+back for comparison with direct execution.

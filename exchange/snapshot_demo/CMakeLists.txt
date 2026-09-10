@@ -86,3 +86,16 @@ fexma_snapshot_demo_apply_warnings(test_snapshot_demo_bootstrap_restore)
 
 add_test(NAME test_snapshot_demo_bootstrap_restore
          COMMAND test_snapshot_demo_bootstrap_restore)
+
+add_executable(test_snapshot_demo_progress_and_repeated_snapshots
+  tests/test_progress_and_repeated_snapshots.cpp
+)
+target_link_libraries(test_snapshot_demo_progress_and_repeated_snapshots
+  PRIVATE
+    fexma::snapshot_demo
+)
+fexma_snapshot_demo_apply_warnings(
+  test_snapshot_demo_progress_and_repeated_snapshots)
+
+add_test(NAME test_snapshot_demo_progress_and_repeated_snapshots
+         COMMAND test_snapshot_demo_progress_and_repeated_snapshots)

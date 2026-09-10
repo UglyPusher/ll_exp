@@ -780,9 +780,34 @@ Verification on 2026-09-09:
   runs;
 - Linux / GCC 13.3 / x64 / C++20 / Release bootstrap test: passed.
 
-Step 10B remains responsible for composition progress violations and repeated
-deterministic/randomized snapshot generations. Step 10C remains responsible
-for synthetic 1, 10, 100, and 500 MiB state sizes.
+Step 10B status: IMPLEMENTED on 2026-09-09; independent review remains pending.
+
+`test_snapshot_demo_progress_and_repeated_snapshots` verifies:
+
+- `BitF > HashF` is reported as `UpstreamRegression` without processing or
+  changing module state, slider position, or the downstream frontier;
+- reclaim through the correct `BitF` retains the next bit-accumulator record,
+  while premature reclaim through `HashF` makes that unfinished absolute
+  position fail as `ViewStatus::Reclaimed` without advancing the slider;
+- the full `head -> PersistenceSlider -> HashChainSlider ->
+  BitAccumulatorSlider -> tail` tract saves 10 deterministic generations over
+  128 records and 25 reproducibly randomized generations over 257 records;
+- capacity-32 wraparound, independently varied stage batch sizes, snapshot
+  backpressure, generation collection/release, and reclamation preserve
+  `tail <= BitF <= HashF <= DurableF <= head` on every cycle;
+- every published generation loads successfully and equals the state produced
+  by direct ordered execution at the same absolute position.
+
+Verification on 2026-09-09:
+
+- Windows / MSVC 19.44.35215.0 / x64 / C++20 / Release full build: passed;
+- `ctest --preset windows-msvc-release`: 24/24 registered tests passed,
+  16.75 seconds total;
+- the new Step 10B test passed 10 consecutive runs;
+- Linux / GCC 13.3 / x64 / C++20 / Release new Step 10B test: passed.
+
+Step 10C remains responsible for synthetic 1, 10, 100, and 500 MiB state
+sizes.
 
 ## Later work
 

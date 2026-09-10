@@ -123,6 +123,13 @@ missing-file, checksum, schema, boundary, and module-decoding failures all leave
 both existing module states, slider positions, and frontiers unchanged. Replay
 that repeats `N` or omits `N + 1` stops at the resume frontier.
 
+The Step 10 progress and repeated-generation pass now verifies that a downstream
+frontier beyond its upstream is rejected without state change, and that
+reclaiming through `HashF` rather than the last mandatory `BitF` makes the
+unfinished bit position observably reclaimed. The complete tract publishes and
+loads every snapshot from both fixed and reproducibly randomized schedules while
+preserving `tail <= BitF <= HashF <= DurableF <= head` through WAL wraparound.
+
 Before the extraction, the component in
 [`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
 three-stage construction:
