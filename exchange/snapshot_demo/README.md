@@ -2,6 +2,9 @@
 
 Application modules and static composition tests for Demo 006.
 
+Подробное описание назначения, архитектуры и структуры проекта находится в
+[`doc/README.md`](doc/README.md).
+
 The current tract is:
 
 ```text
