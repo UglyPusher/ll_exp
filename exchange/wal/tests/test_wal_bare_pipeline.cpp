@@ -40,10 +40,10 @@ using Payload = std::array<std::byte, 16>;
   return true;
 }
 
-[[nodiscard]] bool publish(WalCore& wal, Position position) noexcept {
+[[nodiscard]] bool publish(RecordTape& tape, Position position) noexcept {
   const Payload bytes = payload(position);
   const PublishResult result =
-      wal.try_publish(std::span<const std::byte>{bytes});
+      tape.try_publish(std::span<const std::byte>{bytes});
   return result.ok() && result.sequence == position + 1;
 }
 
@@ -51,86 +51,86 @@ static_assert(SliderModule<NoOpModule>);
 
 [[nodiscard]] bool stopped_slider_preserves_backpressure() {
   constexpr Position capacity = 3;
-  WalCore wal;
-  if (!wal.open({static_cast<std::uint32_t>(sizeof(Payload)),
+  RecordTape tape;
+  if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)),
                  static_cast<std::uint32_t>(capacity), default_alignment, 1})
            .ok()) {
     return false;
   }
 
   for (Position position = 0; position < capacity; ++position) {
-    if (!publish(wal, position)) return false;
+    if (!publish(tape, position)) return false;
   }
   const Payload blocked_payload = payload(capacity);
-  if (wal.try_publish(std::span<const std::byte>{blocked_payload}).status !=
+  if (tape.try_publish(std::span<const std::byte>{blocked_payload}).status !=
           PublishStatus::Full ||
-      wal.tail() != 0 || wal.head() != capacity) {
+      tape.tail() != 0 || tape.head() != capacity) {
     return false;
   }
 
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress no_op_frontier;
   NoOpModule module;
-  Slider slider(wal, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier.writer(), module);
 
   const SliderResult processed = slider.process_available();
   if (processed.status != SliderStatus::Processed ||
       processed.processed_count != capacity ||
-      no_op_frontier.reader().acquire() != capacity || wal.tail() != 0 ||
-      wal.try_publish(std::span<const std::byte>{blocked_payload}).status !=
+      no_op_frontier.reader().acquire() != capacity || tape.tail() != 0 ||
+      tape.try_publish(std::span<const std::byte>{blocked_payload}).status !=
           PublishStatus::Full) {
     return false;
   }
 
-  if (wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok ||
-      !publish(wal, capacity)) {
+  if (tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok ||
+      !publish(tape, capacity)) {
     return false;
   }
   const SliderResult wrapped = slider.process_available();
   if (!wrapped.ok() || wrapped.current != capacity + 1 ||
-      wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
     return false;
   }
 
-  return wal.tail() == capacity + 1 &&
-         no_op_frontier.reader().acquire() == wal.tail() &&
-         wal.head() == wal.tail();
+  return tape.tail() == capacity + 1 &&
+         no_op_frontier.reader().acquire() == tape.tail() &&
+         tape.head() == tape.tail();
 }
 
 [[nodiscard]] bool retains_slots_until_composition_reclaims() {
-  WalCore wal;
-  if (!wal.open({static_cast<std::uint32_t>(sizeof(Payload)), 2,
+  RecordTape tape;
+  if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)), 2,
                  default_alignment, 1})
            .ok() ||
-      !publish(wal, 0) || !publish(wal, 1)) {
+      !publish(tape, 0) || !publish(tape, 1)) {
     return false;
   }
 
-  const AccessResult before = wal.try_view(0);
+  const AccessResult before = tape.try_view(0);
   if (!before.ok() || !equal(before.record.payload, payload(0))) return false;
   const std::byte* const first_address = before.record.payload.data();
 
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress no_op_frontier;
   NoOpModule module;
-  Slider slider(wal, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier.writer(), module);
   if (!slider.process_available().ok()) return false;
 
-  const AccessResult retained = wal.try_view(0);
+  const AccessResult retained = tape.try_view(0);
   const Payload third = payload(2);
   if (!retained.ok() || retained.record.payload.data() != first_address ||
-      !equal(retained.record.payload, payload(0)) || wal.tail() != 0 ||
-      wal.try_publish(std::span<const std::byte>{third}).status !=
+      !equal(retained.record.payload, payload(0)) || tape.tail() != 0 ||
+      tape.try_publish(std::span<const std::byte>{third}).status !=
           PublishStatus::Full) {
     return false;
   }
 
   // No borrowed view of position 0 is used after this reclamation.
-  if (wal.reclaim(1) != ReclaimStatus::Ok || !publish(wal, 2) ||
-      wal.try_view(0).status != ViewStatus::Reclaimed) {
+  if (tape.reclaim(1) != ReclaimStatus::Ok || !publish(tape, 2) ||
+      tape.try_view(0).status != ViewStatus::Reclaimed) {
     return false;
   }
-  const AccessResult replacement = wal.try_view(2);
+  const AccessResult replacement = tape.try_view(2);
   if (!replacement.ok() || replacement.record.payload.data() != first_address ||
       !equal(replacement.record.payload, payload(2))) {
     return false;
@@ -138,10 +138,10 @@ static_assert(SliderModule<NoOpModule>);
 
   if (!slider.process_available().ok() ||
       no_op_frontier.reader().acquire() != 3 ||
-      wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
     return false;
   }
-  return wal.tail() == 3 && wal.head() == 3;
+  return tape.tail() == 3 && tape.head() == 3;
 }
 
 class OrderedProbeModule final {
@@ -177,17 +177,17 @@ static_assert(SliderModule<OrderedProbeModule>);
   constexpr std::uint32_t capacity = 127;
   constexpr Position first_sequence = 1000;
 
-  WalCore wal;
-  if (!wal.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
+  RecordTape tape;
+  if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
                  default_alignment, first_sequence})
            .ok()) {
     return false;
   }
 
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress no_op_frontier;
   OrderedProbeModule module(first_sequence);
-  Slider slider(wal, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier.writer(), module);
   std::atomic<bool> failed{false};
   std::atomic<bool> producer_done{false};
 
@@ -196,7 +196,7 @@ static_assert(SliderModule<OrderedProbeModule>);
       if (failed.load(std::memory_order_acquire)) return;
       const Payload bytes = payload(position);
       const PublishResult result =
-          wal.try_publish(std::span<const std::byte>{bytes});
+          tape.try_publish(std::span<const std::byte>{bytes});
       if (result.ok()) {
         if (result.sequence != first_sequence + position) {
           failed.store(true, std::memory_order_release);
@@ -219,8 +219,8 @@ static_assert(SliderModule<OrderedProbeModule>);
       const SliderResult result = slider.process_available();
       if (result.status == SliderStatus::Processed) {
         const Position published = no_op_frontier.reader().acquire();
-        if (published != slider.current() || published > wal.head() ||
-            wal.reclaim(published) != ReclaimStatus::Ok) {
+        if (published != slider.current() || published > tape.head() ||
+            tape.reclaim(published) != ReclaimStatus::Ok) {
           failed.store(true, std::memory_order_release);
           return;
         }
@@ -242,9 +242,9 @@ static_assert(SliderModule<OrderedProbeModule>);
   consumer.join();
 
   return !failed.load(std::memory_order_acquire) && module.valid() &&
-         module.count() == message_count && wal.tail() == message_count &&
+         module.count() == message_count && tape.tail() == message_count &&
          no_op_frontier.reader().acquire() == message_count &&
-         wal.head() == message_count;
+         tape.head() == message_count;
 }
 
 } // namespace

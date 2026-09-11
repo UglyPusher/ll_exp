@@ -1,14 +1,14 @@
 # WAL
 
-A bounded runtime WAL string with separately composable physical persistence.
+A bounded `RecordTape` with separately composable physical WAL persistence.
 
-The core owns only:
+`RecordTape` owns only:
 
 ```text
 tail <= retained positions < head
 ```
 
-`WalCore` provides producer publication, absolute-position immutable views,
+`RecordTape` provides producer publication, absolute-position immutable views,
 bounded reclamation, and sequence exhaustion handling. `PersistenceModule`
 owns live append/sync and its failure state. Their lifecycles are independent.
 `PersistenceSlider` binds that module to `head`, owns its current position, and
@@ -23,7 +23,7 @@ the slider owns no worker, polling loop, wait strategy, or domain semantics.
 composition: `head -> NoOpSlider -> tail`.
 
 The existing `Wal` class remains as a compatibility facade over the static
-core/persistence-slider composition:
+`RecordTape`/persistence-slider composition:
 
 ```text
 producer -> [durable, head) -> physical sync -> [tail, durable) -> consumer

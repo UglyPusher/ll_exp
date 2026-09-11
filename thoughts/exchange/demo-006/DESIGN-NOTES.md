@@ -5,8 +5,8 @@ Updated: 2026-09-09
 
 ## Central idea
 
-The WAL is both the bounded runtime storage and the single common ordered
-string.
+`RecordTape` is both the bounded runtime storage and the single common ordered
+record sequence.
 
 It has two intrinsic special boundaries:
 
@@ -14,7 +14,7 @@ It has two intrinsic special boundaries:
 tail                                              head
   |                                                  |
   v                                                  v
------------------------------------------------------- WAL
+------------------------------------------------------ RecordTape
        ^                 ^                 ^
        |                 |                 |
    Slider A          Slider B          Slider C
@@ -29,7 +29,7 @@ tract storage.
 Data plane:
 
 ```text
-one retained WAL position
+one retained RecordTape position
 +
 immutable source record
 +
@@ -43,11 +43,11 @@ head -> F0 -> F1 -> ... -> Fn -> tail
 ```
 
 The data object does not travel between modules. A frontier publication gives
-the next slider permission to address the already existing WAL position.
+the next slider permission to address the already existing RecordTape position.
 
-## Core invariants
+## RecordTape and composition invariants
 
-1. `head` and `tail` are intrinsic WAL boundaries.
+1. `head` and `tail` are intrinsic `RecordTape` boundaries.
 2. Every intermediate frontier belongs to exactly one slider/stage.
 3. Every frontier has exactly one writer.
 4. A slider reads its upstream frontier but cannot modify it.
@@ -72,10 +72,10 @@ the next slider permission to address the already existing WAL position.
 
 | Object | Sole writer/owner | Readers |
 |---|---|---|
-| WAL `head` | Producer | First slider, diagnostics |
+| RecordTape `head` | Producer | First slider, diagnostics |
 | Persistence frontier | PersistenceSlider | Next slider, diagnostics |
 | Module frontier | Corresponding slider | Next slider, diagnostics |
-| WAL `tail` | Composition/reclaimer | Producer, diagnostics |
+| RecordTape `tail` | Composition/reclaimer | Producer, diagnostics |
 | Source record | Producer before head publication | All permitted modules |
 | Module pocket | Corresponding module | Permitted downstream modules |
 | Domain state | Corresponding module | Snapshot capture logic |
@@ -86,7 +86,7 @@ the next slider permission to address the already existing WAL position.
 A slider combines mechanics with one concrete module:
 
 ```text
-WAL access
+RecordTape access
 +
 read-only upstream progress
 +
@@ -116,7 +116,7 @@ The slider and module execute synchronously in the same calling thread.
 
 ## Persistence interpretation
 
-Persistence is not a third intrinsic WAL boundary.
+Persistence is not a third intrinsic `RecordTape` boundary.
 
 It is the first ordinary attached stage for the live durable composition:
 
@@ -144,7 +144,7 @@ replace them.
 
 `tail` is not the current position of an arbitrary consumer.
 
-It is the WAL reclamation boundary.
+It is the `RecordTape` reclamation boundary.
 
 For the first strictly linear Demo 006 composition, the reclaimer may follow
 the published frontier of the last mandatory slider:
@@ -191,7 +191,7 @@ slot = position % capacity
 Public and cross-component contracts use absolute positions or physical
 sequences.
 
-Before returning a position view, WAL must establish that it is:
+Before returning a position view, `RecordTape` must establish that it is:
 
 ```text
 not reclaimed
@@ -224,7 +224,7 @@ CaptureGeneration(N)
 ```
 
 Physical snapshot I/O belongs to the composition-level sink, not to a module,
-slider, or WAL core.
+slider, or `RecordTape`.
 
 The first milestone uses bootstrap restore:
 
@@ -241,7 +241,7 @@ snapshot.
 
 ## Current resolved choices
 
-- One common WAL string.
+- One common `RecordTape`.
 - No intermediate stage queues.
 - Static compile-time module composition.
 - One slider per module.

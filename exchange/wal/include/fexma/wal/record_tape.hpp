@@ -1,8 +1,8 @@
 #pragma once
 
 /**
- * @file core.hpp
- * @brief Bounded in-memory WAL string with head and tail boundaries.
+ * @file record_tape.hpp
+ * @brief Bounded in-memory RecordTape with head and tail boundaries.
  */
 
 #include <fexma/wal/types.hpp>
@@ -15,7 +15,7 @@
 
 namespace fexma::wal {
 
-struct WalRuntimeConfig {
+struct RecordTapeConfig {
   std::uint32_t payload_size{};
   std::uint32_t capacity{};
   std::uint32_t alignment{default_alignment};
@@ -33,17 +33,17 @@ enum class ReclaimStatus : std::uint8_t {
 #pragma warning(disable : 4324) // Intentional cache-line frontier isolation.
 #endif
 
-class WalCore final {
+class RecordTape final {
 public:
-  WalCore() = default;
-  ~WalCore();
+  RecordTape() = default;
+  ~RecordTape();
 
-  WalCore(const WalCore&) = delete;
-  WalCore& operator=(const WalCore&) = delete;
-  WalCore(WalCore&&) = delete;
-  WalCore& operator=(WalCore&&) = delete;
+  RecordTape(const RecordTape&) = delete;
+  RecordTape& operator=(const RecordTape&) = delete;
+  RecordTape(RecordTape&&) = delete;
+  RecordTape& operator=(RecordTape&&) = delete;
 
-  [[nodiscard]] OpenResult open(const WalRuntimeConfig& config) noexcept;
+  [[nodiscard]] OpenResult open(const RecordTapeConfig& config) noexcept;
   [[nodiscard]] PublishResult
   try_publish(std::span<const std::byte> payload) noexcept;
   [[nodiscard]] AccessResult try_view(Position position) const noexcept;
@@ -59,7 +59,7 @@ public:
   [[nodiscard]] bool sequence_exhausted() const noexcept;
   [[nodiscard]] Position head() const noexcept;
   [[nodiscard]] Position tail() const noexcept;
-  [[nodiscard]] const WalRuntimeConfig& config() const noexcept;
+  [[nodiscard]] const RecordTapeConfig& config() const noexcept;
 
 private:
   static constexpr std::size_t frontier_cache_line_size = 64;
@@ -83,7 +83,7 @@ private:
     Storage& operator=(const Storage&) = delete;
 
     [[nodiscard]] OpenStatus
-    initialize(const WalRuntimeConfig& config) noexcept;
+    initialize(const RecordTapeConfig& config) noexcept;
     void release() noexcept;
 
     [[nodiscard]] std::span<std::byte>
@@ -105,7 +105,7 @@ private:
   Frontier head_frontier_{};
   std::uint32_t head_slot_{};
   Storage storage_{};
-  WalRuntimeConfig config_{};
+  RecordTapeConfig config_{};
   std::atomic<bool> sequence_exhausted_{false};
   std::atomic<bool> open_{false};
 

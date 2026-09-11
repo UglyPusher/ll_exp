@@ -96,7 +96,7 @@ template <class Module>
   const auto path = test_path("fexma_snapshot_demo_stateful_pipeline.wal");
   std::filesystem::remove(path);
 
-  wal::WalCore source;
+  wal::RecordTape source;
   wal::PersistenceModule persistence;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
                     wal::default_alignment, first_sequence})
@@ -109,7 +109,7 @@ template <class Module>
     return false;
   }
 
-  wal::WalHeadProgress head(source);
+  wal::RecordTapeHeadProgress head(source);
   wal::Progress durable;
   wal::PersistenceSlider persistence_slider(
       source, head, durable.writer(), persistence, 0,

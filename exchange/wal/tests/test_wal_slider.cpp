@@ -69,28 +69,28 @@ static_assert(!SliderModule<ThrowingProcess>);
 static_assert(!std::is_polymorphic_v<RecordingModule>);
 static_assert(!std::is_copy_constructible_v<Progress::Writer>);
 
-[[nodiscard]] bool open_core(WalCore& core, std::uint32_t capacity = 4) {
-  return core.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
+[[nodiscard]] bool open_tape(RecordTape& tape, std::uint32_t capacity = 4) {
+  return tape.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
                     default_alignment, 10})
       .ok();
 }
 
-[[nodiscard]] bool publish(WalCore& core, std::uint64_t value) {
+[[nodiscard]] bool publish(RecordTape& tape, std::uint64_t value) {
   const Payload bytes = payload(value);
-  return core.try_publish(std::span<const std::byte>{bytes}).ok();
+  return tape.try_publish(std::span<const std::byte>{bytes}).ok();
 }
 
 [[nodiscard]] bool processes_available_range_in_order() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1) || !publish(core, 2) ||
-      !publish(core, 3)) {
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1) || !publish(tape, 2) ||
+      !publish(tape, 3)) {
     return false;
   }
 
-  WalHeadProgress upstream(core);
+  RecordTapeHeadProgress upstream(tape);
   Progress progress;
   RecordingModule module(progress.reader());
-  Slider slider(core, upstream, progress.writer(), module);
+  Slider slider(tape, upstream, progress.writer(), module);
 
   const SliderResult result = slider.process_available();
   if (result.status != SliderStatus::Processed || result.processed_count != 3 ||
@@ -112,16 +112,16 @@ static_assert(!std::is_copy_constructible_v<Progress::Writer>);
 }
 
 [[nodiscard]] bool respects_upstream_and_retries_module_failure() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1) || !publish(core, 2) ||
-      !publish(core, 3)) {
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1) || !publish(tape, 2) ||
+      !publish(tape, 3)) {
     return false;
   }
 
   Progress upstream(2);
   Progress own;
   RecordingModule module(own.reader(), 1);
-  Slider slider(core, upstream.reader(), own.writer(), module);
+  Slider slider(tape, upstream.reader(), own.writer(), module);
 
   const SliderResult failed = slider.process_available();
   if (failed.status != SliderStatus::ModuleFailed ||
@@ -169,16 +169,16 @@ struct WholeRangePublish final {
 };
 
 [[nodiscard]] bool publishes_according_to_range_policy() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1) || !publish(core, 2) ||
-      !publish(core, 3)) {
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1) || !publish(tape, 2) ||
+      !publish(tape, 3)) {
     return false;
   }
 
-  WalHeadProgress upstream(core);
+  RecordTapeHeadProgress upstream(tape);
   Progress progress;
   RecordingModule module(progress.reader());
-  Slider slider(core, upstream, progress.writer(), module, 0,
+  Slider slider(tape, upstream, progress.writer(), module, 0,
                 AvailableRangeAcquire{}, WholeRangePublish{});
 
   const SliderResult result = slider.process_available();
@@ -190,13 +190,13 @@ struct WholeRangePublish final {
 }
 
 [[nodiscard]] bool rejects_invalid_progress_and_ranges() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1)) return false;
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1)) return false;
 
   Progress upstream;
   Progress own(1);
   RecordingModule module(own.reader());
-  Slider mismatch(core, upstream.reader(), own.writer(), module);
+  Slider mismatch(tape, upstream.reader(), own.writer(), module);
   if (mismatch.process_available().status != SliderStatus::ProgressMismatch) {
     return false;
   }
@@ -204,7 +204,7 @@ struct WholeRangePublish final {
   Progress regressed_upstream;
   Progress regressed_own(1);
   RecordingModule regressed_module(regressed_own.reader());
-  Slider regressed(core, regressed_upstream.reader(), regressed_own.writer(),
+  Slider regressed(tape, regressed_upstream.reader(), regressed_own.writer(),
                    regressed_module, 1);
   if (regressed.process_available().status !=
       SliderStatus::UpstreamRegression) {
@@ -214,21 +214,21 @@ struct WholeRangePublish final {
   Progress available(1);
   Progress ranged_own;
   RecordingModule ranged_module(ranged_own.reader());
-  Slider invalid(core, available.reader(), ranged_own.writer(), ranged_module,
+  Slider invalid(tape, available.reader(), ranged_own.writer(), ranged_module,
                  0, InvalidRangeAcquire{});
   return invalid.process_available().status == SliderStatus::InvalidRange &&
          ranged_module.count() == 0 && ranged_own.reader().acquire() == 0;
 }
 
 [[nodiscard]] bool reports_unavailable_views_without_publication() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1)) return false;
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1)) return false;
 
   Progress upstream(1);
   Progress own;
   RecordingModule module(own.reader());
-  Slider reclaimed(core, upstream.reader(), own.writer(), module);
-  if (core.reclaim(1) != ReclaimStatus::Ok) return false;
+  Slider reclaimed(tape, upstream.reader(), own.writer(), module);
+  if (tape.reclaim(1) != ReclaimStatus::Ok) return false;
 
   const SliderResult reclaimed_result = reclaimed.process_available();
   if (reclaimed_result.status != SliderStatus::ViewUnavailable ||
@@ -237,8 +237,8 @@ struct WholeRangePublish final {
     return false;
   }
 
-  WalCore second;
-  if (!open_core(second)) return false;
+  RecordTape second;
+  if (!open_tape(second)) return false;
   Progress ahead(1);
   Progress second_own;
   RecordingModule second_module(second_own.reader());
@@ -256,13 +256,13 @@ public:
 };
 
 [[nodiscard]] bool reports_publication_failure_after_processing() {
-  WalCore core;
-  if (!open_core(core) || !publish(core, 1)) return false;
-  WalHeadProgress upstream(core);
+  RecordTape tape;
+  if (!open_tape(tape) || !publish(tape, 1)) return false;
+  RecordTapeHeadProgress upstream(tape);
   RejectingProgress own;
   Progress observed;
   RecordingModule module(observed.reader());
-  Slider slider(core, upstream, own, module);
+  Slider slider(tape, upstream, own, module);
 
   const SliderResult result = slider.process_available();
   return result.status == SliderStatus::PublishFailed &&

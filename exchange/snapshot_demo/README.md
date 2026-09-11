@@ -8,11 +8,11 @@ Application modules and static composition tests for Demo 006.
 The current tract is:
 
 ```text
-WalCore::head
+RecordTape::head
   -> PersistenceSlider -> DurableF
   -> HashChainSlider -> HashF
   -> BitAccumulatorSlider -> BitF
-  -> composition reclaimer -> WalCore::tail
+  -> composition reclaimer -> RecordTape::tail
 ```
 
 `HashChainModule` maintains a deterministic 64-bit FNV-1a-style chain over the
@@ -65,7 +65,7 @@ is rejected by the first stateful module without advancing either frontier.
 Composition stress coverage rejects a downstream frontier beyond its upstream
 and demonstrates that reclaiming through `HashF` strands an unfinished
 BitAccumulator position. Repeated-generation coverage drives the complete
-WAL/persistence/hash/bit tract through deterministic and reproducibly randomized
+RecordTape/persistence/hash/bit tract through deterministic and reproducibly randomized
 snapshot positions, publishes every generation, and loads every published state
 back for comparison with direct execution.
 

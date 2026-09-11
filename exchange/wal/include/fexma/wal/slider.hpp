@@ -2,10 +2,10 @@
 
 /**
  * @file slider.hpp
- * @brief Generic synchronous mechanics for a stage over retained WAL records.
+ * @brief Generic synchronous mechanics for a stage over RecordTape records.
  */
 
-#include <fexma/wal/core.hpp>
+#include <fexma/wal/record_tape.hpp>
 
 #include <array>
 #include <atomic>
@@ -98,14 +98,15 @@ private:
   Writer writer_;
 };
 
-class WalHeadProgress final {
+class RecordTapeHeadProgress final {
 public:
-  explicit WalHeadProgress(const WalCore& wal) noexcept : wal_(&wal) {}
+  explicit RecordTapeHeadProgress(const RecordTape& tape) noexcept
+      : tape_(&tape) {}
 
-  [[nodiscard]] Position acquire() const noexcept { return wal_->head(); }
+  [[nodiscard]] Position acquire() const noexcept { return tape_->head(); }
 
 private:
-  const WalCore* wal_{};
+  const RecordTape* tape_{};
 };
 
 struct PositionRange {

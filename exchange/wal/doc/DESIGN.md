@@ -2,7 +2,7 @@
 
 ## Components
 
-`WalCore` owns runtime lifecycle, bounded storage, `head`, `tail`, producer
+`RecordTape` owns runtime lifecycle, bounded storage, `head`, `tail`, producer
 publication, reclamation, sequence exhaustion, and borrowed read-only position
 access. It has no filesystem path, physical writer, durable frontier, or I/O
 failure state.
@@ -12,18 +12,18 @@ failure state. It accepts immutable `RecordView` values, appends them using the
 unchanged physical format, and synchronizes when instructed. It does not own a
 position, select a batch, or publish progress.
 
-`PersistenceSlider` binds `PersistenceModule` to `WalCore::head` with
+`PersistenceSlider` binds `PersistenceModule` to `RecordTape::head` with
 `BoundedRangeAcquire` and `PersistenceBatchPublish`. Appends hold progress; one
 successful sync of the complete selected batch permits the slider to publish
 its durable frontier.
 
-`Wal` is a compatibility facade over a static `WalCore`,
+`Wal` is a compatibility facade over a static `RecordTape`,
 `PersistenceModule`, `PersistenceSlider`, and durable `Progress`. It retains
 the old three-role API and lifecycle/failure behavior without owning a separate
 special durable atomic.
 
 `Slider` is a header-only, statically bound mechanics template. Its parameters
-are the WAL view source, upstream progress reader, own progress writer, concrete
+are the view source, upstream progress reader, own progress writer, concrete
 module, acquire policy, and publish policy. One call processes at most the
 range allowed by one upstream observation. The caller owns repeated execution
 and all waiting or scheduling.
@@ -37,7 +37,7 @@ allowing later batch policies to complete module work before publication.
 The first concrete static composition uses `NoOpModule`:
 
 ```text
-producer -> WalCore::head -> Slider<NoOpModule> -> Progress -> reclaimer -> tail
+producer -> RecordTape::head -> Slider<NoOpModule> -> Progress -> reclaimer -> tail
 ```
 
 The slider publishes its `Progress`; after the synchronous slider call retires
@@ -45,7 +45,7 @@ all borrowed views, the composition reads that frontier and advances `tail`.
 These are distinct operations. If the composition does not run the slider or
 does not reclaim, the bounded producer eventually observes `Full`.
 
-`WalCore::Storage` owns one aligned allocation. It implements exactly four lifecycle and
+`RecordTape::Storage` owns one aligned allocation. It implements exactly four lifecycle and
 addressing responsibilities:
 
 ```text
@@ -54,7 +54,7 @@ initialize/allocate -> warm/touch -> block_at_slot(slot) -> release
 
 It does not implement frontier policy or persistence.
 
-`WalCore` keeps absolute `tail` and `head` boundaries. The producer keeps a
+`RecordTape` keeps absolute `tail` and `head` boundaries. The producer keeps a
 cached head slot for its sequential hot path. Absolute view access derives the
 slot only after validating the position. Reclamation publishes an exclusive
 absolute boundary and needs no slot cursor.
@@ -99,7 +99,7 @@ again; it never repairs, skips, or resynchronizes around corruption.
 
 ## Operation Walkthrough
 
-`WalCore::try_publish()` validates the call, uses the block at `head`, fills it,
+`RecordTape::try_publish()` validates the call, uses the block at `head`, fills it,
 publishes `head + 1`, and returns the derived physical sequence.
 
 The compatibility `advance_durable()` sets the persistence slider's bounded
@@ -109,12 +109,12 @@ publish policy requests one sync and permits publication of the range end as
 `durable` only after success.
 
 The compatibility `try_consume()` obtains the readable block at `tail`, copies
-it to caller memory, calls core reclamation with `tail + 1`, and returns the
+it to caller memory, calls `RecordTape::reclaim()` with `tail + 1`, and returns the
 physical sequence.
 
 ## Frontier Layout
 
-Each core boundary and slider `Progress` frontier is stored in its own
+Each `RecordTape` boundary and slider `Progress` frontier is stored in its own
 explicitly padded 64-byte aligned object.
 The layout removes false sharing caused by unrelated owners writing `tail`,
 `durable`, and `head` in one cache line.

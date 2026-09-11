@@ -1,8 +1,8 @@
 # WAL Invariants
 
-## WAL Core Frontier Order
+## RecordTape Frontier Order
 
-The WAL core intrinsically owns only two monotonic absolute zero-based
+`RecordTape` intrinsically owns only two monotonic absolute zero-based
 boundaries:
 
 ```text
@@ -18,7 +18,7 @@ head - tail <= capacity
 - The composition advances `tail` only after every mandatory reader has
   finished the reclaimed positions.
 
-The core contains no `durable` frontier, file writer, or persistence failure
+`RecordTape` contains no `durable` frontier, file writer, or persistence failure
 state.
 
 ## Slider Progress
@@ -136,7 +136,7 @@ No frontier operation uses `seq_cst`.
   backlog is consumed, then releases resources and returns `IoError`.
 
 These persistence failure rules belong to the compatibility composition.
-`PersistenceModule` owns its terminal failure state; `WalCore` remains unaware
+`PersistenceModule` owns its terminal failure state; `RecordTape` remains unaware
 of it. Any direct composition with mandatory persistence must stop its producer
 after observing that failure.
 

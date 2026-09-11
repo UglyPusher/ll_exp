@@ -63,7 +63,7 @@ struct ExpectedSnapshot {
 }
 
 [[nodiscard]] bool downstream_ahead_of_upstream_is_rejected() noexcept {
-  wal::WalCore source;
+  wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 2,
                     wal::default_alignment, first_sequence})
            .ok()) {
@@ -89,7 +89,7 @@ struct ExpectedSnapshot {
 }
 
 [[nodiscard]] bool premature_tail_breaks_last_mandatory_stage() noexcept {
-  wal::WalCore source;
+  wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 4,
                     wal::default_alignment, first_sequence})
            .ok()) {
@@ -103,7 +103,7 @@ struct ExpectedSnapshot {
     }
   }
 
-  wal::WalHeadProgress head(source);
+  wal::RecordTapeHeadProgress head(source);
   wal::Progress hash_frontier;
   wal::Progress bit_frontier;
   snapshot_demo::HashChainModule hash;
@@ -170,7 +170,7 @@ random_snapshot_positions(wal::Position record_count) {
   std::filesystem::remove_all(root);
   std::filesystem::remove(wal_path);
 
-  wal::WalCore source;
+  wal::RecordTape source;
   wal::PersistenceModule persistence;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 32,
                     wal::default_alignment, first_sequence})
@@ -188,7 +188,7 @@ random_snapshot_positions(wal::Position record_count) {
     return false;
   }
 
-  wal::WalHeadProgress head(source);
+  wal::RecordTapeHeadProgress head(source);
   wal::Progress durable;
   wal::Progress hash_frontier;
   wal::Progress bit_frontier;

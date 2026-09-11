@@ -1,6 +1,6 @@
 add_library(fexma_wal STATIC
   src/config.cpp
-  src/core.cpp
+  src/record_tape.cpp
   src/persistence.cpp
   src/physical_wal_file.cpp
   src/reader.cpp
@@ -61,10 +61,10 @@ target_link_libraries(test_wal_position_view PRIVATE fexma::wal)
 fexma_wal_apply_warnings(test_wal_position_view)
 add_test(NAME test_wal_position_view COMMAND test_wal_position_view)
 
-add_executable(test_wal_core tests/test_wal_core.cpp)
-target_link_libraries(test_wal_core PRIVATE fexma::wal)
-fexma_wal_apply_warnings(test_wal_core)
-add_test(NAME test_wal_core COMMAND test_wal_core)
+add_executable(test_record_tape tests/test_record_tape.cpp)
+target_link_libraries(test_record_tape PRIVATE fexma::wal)
+fexma_wal_apply_warnings(test_record_tape)
+add_test(NAME test_record_tape COMMAND test_record_tape)
 
 add_executable(test_wal_slider tests/test_wal_slider.cpp)
 target_link_libraries(test_wal_slider PRIVATE fexma::wal)

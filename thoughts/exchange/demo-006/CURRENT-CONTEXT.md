@@ -20,15 +20,15 @@ This is an implementation working note. It does not replace FTTh ADRs.
 Steps 1 through 5 now provide this static runtime structure:
 
 ```text
-WalCore::head -> PersistenceSlider -> DurableF
+RecordTape::head -> PersistenceSlider -> DurableF
                        |
                        v
               PersistenceModule
 
-WalCore::tail <- composition reclaimer <- downstream sliders
+RecordTape::tail <- composition reclaimer <- downstream sliders
 ```
 
-`WalCore` has independent runtime lifecycle and no path, physical writer,
+`RecordTape` has independent runtime lifecycle and no path, physical writer,
 durable frontier, or persistence failure state. `PersistenceModule` has an
 independent physical lifecycle, accepts immutable `RecordView` values, and
 owns append/sync failure. Runtime capacity is absent from its
@@ -36,18 +36,18 @@ owns append/sync failure. Runtime capacity is absent from its
 
 Persistence is now attached through the generic slider. `PersistenceSlider`
 uses a bounded acquire policy, calls `PersistenceModule::process()` for every
-immutable WAL position in the selected batch, performs one sync through its
+immutable `RecordTape` position in the selected batch, performs one sync through its
 publish policy, and publishes `DurableF` only after success.
 
 The public `Wal` class remains as a compatibility facade. It statically owns
-`WalCore`, `PersistenceModule`, `PersistenceSlider`, and the slider's durable
+`RecordTape`, `PersistenceModule`, `PersistenceSlider`, and the slider's durable
 `Progress`, preserving the previous three-role API and failure behavior. The
 old special `durable_frontier_` no longer exists.
 
 Generic slider mechanics are now available in
 `exchange/wal/include/fexma/wal/slider.hpp`.
 `Progress` separates read-only and writer capabilities over one exclusive-end
-frontier. `Slider` reads one upstream frontier, obtains immutable absolute WAL
+frontier. `Slider` reads one upstream frontier, obtains immutable absolute `RecordTape`
 views, synchronously invokes one statically bound module, and exclusively
 publishes its own frontier according to compile-time acquire and publish
 policies. Repeated execution, waiting, reclamation, and lifecycle remain
@@ -56,7 +56,7 @@ composition responsibilities.
 The first bare composition is now implemented and tested as:
 
 ```text
-WalCore::head -> NoOpSlider -> NoOpF -> composition reclaimer -> tail
+RecordTape::head -> NoOpSlider -> NoOpF -> composition reclaimer -> tail
 ```
 
 `NoOpModule` supplies the minimal successful module. Publishing `NoOpF` and
@@ -128,7 +128,7 @@ frontier beyond its upstream is rejected without state change, and that
 reclaiming through `HashF` rather than the last mandatory `BitF` makes the
 unfinished bit position observably reclaimed. The complete tract publishes and
 loads every snapshot from both fixed and reproducibly randomized schedules while
-preserving `tail <= BitF <= HashF <= DurableF <= head` through WAL wraparound.
+preserving `tail <= BitF <= HashF <= DurableF <= head` through `RecordTape` wraparound.
 
 The final Step 10 stress pass uses a test-only synthetic module with preallocated
 mutable state and immutable capture buffers of 1, 10, 100, and 500 MiB. Its
@@ -173,7 +173,7 @@ Storage::block_at_slot(std::uint32_t slot)
 ```
 
 It is private and slot-based. Public module access now uses
-`WalCore::try_view(Position)`, which validates the absolute position against
+`RecordTape::try_view(Position)`, which validates the absolute position against
 `tail` and `head` before returning immutable payload access.
 
 ### CommandPipeline
@@ -204,7 +204,7 @@ and domain stages are manually embedded in its API.
 
 ## Current target model
 
-The WAL is the common ordered string.
+`RecordTape` is the common ordered record sequence.
 
 It intrinsically owns only two special boundaries:
 
@@ -215,7 +215,7 @@ tail <= retained positions < head
 - `head` publishes the end of produced data;
 - `tail` publishes the end of reclaimed data and permits slot reuse.
 
-Everything else is a module attached to the WAL through its own slider:
+Everything else is a module attached to `RecordTape` through its own slider:
 
 ```text
 head
@@ -234,7 +234,7 @@ tail
 ```
 
 The current monolithic `durable` frontier is therefore not a fundamental third
-WAL boundary. It becomes the published frontier of `PersistenceSlider`.
+`RecordTape` boundary. It becomes the published frontier of `PersistenceSlider`.
 
 For a linear composition:
 
@@ -243,14 +243,14 @@ tail <= BitF <= HashF <= DurableF <= head
 ```
 
 Data does not move from module to module. Every slider addresses the same
-retained WAL position. What moves through the pipeline is permission to process
+retained `RecordTape` position. What moves through the pipeline is permission to process
 that position, expressed by the upstream frontier.
 
 ## Slider relationship
 
 Each slider:
 
-- has read-only access to the WAL;
+- has read-only access to `RecordTape`;
 - has read-only access to the frontier immediately upstream;
 - owns its current position;
 - is the sole writer of its published frontier;
@@ -261,7 +261,7 @@ Each slider:
 Conceptually:
 
 ```cpp
-const Wal& wal;
+const RecordTape& tape;
 const UpstreamProgress& upstream;
 Module& module;
 Position current;
@@ -279,7 +279,7 @@ only its read-only progress interface.
 The slider obtains the complete data object for a position and passes it to the
 module without interpreting its contents.
 
-## WAL position access
+## RecordTape position access
 
 Modules must address an absolute position or physical sequence, never a raw
 ring slot. The mapping remains internal:
@@ -308,7 +308,7 @@ Until then the slot remains retained for all downstream modules.
 
 The first milestone contains:
 
-- the existing WAL as the common ordered string;
+- the existing `RecordTape` as the common ordered record sequence;
 - a persistence slider;
 - `HashChainModule`;
 - `BitAccumulatorModule`;

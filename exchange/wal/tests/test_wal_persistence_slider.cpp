@@ -75,17 +75,17 @@ constexpr PhysicalWalConfig physical_config{
     wal_config.stream_id,              wal_config.epoch_id,
     wal_config.first_sequence,         wal_config.manifest_id};
 
-[[nodiscard]] bool open(WalCore& wal, PersistenceModule& persistence,
+[[nodiscard]] bool open(RecordTape& tape, PersistenceModule& persistence,
                         const std::filesystem::path& path) {
-  return wal.open({wal_config.payload_size, wal_config.capacity,
+  return tape.open({wal_config.payload_size, wal_config.capacity,
                    wal_config.alignment, wal_config.first_sequence})
              .ok() &&
          persistence.open(path, physical_config).ok();
 }
 
-[[nodiscard]] bool publish(WalCore& wal, std::uint64_t value) noexcept {
+[[nodiscard]] bool publish(RecordTape& tape, std::uint64_t value) noexcept {
   const Payload bytes = payload(value);
-  return wal.try_publish(std::span<const std::byte>{bytes}).ok();
+  return tape.try_publish(std::span<const std::byte>{bytes}).ok();
 }
 
 [[nodiscard]] bool publish(Wal& wal, std::uint64_t value) noexcept {
@@ -97,21 +97,21 @@ constexpr PhysicalWalConfig physical_config{
   const auto path = test_path("fexma_wal_persistence_slider_batches.wal");
   std::filesystem::remove(path);
 
-  WalCore wal;
+  RecordTape tape;
   PersistenceModule persistence;
-  if (!open(wal, persistence, path)) return false;
+  if (!open(tape, persistence, path)) return false;
   for (std::uint64_t value = 0; value < 5; ++value) {
-    if (!publish(wal, value)) return false;
+    if (!publish(tape, value)) return false;
   }
 
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress durable;
   PersistenceSlider persistence_slider(
-      wal, head, durable.writer(), persistence, 0, BoundedRangeAcquire{},
+      tape, head, durable.writer(), persistence, 0, BoundedRangeAcquire{},
       PersistenceBatchPublish{});
   Progress no_op_frontier;
   NoOpModule no_op;
-  Slider no_op_slider(wal, durable.reader(), no_op_frontier.writer(), no_op);
+  Slider no_op_slider(tape, durable.reader(), no_op_frontier.writer(), no_op);
 
   detail::PhysicalWalFileTestControl control{};
   PhysicalControlGuard guard(control);
@@ -128,7 +128,7 @@ constexpr PhysicalWalConfig physical_config{
       durable.reader().acquire() != 2 || control.append_calls != 2 ||
       control.sync_calls != 1 || !no_op_slider.process_available().ok() ||
       no_op_frontier.reader().acquire() != 2 ||
-      wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
     return false;
   }
 
@@ -137,7 +137,7 @@ constexpr PhysicalWalConfig physical_config{
       durable.reader().acquire() != 4 || control.append_calls != 4 ||
       control.sync_calls != 2 || !no_op_slider.process_available().ok() ||
       no_op_frontier.reader().acquire() != 4 ||
-      wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
     return false;
   }
 
@@ -149,13 +149,13 @@ constexpr PhysicalWalConfig physical_config{
       control.append_calls != 5 || control.sync_calls != 3 ||
       !no_op_slider.process_available().ok() ||
       no_op_frontier.reader().acquire() != 5 ||
-      wal.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok ||
-      wal.tail() != 5 || wal.head() != 5) {
+      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok ||
+      tape.tail() != 5 || tape.head() != 5) {
     return false;
   }
 
   if (!persistence.close()) return false;
-  wal.close();
+  tape.close();
 
   WalReader reader;
   if (!reader.open(path, wal_config).ok()) return false;
@@ -181,14 +181,14 @@ constexpr PhysicalWalConfig physical_config{
   const auto path = test_path("fexma_wal_persistence_slider_append_fail.wal");
   std::filesystem::remove(path);
 
-  WalCore wal;
+  RecordTape tape;
   PersistenceModule persistence;
-  if (!open(wal, persistence, path) || !publish(wal, 0) || !publish(wal, 1)) {
+  if (!open(tape, persistence, path) || !publish(tape, 0) || !publish(tape, 1)) {
     return false;
   }
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress durable;
-  PersistenceSlider slider(wal, head, durable.writer(), persistence, 0,
+  PersistenceSlider slider(tape, head, durable.writer(), persistence, 0,
                            BoundedRangeAcquire{2},
                            PersistenceBatchPublish{});
 
@@ -201,7 +201,7 @@ constexpr PhysicalWalConfig physical_config{
                      durable.reader().acquire() == 0 && persistence.failed() &&
                      control.append_calls == 1 && control.sync_calls == 0;
   (void)persistence.close();
-  wal.close();
+  tape.close();
   std::filesystem::remove(path);
   return valid;
 }
@@ -210,25 +210,25 @@ constexpr PhysicalWalConfig physical_config{
   const auto path = test_path("fexma_wal_persistence_slider_sync_fail.wal");
   std::filesystem::remove(path);
 
-  WalCore wal;
+  RecordTape tape;
   PersistenceModule persistence;
-  if (!open(wal, persistence, path) || !publish(wal, 0)) return false;
+  if (!open(tape, persistence, path) || !publish(tape, 0)) return false;
 
-  WalHeadProgress head(wal);
+  RecordTapeHeadProgress head(tape);
   Progress durable;
   PersistenceSlider persistence_slider(
-      wal, head, durable.writer(), persistence, 0, BoundedRangeAcquire{1},
+      tape, head, durable.writer(), persistence, 0, BoundedRangeAcquire{1},
       PersistenceBatchPublish{});
   Progress no_op_frontier;
   NoOpModule no_op;
-  Slider no_op_slider(wal, durable.reader(), no_op_frontier.writer(), no_op);
+  Slider no_op_slider(tape, durable.reader(), no_op_frontier.writer(), no_op);
 
   detail::PhysicalWalFileTestControl initial_control{};
   {
     PhysicalControlGuard guard(initial_control);
     if (!persistence_slider.process_available().ok()) return false;
   }
-  if (durable.reader().acquire() != 1 || !publish(wal, 1) || !publish(wal, 2)) {
+  if (durable.reader().acquire() != 1 || !publish(tape, 1) || !publish(tape, 2)) {
     return false;
   }
 
@@ -252,11 +252,11 @@ constexpr PhysicalWalConfig physical_config{
   const bool valid = drained.ok() && drained.processed_count == 1 &&
                      hidden.status == SliderStatus::Empty &&
                      no_op_frontier.reader().acquire() == 1 &&
-                     wal.reclaim(no_op_frontier.reader().acquire()) ==
+                     tape.reclaim(no_op_frontier.reader().acquire()) ==
                          ReclaimStatus::Ok &&
-                     wal.tail() == 1 && wal.head() == 3;
+                     tape.tail() == 1 && tape.head() == 3;
   (void)persistence.close();
-  wal.close();
+  tape.close();
   std::filesystem::remove(path);
   return valid;
 }

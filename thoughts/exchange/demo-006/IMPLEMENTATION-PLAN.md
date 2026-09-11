@@ -22,7 +22,7 @@ preserving a working, testable system after every structural change.
 The implementation order is:
 
 ```text
-WAL core
+RecordTape
 -> generic slider mechanics
 -> persistence as a slider
 -> two stateful modules
@@ -94,9 +94,9 @@ Both readers finish before reclamation; this verifies the documented retention
 contract, not safety of uncoordinated readers. Other test suites, benchmarks,
 additional toolchains, and sanitizers were not run.
 
-## Step 1 — separate the WAL string from persistence
+## Step 1 — separate `RecordTape` from persistence
 
-Retain in the WAL core:
+Retain in `RecordTape`:
 
 - bounded storage;
 - `head`;
@@ -107,7 +107,7 @@ Retain in the WAL core:
 - reclamation and capacity checks;
 - producer sequence exhaustion handling.
 
-Move out of the WAL core:
+Move out of `RecordTape`:
 
 - `durable_frontier_`;
 - `durable_slot_`;
@@ -127,7 +127,7 @@ Do not discard:
 Split lifecycle conceptually:
 
 ```cpp
-wal.open(runtime_config);
+tape.open(runtime_config);
 persistence.open(path, physical_config);
 ```
 
@@ -143,21 +143,21 @@ Step 1 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
 
 Implemented:
 
-- `WalCore` owns only warmed bounded storage, `head`, `tail`, producer
+- `RecordTape` owns only warmed bounded storage, `head`, `tail`, producer
   publication, absolute-position views, reclamation, and producer sequence
   exhaustion;
-- `WalRuntimeConfig` contains only runtime storage and sequence fields;
+- `RecordTapeConfig` contains only runtime storage and sequence fields;
 - `PersistenceModule` owns the selected physical writer and terminal I/O
   failure state;
 - `PhysicalWalConfig` contains physical layout and persisted identity without
   runtime capacity;
-- `Wal` remains a transitional compatibility composition over `WalCore` and
+- `Wal` remains a transitional compatibility composition over `RecordTape` and
   `PersistenceModule`, preserving its existing three-role API and failure and
   lifecycle behavior;
 - at Step 1 completion, `durable_frontier_` remained only in that compatibility
   composition; Step 5 subsequently replaced it with `PersistenceSlider`'s
   ordinary `Progress` frontier;
-- `durable_slot_` was removed; compatibility persistence reads the core by
+- `durable_slot_` was removed; compatibility persistence reads `RecordTape` by
   absolute position;
 - shared `valid_config()` logic moved to `config.cpp` without changing the
   physical configuration contract.
@@ -167,17 +167,17 @@ Release:
 
 - `cmake --preset windows-msvc`: passed;
 - `cmake --build --preset windows-msvc-release`: passed for the whole branch;
-- `ctest --preset windows-msvc-release -R "^test_wal_(core|frontier_ring|position_view|reader|recovery)$"`:
+- `ctest --preset windows-msvc-release -R "^(test_record_tape|test_wal_(frontier_ring|position_view|reader|recovery))$"`:
   5/5 passed, 3.50 seconds total;
 - individual times: frontier ring 2.63 s, reader 0.25 s, recovery 0.18 s,
-  position view 0.34 s, core 0.07 s.
+  position view 0.34 s, RecordTape 0.07 s.
 - `ctest --preset windows-msvc-release`: 16/16 registered tests passed,
   6.79 seconds total, including `test_matcher_wal_stream` and the unchanged
   `CommandPipeline` tests.
 
-`test_wal_core` verifies persistence-free open, bounded publish/view/reclaim,
+`test_record_tape` verifies persistence-free open, bounded publish/view/reclaim,
 invalid reclamation, wraparound, sequence exhaustion, concurrent producer and
-reclaimer operation, independent core/persistence lifecycles, and compatibility
+reclaimer operation, independent `RecordTape`/persistence lifecycles, and compatibility
 of the resulting physical file with the unchanged `WalReader`.
 
 The existing physical format, physical adapter implementation, reader, scanner,
@@ -212,7 +212,7 @@ Gate:
 
 Step 2 status: IMPLEMENTED in Stage 1; independent review remains pending.
 
-The absolute-position API is `WalCore::try_view(Position)`. It returns an
+The absolute-position API is `RecordTape::try_view(Position)`. It returns an
 immutable `RecordView`, rejects reclaimed and unpublished identities before
 slot mapping, and documents caller-owned retention through reclamation. Its
 contract and verification are recorded under the approved first patch above.
@@ -222,7 +222,7 @@ contract and verification are recorded under the approved first patch above.
 Implement one common stage-mechanics template parameterized by:
 
 ```text
-WAL/view
+RecordTape/view
 UpstreamProgress
 OwnProgress
 Module
@@ -234,7 +234,7 @@ The slider must:
 
 1. observe the upstream frontier;
 2. obtain an allowed consecutive range;
-3. obtain each full WAL data object;
+3. obtain each full RecordTape record;
 4. synchronously invoke its concrete module;
 5. advance its current position only after successful processing;
 6. publish its own frontier according to `PublishPolicy`.
@@ -258,7 +258,7 @@ Implemented in `exchange/wal/include/fexma/wal/slider.hpp`:
 
 - `Progress` owns one cache-line-isolated atomic exclusive-end frontier and
   exposes distinct embedded `Reader` and `Writer` capabilities;
-- `WalHeadProgress` adapts the core head as a read-only upstream frontier;
+- `RecordTapeHeadProgress` adapts the `RecordTape` head as a read-only upstream frontier;
 - `Slider` is parameterized by view source, upstream progress, own progress,
   module, acquire policy, and publish policy;
 - `AvailableRangeAcquire` selects the consecutive range visible in one
@@ -281,7 +281,7 @@ Release:
 
 - `cmake --preset windows-msvc`: passed;
 - `cmake --build --preset windows-msvc-release`: passed for the whole branch;
-- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|frontier_ring|position_view|reader|recovery)$"`:
+- `ctest --preset windows-msvc-release -R "^(test_record_tape|test_wal_(slider|frontier_ring|position_view|reader|recovery))$"`:
   6/6 passed, 3.86 seconds total;
 - `ctest --preset windows-msvc-release`: 17/17 registered tests passed,
   7.05 seconds total.
@@ -327,8 +327,8 @@ Implemented:
 
 - `NoOpModule` is a trivial statically bound module that completes every full
   `RecordView` synchronously;
-- the bare composition wires `WalHeadProgress`, `Slider<NoOpModule>`, its own
-  `Progress`, and composition-owned `WalCore::reclaim()` without another queue
+- the bare composition wires `RecordTapeHeadProgress`, `Slider<NoOpModule>`, its own
+  `Progress`, and composition-owned `RecordTape::reclaim()` without another queue
   or payload copy;
 - publication of the NoOp frontier and advancement of `tail` are distinct;
   only the composition reclaims after the slider invocation and its borrowed
@@ -351,7 +351,7 @@ Release:
 - `cmake --preset windows-msvc`: passed;
 - `cmake --build --preset windows-msvc-release`: passed for the whole branch;
 - `test_wal_bare_pipeline` passed 10 consecutive runs;
-- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|bare_pipeline|frontier_ring|position_view|reader|recovery)$"`:
+- `ctest --preset windows-msvc-release -R "^(test_record_tape|test_wal_(slider|bare_pipeline|frontier_ring|position_view|reader|recovery))$"`:
   7/7 passed, 3.58 seconds total;
 - `ctest --preset windows-msvc-release`: 18/18 registered tests passed,
   5.62 seconds total.
@@ -378,7 +378,7 @@ Producer
 Persistence processing:
 
 1. obtain positions from `[current, head)` using exclusive-end frontiers;
-2. append the corresponding immutable WAL data;
+2. append the corresponding immutable RecordTape record;
 3. complete the selected batch;
 4. perform one physical synchronization;
 5. publish the persistence frontier only after successful sync.
@@ -414,7 +414,7 @@ Implemented:
   sync after a complete non-empty range, and authorizes publication only after
   successful sync;
 - `PersistenceSlider` is a static specialization of the generic `Slider` over
-  `WalCore`, `WalHeadProgress`, `PersistenceModule`, and those two policies;
+  `RecordTape`, `RecordTapeHeadProgress`, `PersistenceModule`, and those two policies;
 - `Wal` now statically owns that slider and its ordinary durable `Progress`;
   the special `durable_frontier_` implementation was removed while the legacy
   public API and statuses were preserved;
@@ -442,7 +442,7 @@ Release:
 
 - `cmake --preset windows-msvc`: passed;
 - `cmake --build --preset windows-msvc-release`: passed for the whole branch;
-- `ctest --preset windows-msvc-release -R "^test_wal_(core|slider|bare_pipeline|persistence_slider|frontier_ring|position_view|reader|recovery)$"`:
+- `ctest --preset windows-msvc-release -R "^(test_record_tape|test_wal_(slider|bare_pipeline|persistence_slider|frontier_ring|position_view|reader|recovery))$"`:
   8/8 passed, 3.66 seconds total;
 - `ctest --preset windows-msvc-release`: 19/19 registered tests passed,
   6.47 seconds total.
@@ -478,7 +478,7 @@ Tests:
 
 - `tail <= BitF <= HashF <= DurableF <= head`;
 - BitAccumulator never passes HashChain;
-- both modules process identical ordered WAL positions;
+- both modules process identical ordered RecordTape positions;
 - changed payload changes terminal state;
 - skipped, repeated, or reordered position changes terminal state;
 - different stage speeds preserve correctness;
@@ -487,7 +487,7 @@ Tests:
 Gate:
 
 ```text
-Both modules deterministically reach M over the same WAL while occupying
+Both modules deterministically reach M over the same RecordTape while occupying
 different pipeline positions during execution.
 ```
 
@@ -569,7 +569,7 @@ Implemented in `exchange/snapshot_demo`:
   `SaveSnapshot` without changing the physical WAL record format;
 - a snapshot generation is the absolute position `N` carried by its
   `SaveSnapshot` record, and modules reject a command whose encoded generation
-  differs from its WAL position;
+  differs from its RecordTape position;
 - both stateful modules apply their normal transition through position `N`,
   increment their exclusive `processed_end` to `N + 1`, and only then create an
   immutable capture containing generation, position, physical sequence, and

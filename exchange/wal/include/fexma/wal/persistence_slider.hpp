@@ -2,7 +2,7 @@
 
 /**
  * @file persistence_slider.hpp
- * @brief Static persistence stage over the common retained WAL string.
+ * @brief Static persistence stage over a RecordTape.
  */
 
 #include <fexma/wal/persistence.hpp>
@@ -26,7 +26,7 @@ public:
 };
 
 using PersistenceSlider =
-    Slider<WalCore, WalHeadProgress, Progress::Writer, PersistenceModule,
+    Slider<RecordTape, RecordTapeHeadProgress, Progress::Writer, PersistenceModule,
            BoundedRangeAcquire, PersistenceBatchPublish>;
 
 static_assert(SliderModule<PersistenceModule>);

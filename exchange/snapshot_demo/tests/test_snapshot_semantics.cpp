@@ -155,7 +155,7 @@ template <class Module, class Capture>
 }
 
 [[nodiscard]] bool one_generation_backpressures_next_snapshot() noexcept {
-  wal::WalCore source;
+  wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(
                         snapshot_demo::kApplicationPayloadSize),
                     8, wal::default_alignment, 50})
@@ -172,7 +172,7 @@ template <class Module, class Capture>
     return false;
   }
 
-  wal::WalHeadProgress head(source);
+  wal::RecordTapeHeadProgress head(source);
   wal::Progress hash_frontier;
   wal::Progress bit_frontier;
   snapshot_demo::HashChainModule hash;

@@ -2,10 +2,10 @@
 
 /**
  * @file wal.hpp
- * @brief Compatibility composition of the WAL core and persistence module.
+ * @brief Compatibility composition of RecordTape and persistence module.
  */
 
-#include <fexma/wal/core.hpp>
+#include <fexma/wal/record_tape.hpp>
 #include <fexma/wal/format.hpp>
 #include <fexma/wal/persistence_slider.hpp>
 
@@ -23,7 +23,7 @@ namespace fexma::wal {
 #pragma warning(disable : 4324) // Intentional cache-line frontier isolation.
 #endif
 
-// Transitional compatibility facade. WalCore owns the runtime string,
+// Transitional compatibility facade. RecordTape owns retained runtime records,
 // PersistenceModule owns physical I/O, and this composition preserves the
 // original three-role API until generic slider mechanics replace it.
 class Wal final {
@@ -54,12 +54,12 @@ public:
 private:
   void release_resources() noexcept;
 
-  WalCore core_{};
+  RecordTape tape_{};
   PersistenceModule persistence_{};
-  WalHeadProgress head_progress_{core_};
+  RecordTapeHeadProgress head_progress_{tape_};
   Progress durable_progress_{};
   PersistenceSlider persistence_slider_{
-      core_, head_progress_, durable_progress_.writer(), persistence_, 0,
+      tape_, head_progress_, durable_progress_.writer(), persistence_, 0,
       BoundedRangeAcquire{}, PersistenceBatchPublish{}};
   WalConfig config_{};
   std::atomic<bool> open_{false};

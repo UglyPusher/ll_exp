@@ -2,12 +2,12 @@
 
 ## Public API
 
-The runtime WAL string is independent of persistence:
+`RecordTape` is independent of persistence:
 
 ```cpp
-class WalCore {
+class RecordTape {
 public:
-  OpenResult open(const WalRuntimeConfig& config) noexcept;
+  OpenResult open(const RecordTapeConfig& config) noexcept;
   PublishResult try_publish(std::span<const std::byte> payload) noexcept;
   AccessResult try_view(Position position) const noexcept;
   ReclaimStatus reclaim(Position end) noexcept;
@@ -29,17 +29,17 @@ public:
 };
 
 using PersistenceSlider =
-    Slider<WalCore, WalHeadProgress, Progress::Writer, PersistenceModule,
+    Slider<RecordTape, RecordTapeHeadProgress, Progress::Writer, PersistenceModule,
            BoundedRangeAcquire, PersistenceBatchPublish>;
 ```
 
-`WalCore` owns bounded warmed storage and the intrinsic `head` and `tail`
+`RecordTape` owns bounded warmed storage and the intrinsic `head` and `tail`
 boundaries. It performs no file operation and has no durable boundary or
 persistence failure state. `reclaim(end)` accepts only monotonic exclusive
 boundaries in `[tail, head]`; the composition is responsible for proving that
 all mandatory readers have finished below `end`.
 
-`WalRuntimeConfig` contains runtime storage and sequence fields only.
+`RecordTapeConfig` contains runtime storage and sequence fields only.
 `PhysicalWalConfig` contains persisted identity and physical layout fields and
 does not contain runtime capacity. `PersistenceModule` owns the selected live
 physical writer and its terminal failure state. It does not own or publish a
@@ -51,8 +51,8 @@ Generic stage mechanics are provided by `slider.hpp`:
 
 ```cpp
 Progress progress(initial_exclusive_end);
-WalHeadProgress upstream(wal);
-Slider slider(wal, upstream, progress.writer(), module);
+RecordTapeHeadProgress upstream(tape);
+Slider slider(tape, upstream, progress.writer(), module);
 
 SliderResult result = slider.process_available();
 Position visible_downstream = progress.reader().acquire();
@@ -90,12 +90,13 @@ The slider owns no thread, scheduling loop, wait/spin/yield behavior, runtime
 registry, virtual dispatch, neighbor type, persistence operation, or snapshot
 interpretation. Calling and retry cadence belongs to the composition. A
 `ViewUnavailable` result indicates a violated upstream/retention composition
-contract or lifecycle transition; the slider does not reclaim WAL storage.
+contract or lifecycle transition; the slider does not reclaim `RecordTape`
+storage.
 
 `NoOpModule` accepts every complete `RecordView` without changing application
 state. It exists as the minimal module for composition tests. In the linear
 bare pipeline, the composition may call
-`wal.reclaim(no_op_progress.reader().acquire())` only after the slider call has
+`tape.reclaim(no_op_progress.reader().acquire())` only after the slider call has
 returned and all views from the reclaimed range are retired. Publishing the
 module frontier alone does not release storage or remove producer backpressure.
 
@@ -122,7 +123,7 @@ public:
 ```
 
 `snapshot()` is diagnostic. Its frontiers are not mutable controls.
-`Wal` statically composes one `WalCore`, one `PersistenceModule`, one
+`Wal` statically composes one `RecordTape`, one `PersistenceModule`, one
 `PersistenceSlider`, and its `Progress` frontier. It preserves the existing
 three-role behavior and statuses; new tract code may wire that durable progress
 reader directly to its next slider.
@@ -175,11 +176,11 @@ Every complete record in the validated post-crash trusted prefix is part of
 history regardless of whether a client received an acknowledgement. Batches
 are live-writer append-and-sync units only; the physical format has no batch
 commit records or commit markers. Client retry and ingress idempotency are
-outside the WAL tail contract.
+outside the `RecordTape` tail contract.
 
 ## Roles
 
-For `WalCore`, one producer owns `try_publish()` and one composition reclaimer
+For `RecordTape`, one producer owns `try_publish()` and one composition reclaimer
 owns `reclaim()`. Coordinated read-only users may call `try_view()` while the
 retention precondition is maintained. `open()` and `close()` require all these
 roles to be stopped.
@@ -215,7 +216,7 @@ access caller memory after return.
 ## Retained Position View
 
 `try_view(position)` is a non-blocking, allocation-free borrowed read of the
-runtime WAL. `Position` is an absolute zero-based position, never a slot number
+`RecordTape`. `Position` is an absolute zero-based position, never a slot number
 or a physical sequence. The result contains `ViewStatus` and a `RecordView`
 with `position`, physical `sequence`, and the complete fixed-size
 `std::span<const std::byte> payload`. It does not copy payload bytes or move any
@@ -224,7 +225,7 @@ stage pockets.
 
 Status checks precede address calculation:
 
-- `Closed`: the WAL is not open;
+- `Closed`: the `RecordTape` is not open;
 - `Reclaimed`: `position < tail`;
 - `Unpublished`: `position >= head`;
 - `Ok`: `tail <= position < head`.
@@ -246,7 +247,7 @@ exclusive frontier after position p p + 1
 exclusive frontier after sequence N N - first_sequence + 1
 ```
 
-The last conversion applies to a sequence in this WAL. Publication checks
+The last conversion applies to a sequence in this `RecordTape`. Publication checks
 sequence exhaustion, so a successfully viewed position has a representable
 physical sequence. Only the implementation maps `position % capacity` to a
 block. A reclaimed absolute identity cannot be used to read its replacement
@@ -280,12 +281,12 @@ sequence `first_sequence + position`.
 It returns `Full` when `head - tail == capacity`. Success does not mean the
 payload is durable or visible to the consumer.
 
-The persistence-free `WalCore` does not infer downstream failure. A composition
+The persistence-free `RecordTape` does not infer downstream failure. A composition
 must stop production when its mandatory persistence module fails. The
 compatibility `Wal` preserves this rule: after a durability I/O failure,
 producer calls return `IoError` without publishing more data.
 
-Exhausting the physical sequence domain puts the WAL into a distinct
+Exhausting the physical sequence domain puts `RecordTape` into a distinct
 fail-closed `SequenceExhausted` producer state; no wrapped sequence is
 published. The durability writer and consumer may finish the already published
 valid prefix before close reports `SequenceExhausted`.

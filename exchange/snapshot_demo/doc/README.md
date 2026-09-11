@@ -12,8 +12,8 @@ plans.
 
 ## Назначение
 
-Demo 006 показывает, как построить snapshot-приложение поверх одной
-ограниченной WAL-струны. Несколько модулей последовательно обрабатывают одни и
+Demo 006 показывает, как построить snapshot-приложение поверх одного
+ограниченного `RecordTape`. Несколько модулей последовательно обрабатывают одни и
 те же записи, публикуют собственный прогресс и совместно создают согласованный
 snapshot состояния приложения.
 
@@ -26,7 +26,7 @@ snapshot состояния приложения.
 
 ```mermaid
 flowchart LR
-    P[Producer] --> H[WalCore head]
+    P[Producer] --> H[RecordTape head]
     H --> PS[PersistenceSlider]
     PS --> DF[DurableF]
     DF --> HS[HashChainSlider]
@@ -34,7 +34,7 @@ flowchart LR
     HF --> BS[BitAccumulatorSlider]
     BS --> BF[BitF]
     BF --> R[Composition reclaimer]
-    R --> T[WalCore tail]
+    R --> T[RecordTape tail]
 ```
 
 Для него всегда должен выполняться инвариант:
@@ -45,24 +45,24 @@ tail <= BitF <= HashF <= DurableF <= head
 
 ## Основная идея
 
-WAL одновременно служит ограниченным runtime-хранилищем и общей упорядоченной
-строкой данных. У неё есть только две собственные специальные границы:
+`RecordTape` служит ограниченным runtime-хранилищем общей упорядоченной
+последовательности records. У него есть только две собственные специальные границы:
 
 - `head` — исключительная граница опубликованных producer-ом позиций;
 - `tail` — исключительная граница освобождённых позиций, память которых можно
   использовать повторно.
 
 `DurableF`, `HashF` и `BitF` принадлежат соответствующим слайдерам. Они не
-являются внутренними границами WAL.
+являются внутренними границами `RecordTape`.
 
-Каждая запись хранится в WAL один раз. `PersistenceSlider`, `HashChainSlider` и
+Каждая запись хранится в `RecordTape` один раз. `PersistenceSlider`, `HashChainSlider` и
 `BitAccumulatorSlider` получают read-only view одной и той же абсолютной
 позиции. Между стадиями нет копий записи, дополнительных очередей и передачи
 владения payload.
 
 ```mermaid
 flowchart TB
-    W[WAL position N] --> PV[immutable RecordView]
+    W[RecordTape position N] --> PV[immutable RecordView]
     PV --> PM[PersistenceModule]
     PV --> HM[HashChainModule]
     PV --> BM[BitAccumulatorModule]
@@ -72,7 +72,7 @@ flowchart TB
 диапазон `[0, X)`. После успешной обработки позиции `N` слайдер может
 опубликовать `N + 1`.
 
-Слайдер читает WAL и upstream-фронтир, владеет своей текущей абсолютной позицией
+Слайдер читает `RecordTape` и upstream-фронтир, владеет своей текущей абсолютной позицией
 и единолично публикует собственный фронтир. Он вызывает конкретный модуль
 синхронно и не содержит worker thread, polling loop, ожидание, файловый snapshot
 I/O или runtime registry.
@@ -86,7 +86,7 @@ I/O или runtime registry.
 
 | Понятие | Назначение |
 |---|---|
-| Абсолютная позиция | Логический адрес записи в общей WAL-струне |
+| Абсолютная позиция | Логический адрес записи в `RecordTape` |
 | Физическая sequence | Идентификатор записи в persisted WAL |
 | Ring slot | Внутреннее место хранения `position % capacity` |
 
@@ -138,7 +138,7 @@ hash_slider.process_available();
 bit_slider.process_available();
 
 // После завершения всех пользователей заимствованных view:
-wal.reclaim(bit_frontier.reader().acquire());
+tape.reclaim(bit_frontier.reader().acquire());
 ```
 
 Порядок и частота вызовов являются политикой композиции. Стадии могут
@@ -275,9 +275,9 @@ exchange/snapshot_demo/
 └── README.md
 ```
 
-Общие механизмы `WalCore`, `Progress`, `Slider`, `PersistenceModule` и
+Общие механизмы `RecordTape`, `Progress`, `Slider`, `PersistenceModule` и
 `PersistenceSlider` находятся в [`exchange/wal`](../../wal). Snapshot-приложение
-использует их как нижележащий механизм и не дублирует WAL-хранилище.
+использует их как нижележащий механизм и не дублирует хранилище `RecordTape`.
 
 ## Проверяемые свойства
 
@@ -331,5 +331,5 @@ ctest --preset windows-msvc-release -R "^test_snapshot_demo_large_capture$"
 - live restore одновременно с работающими слайдерами;
 - автоматический выбор «последнего» snapshot.
 
-Эти ограничения сохраняют демо небольшим и позволяют отдельно проверить общую
-WAL-струну, владение фронтирами, согласованный capture и bootstrap restore.
+Эти ограничения сохраняют демо небольшим и позволяют отдельно проверить
+`RecordTape`, владение фронтирами, согласованный capture и bootstrap restore.

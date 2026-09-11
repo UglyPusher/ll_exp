@@ -1,9 +1,9 @@
 /**
- * @file core.cpp
- * @brief Bounded in-memory WAL string implementation.
+ * @file record_tape.cpp
+ * @brief Bounded in-memory RecordTape implementation.
  */
 
-#include <fexma/wal/core.hpp>
+#include <fexma/wal/record_tape.hpp>
 
 #include <cstring>
 #include <limits>
@@ -37,7 +37,7 @@ namespace {
 }
 
 [[nodiscard]] bool valid_runtime_config(
-    const WalRuntimeConfig& config) noexcept {
+    const RecordTapeConfig& config) noexcept {
   if (config.payload_size == 0 || config.capacity == 0 ||
       config.alignment < alignof(void*) || config.first_sequence == 0 ||
       (config.alignment & (config.alignment - 1u)) != 0) {
@@ -51,10 +51,10 @@ namespace {
 
 } // namespace
 
-WalCore::Storage::~Storage() { release(); }
+RecordTape::Storage::~Storage() { release(); }
 
-OpenStatus WalCore::Storage::initialize(
-    const WalRuntimeConfig& config) noexcept {
+OpenStatus RecordTape::Storage::initialize(
+    const RecordTapeConfig& config) noexcept {
   std::size_t stride{};
   std::size_t size{};
   if (!checked_align_up(config.payload_size, config.alignment, stride) ||
@@ -77,7 +77,7 @@ OpenStatus WalCore::Storage::initialize(
   return OpenStatus::Ok;
 }
 
-void WalCore::Storage::release() noexcept {
+void RecordTape::Storage::release() noexcept {
   if (data_ != nullptr) {
     ::operator delete(data_, std::align_val_t{alignment_});
   }
@@ -89,23 +89,23 @@ void WalCore::Storage::release() noexcept {
 }
 
 std::span<std::byte>
-WalCore::Storage::block_at_slot(std::uint32_t slot) noexcept {
+RecordTape::Storage::block_at_slot(std::uint32_t slot) noexcept {
   return {data_ + static_cast<std::size_t>(slot) * stride_, payload_size_};
 }
 
 std::span<const std::byte>
-WalCore::Storage::block_at_slot(std::uint32_t slot) const noexcept {
+RecordTape::Storage::block_at_slot(std::uint32_t slot) const noexcept {
   return {data_ + static_cast<std::size_t>(slot) * stride_, payload_size_};
 }
 
-std::uint32_t WalCore::Storage::next_slot(std::uint32_t slot) const noexcept {
+std::uint32_t RecordTape::Storage::next_slot(std::uint32_t slot) const noexcept {
   ++slot;
   return slot == capacity_ ? 0 : slot;
 }
 
-WalCore::~WalCore() { close(); }
+RecordTape::~RecordTape() { close(); }
 
-OpenResult WalCore::open(const WalRuntimeConfig& config) noexcept {
+OpenResult RecordTape::open(const RecordTapeConfig& config) noexcept {
   if (is_open()) return {OpenStatus::AlreadyOpen};
   if (!valid_runtime_config(config)) return {OpenStatus::InvalidConfig};
 
@@ -122,7 +122,7 @@ OpenResult WalCore::open(const WalRuntimeConfig& config) noexcept {
 }
 
 PublishResult
-WalCore::try_publish(std::span<const std::byte> payload) noexcept {
+RecordTape::try_publish(std::span<const std::byte> payload) noexcept {
   if (!is_open()) return {PublishStatus::Closed, 0};
   if (payload.size() != config_.payload_size) {
     return {PublishStatus::InvalidPayloadSize, 0};
@@ -145,7 +145,7 @@ WalCore::try_publish(std::span<const std::byte> payload) noexcept {
   return {PublishStatus::Ok, config_.first_sequence + head};
 }
 
-AccessResult WalCore::try_view(Position position) const noexcept {
+AccessResult RecordTape::try_view(Position position) const noexcept {
   if (!is_open()) return {ViewStatus::Closed};
 
   const Position tail = tail_frontier_.value.load(std::memory_order_acquire);
@@ -159,7 +159,7 @@ AccessResult WalCore::try_view(Position position) const noexcept {
            storage_.block_at_slot(slot)}};
 }
 
-ReclaimStatus WalCore::reclaim(Position end) noexcept {
+ReclaimStatus RecordTape::reclaim(Position end) noexcept {
   if (!is_open()) return ReclaimStatus::Closed;
   const Position tail = tail_frontier_.value.load(std::memory_order_relaxed);
   const Position head = head_frontier_.value.load(std::memory_order_acquire);
@@ -168,27 +168,27 @@ ReclaimStatus WalCore::reclaim(Position end) noexcept {
   return ReclaimStatus::Ok;
 }
 
-void WalCore::close() noexcept {
+void RecordTape::close() noexcept {
   open_.store(false, std::memory_order_release);
   storage_.release();
 }
 
-bool WalCore::is_open() const noexcept {
+bool RecordTape::is_open() const noexcept {
   return open_.load(std::memory_order_acquire);
 }
 
-bool WalCore::sequence_exhausted() const noexcept {
+bool RecordTape::sequence_exhausted() const noexcept {
   return sequence_exhausted_.load(std::memory_order_acquire);
 }
 
-Position WalCore::head() const noexcept {
+Position RecordTape::head() const noexcept {
   return head_frontier_.value.load(std::memory_order_acquire);
 }
 
-Position WalCore::tail() const noexcept {
+Position RecordTape::tail() const noexcept {
   return tail_frontier_.value.load(std::memory_order_acquire);
 }
 
-const WalRuntimeConfig& WalCore::config() const noexcept { return config_; }
+const RecordTapeConfig& RecordTape::config() const noexcept { return config_; }
 
 } // namespace fexma::wal
