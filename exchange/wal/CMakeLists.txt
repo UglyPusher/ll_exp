@@ -16,6 +16,7 @@ target_include_directories(fexma_wal
 )
 
 target_compile_features(fexma_wal PUBLIC cxx_std_20)
+target_link_libraries(fexma_wal PRIVATE fexma::binary)
 
 function(fexma_wal_apply_warnings target_name)
   if(MSVC)

@@ -9,7 +9,11 @@ target_include_directories(fexma_snapshot_demo
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(fexma_snapshot_demo PUBLIC fexma::wal)
+target_link_libraries(fexma_snapshot_demo
+  PUBLIC
+    fexma::binary
+    fexma::wal
+)
 target_compile_features(fexma_snapshot_demo PUBLIC cxx_std_20)
 
 function(fexma_snapshot_demo_apply_warnings target_name)

@@ -13,7 +13,13 @@ target_include_directories(fexma_matcher
 )
 
 target_compile_features(fexma_matcher PUBLIC cxx_std_20)
-target_link_libraries(fexma_matcher PUBLIC fexma::order_book fexma::wal)
+target_link_libraries(fexma_matcher
+  PUBLIC
+    fexma::order_book
+    fexma::wal
+  PRIVATE
+    fexma::binary
+)
 
 function(fexma_matcher_apply_warnings target_name)
   if(MSVC)

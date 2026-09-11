@@ -5,6 +5,8 @@
  * @brief Fixed application-record codec for Demo 006.
  */
 
+#include <fexma/binary/little_endian.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -51,74 +53,13 @@ struct DecodeResult {
   }
 };
 
-namespace detail {
-
-inline void put_u16(ApplicationPayload& payload, std::size_t offset,
-                    std::uint16_t value) noexcept {
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    payload[offset + i] =
-        static_cast<std::byte>((value >> (i * 8u)) & 0xffu);
-  }
-}
-
-inline void put_u32(ApplicationPayload& payload, std::size_t offset,
-                    std::uint32_t value) noexcept {
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    payload[offset + i] =
-        static_cast<std::byte>((value >> (i * 8u)) & 0xffu);
-  }
-}
-
-inline void put_u64(ApplicationPayload& payload, std::size_t offset,
-                    std::uint64_t value) noexcept {
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    payload[offset + i] =
-        static_cast<std::byte>((value >> (i * 8u)) & 0xffu);
-  }
-}
-
-[[nodiscard]] inline std::uint16_t get_u16(std::span<const std::byte> payload,
-                                           std::size_t offset) noexcept {
-  std::uint16_t value{};
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    value |= static_cast<std::uint16_t>(
-                 std::to_integer<std::uint8_t>(payload[offset + i]))
-             << (i * 8u);
-  }
-  return value;
-}
-
-[[nodiscard]] inline std::uint32_t get_u32(std::span<const std::byte> payload,
-                                           std::size_t offset) noexcept {
-  std::uint32_t value{};
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    value |= static_cast<std::uint32_t>(
-                 std::to_integer<std::uint8_t>(payload[offset + i]))
-             << (i * 8u);
-  }
-  return value;
-}
-
-[[nodiscard]] inline std::uint64_t get_u64(std::span<const std::byte> payload,
-                                           std::size_t offset) noexcept {
-  std::uint64_t value{};
-  for (std::size_t i = 0; i < sizeof(value); ++i) {
-    value |= static_cast<std::uint64_t>(
-                 std::to_integer<std::uint8_t>(payload[offset + i]))
-             << (i * 8u);
-  }
-  return value;
-}
-
-} // namespace detail
-
 [[nodiscard]] inline ApplicationPayload
 encode_data(const ApplicationData& data) noexcept {
   ApplicationPayload payload{};
-  detail::put_u32(payload, 0u, kApplicationMagic);
-  detail::put_u16(payload, 4u, kApplicationVersion);
-  detail::put_u16(payload, 6u,
-                  static_cast<std::uint16_t>(RecordKind::Data));
+  binary::store_le(payload, 0u, kApplicationMagic);
+  binary::store_le(payload, 4u, kApplicationVersion);
+  binary::store_le(payload, 6u,
+                   static_cast<std::uint16_t>(RecordKind::Data));
   std::copy(data.begin(), data.end(), payload.begin() + 16u);
   return payload;
 }
@@ -126,11 +67,11 @@ encode_data(const ApplicationData& data) noexcept {
 [[nodiscard]] inline ApplicationPayload
 encode_save_snapshot(std::uint64_t generation_id) noexcept {
   ApplicationPayload payload{};
-  detail::put_u32(payload, 0u, kApplicationMagic);
-  detail::put_u16(payload, 4u, kApplicationVersion);
-  detail::put_u16(payload, 6u,
-                  static_cast<std::uint16_t>(RecordKind::SaveSnapshot));
-  detail::put_u64(payload, 8u, generation_id);
+  binary::store_le(payload, 0u, kApplicationMagic);
+  binary::store_le(payload, 4u, kApplicationVersion);
+  binary::store_le(payload, 6u,
+                   static_cast<std::uint16_t>(RecordKind::SaveSnapshot));
+  binary::store_le(payload, 8u, generation_id);
   return payload;
 }
 
@@ -139,14 +80,14 @@ decode_record(std::span<const std::byte> payload) noexcept {
   if (payload.size() != kApplicationPayloadSize) {
     return {DecodeStatus::InvalidSize, {}};
   }
-  if (detail::get_u32(payload, 0u) != kApplicationMagic) {
+  if (binary::load_le<std::uint32_t>(payload, 0u) != kApplicationMagic) {
     return {DecodeStatus::InvalidMagic, {}};
   }
-  if (detail::get_u16(payload, 4u) != kApplicationVersion) {
+  if (binary::load_le<std::uint16_t>(payload, 4u) != kApplicationVersion) {
     return {DecodeStatus::UnsupportedVersion, {}};
   }
 
-  const auto raw_kind = detail::get_u16(payload, 6u);
+  const auto raw_kind = binary::load_le<std::uint16_t>(payload, 6u);
   if (raw_kind != static_cast<std::uint16_t>(RecordKind::Data) &&
       raw_kind != static_cast<std::uint16_t>(RecordKind::SaveSnapshot)) {
     return {DecodeStatus::InvalidKind, {}};
@@ -154,7 +95,7 @@ decode_record(std::span<const std::byte> payload) noexcept {
 
   ApplicationRecordView record{};
   record.kind = static_cast<RecordKind>(raw_kind);
-  record.generation_id = detail::get_u64(payload, 8u);
+  record.generation_id = binary::load_le<std::uint64_t>(payload, 8u);
   record.data = payload.subspan(16u, kApplicationDataSize);
 
   if (record.kind == RecordKind::Data && record.generation_id != 0u) {

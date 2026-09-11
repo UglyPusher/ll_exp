@@ -1,5 +1,7 @@
 #include "physical_wal_file.hpp"
 
+#include <fexma/binary/little_endian.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -17,57 +19,6 @@
 
 namespace fexma::wal {
 namespace {
-
-void put_u16_le(std::span<std::byte> out, std::size_t offset,
-                std::uint16_t value) noexcept {
-  out[offset] = static_cast<std::byte>(value & 0xffu);
-  out[offset + 1u] = static_cast<std::byte>((value >> 8u) & 0xffu);
-}
-
-void put_u32_le(std::span<std::byte> out, std::size_t offset,
-                std::uint32_t value) noexcept {
-  out[offset] = static_cast<std::byte>(value & 0xffu);
-  out[offset + 1u] = static_cast<std::byte>((value >> 8u) & 0xffu);
-  out[offset + 2u] = static_cast<std::byte>((value >> 16u) & 0xffu);
-  out[offset + 3u] = static_cast<std::byte>((value >> 24u) & 0xffu);
-}
-
-void put_u64_le(std::span<std::byte> out, std::size_t offset,
-                std::uint64_t value) noexcept {
-  for (std::size_t byte = 0; byte < 8u; ++byte) {
-    out[offset + byte] =
-        static_cast<std::byte>((value >> (byte * 8u)) & 0xffu);
-  }
-}
-
-[[nodiscard]] std::uint16_t
-get_u16_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
-  return static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset])) |
-         static_cast<std::uint16_t>(
-             std::to_integer<std::uint8_t>(bytes[offset + 1u]) << 8u);
-}
-
-[[nodiscard]] std::uint32_t
-get_u32_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
-  std::uint32_t value{};
-  for (std::size_t byte = 0; byte < 4u; ++byte) {
-    value |= static_cast<std::uint32_t>(
-                 std::to_integer<std::uint8_t>(bytes[offset + byte]))
-             << (byte * 8u);
-  }
-  return value;
-}
-
-[[nodiscard]] std::uint64_t
-get_u64_le(std::span<const std::byte> bytes, std::size_t offset) noexcept {
-  std::uint64_t value{};
-  for (std::size_t byte = 0; byte < 8u; ++byte) {
-    value |= static_cast<std::uint64_t>(
-                 std::to_integer<std::uint8_t>(bytes[offset + byte]))
-             << (byte * 8u);
-  }
-  return value;
-}
 
 [[nodiscard]] bool checked_add(std::uint64_t left, std::uint64_t right,
                                std::uint64_t& out) noexcept {
@@ -173,32 +124,32 @@ std::uint32_t records_offset(const WalConfig& config) noexcept {
 std::array<std::byte, physical_file_header_size>
 serialize_file_header(FileHeader header) noexcept {
   std::array<std::byte, physical_file_header_size> out{};
-  put_u32_le(out, 0, header.magic);
-  put_u16_le(out, 4, header.version);
-  put_u16_le(out, 6, header.header_size);
-  put_u16_le(out, 8, static_cast<std::uint16_t>(header.stream_kind));
-  put_u16_le(out, 10, header.flags);
-  put_u32_le(out, 12, header.payload_size);
-  put_u32_le(out, 16, header.payload_schema_version);
-  put_u32_le(out, 20, header.alignment);
-  put_u32_le(out, 24, header.records_offset);
-  put_u64_le(out, 28, header.stream_id);
-  put_u64_le(out, 36, header.epoch_id);
-  put_u64_le(out, 44, header.first_sequence);
-  put_u64_le(out, 52, header.manifest_id);
-  put_u32_le(out, 60, header.header_crc32);
+  binary::store_le(out, 0, header.magic);
+  binary::store_le(out, 4, header.version);
+  binary::store_le(out, 6, header.header_size);
+  binary::store_le(out, 8, static_cast<std::uint16_t>(header.stream_kind));
+  binary::store_le(out, 10, header.flags);
+  binary::store_le(out, 12, header.payload_size);
+  binary::store_le(out, 16, header.payload_schema_version);
+  binary::store_le(out, 20, header.alignment);
+  binary::store_le(out, 24, header.records_offset);
+  binary::store_le(out, 28, header.stream_id);
+  binary::store_le(out, 36, header.epoch_id);
+  binary::store_le(out, 44, header.first_sequence);
+  binary::store_le(out, 52, header.manifest_id);
+  binary::store_le(out, 60, header.header_crc32);
   return out;
 }
 
 std::array<std::byte, physical_record_header_size>
 serialize_record_header(RecordHeader header) noexcept {
   std::array<std::byte, physical_record_header_size> out{};
-  put_u32_le(out, 0, header.magic);
-  put_u16_le(out, 4, header.version);
-  put_u16_le(out, 6, header.header_size);
-  put_u64_le(out, 8, header.sequence);
-  put_u32_le(out, 16, header.payload_crc32);
-  put_u32_le(out, 20, header.header_crc32);
+  binary::store_le(out, 0, header.magic);
+  binary::store_le(out, 4, header.version);
+  binary::store_le(out, 6, header.header_size);
+  binary::store_le(out, 8, header.sequence);
+  binary::store_le(out, 16, header.payload_crc32);
+  binary::store_le(out, 20, header.header_crc32);
   return out;
 }
 
@@ -207,20 +158,20 @@ bool deserialize_file_header(std::span<const std::byte> bytes,
   if (bytes.size() != physical_file_header_size) {
     return false;
   }
-  header.magic = get_u32_le(bytes, 0);
-  header.version = get_u16_le(bytes, 4);
-  header.header_size = get_u16_le(bytes, 6);
-  header.stream_kind = static_cast<StreamKind>(get_u16_le(bytes, 8));
-  header.flags = get_u16_le(bytes, 10);
-  header.payload_size = get_u32_le(bytes, 12);
-  header.payload_schema_version = get_u32_le(bytes, 16);
-  header.alignment = get_u32_le(bytes, 20);
-  header.records_offset = get_u32_le(bytes, 24);
-  header.stream_id = get_u64_le(bytes, 28);
-  header.epoch_id = get_u64_le(bytes, 36);
-  header.first_sequence = get_u64_le(bytes, 44);
-  header.manifest_id = get_u64_le(bytes, 52);
-  header.header_crc32 = get_u32_le(bytes, 60);
+  header.magic = binary::load_le<std::uint32_t>(bytes, 0);
+  header.version = binary::load_le<std::uint16_t>(bytes, 4);
+  header.header_size = binary::load_le<std::uint16_t>(bytes, 6);
+  header.stream_kind = static_cast<StreamKind>(binary::load_le<std::uint16_t>(bytes, 8));
+  header.flags = binary::load_le<std::uint16_t>(bytes, 10);
+  header.payload_size = binary::load_le<std::uint32_t>(bytes, 12);
+  header.payload_schema_version = binary::load_le<std::uint32_t>(bytes, 16);
+  header.alignment = binary::load_le<std::uint32_t>(bytes, 20);
+  header.records_offset = binary::load_le<std::uint32_t>(bytes, 24);
+  header.stream_id = binary::load_le<std::uint64_t>(bytes, 28);
+  header.epoch_id = binary::load_le<std::uint64_t>(bytes, 36);
+  header.first_sequence = binary::load_le<std::uint64_t>(bytes, 44);
+  header.manifest_id = binary::load_le<std::uint64_t>(bytes, 52);
+  header.header_crc32 = binary::load_le<std::uint32_t>(bytes, 60);
   return true;
 }
 
@@ -229,12 +180,12 @@ bool deserialize_record_header(std::span<const std::byte> bytes,
   if (bytes.size() != physical_record_header_size) {
     return false;
   }
-  header.magic = get_u32_le(bytes, 0);
-  header.version = get_u16_le(bytes, 4);
-  header.header_size = get_u16_le(bytes, 6);
-  header.sequence = get_u64_le(bytes, 8);
-  header.payload_crc32 = get_u32_le(bytes, 16);
-  header.header_crc32 = get_u32_le(bytes, 20);
+  header.magic = binary::load_le<std::uint32_t>(bytes, 0);
+  header.version = binary::load_le<std::uint16_t>(bytes, 4);
+  header.header_size = binary::load_le<std::uint16_t>(bytes, 6);
+  header.sequence = binary::load_le<std::uint64_t>(bytes, 8);
+  header.payload_crc32 = binary::load_le<std::uint32_t>(bytes, 16);
+  header.header_crc32 = binary::load_le<std::uint32_t>(bytes, 20);
   return true;
 }
 

@@ -4,45 +4,13 @@
  */
 #include <fexma/matcher/codec.hpp>
 
+#include <fexma/binary/little_endian.hpp>
+
 #include <algorithm>
 #include <array>
 
 namespace fexma::matcher {
 namespace {
-
-void write_u32(std::span<std::byte> bytes, std::size_t offset,
-               std::uint32_t value) noexcept {
-  for (std::size_t index = 0; index < 4; ++index) {
-    bytes[offset + index] =
-        static_cast<std::byte>((value >> (index * 8)) & 0xffu);
-  }
-}
-
-void write_u64(std::span<std::byte> bytes, std::size_t offset,
-               std::uint64_t value) noexcept {
-  for (std::size_t index = 0; index < 8; ++index) {
-    bytes[offset + index] =
-        static_cast<std::byte>((value >> (index * 8)) & 0xffu);
-  }
-}
-
-[[nodiscard]] std::uint32_t read_u32(std::span<const std::byte> bytes,
-                                     std::size_t offset) noexcept {
-  std::uint32_t value{};
-  for (std::size_t index = 0; index < 4; ++index) {
-    value |= static_cast<std::uint32_t>(bytes[offset + index]) << (index * 8);
-  }
-  return value;
-}
-
-[[nodiscard]] std::uint64_t read_u64(std::span<const std::byte> bytes,
-                                     std::size_t offset) noexcept {
-  std::uint64_t value{};
-  for (std::size_t index = 0; index < 8; ++index) {
-    value |= static_cast<std::uint64_t>(bytes[offset + index]) << (index * 8);
-  }
-  return value;
-}
 
 [[nodiscard]] bool valid_side(std::uint8_t value) noexcept {
   return value <= static_cast<std::uint8_t>(Side::Ask);
@@ -71,7 +39,7 @@ PayloadCodecStatus encode_command_wal_payload_v1(
   }
 
   std::fill(bytes.begin(), bytes.end(), std::byte{});
-  write_u64(bytes, 0, payload.client_id);
+  binary::store_le(bytes, 0, payload.client_id);
   bytes[8] = static_cast<std::byte>(payload.message.type);
 
   switch (payload.message.type) {
@@ -81,19 +49,19 @@ PayloadCodecStatus encode_command_wal_payload_v1(
     if (!valid_side(side)) {
       return PayloadCodecStatus::InvalidField;
     }
-    write_u64(bytes, 16, command.id);
-    write_u64(bytes, 24, command.owner_id);
+    binary::store_le(bytes, 16, command.id);
+    binary::store_le(bytes, 24, command.owner_id);
     bytes[32] = static_cast<std::byte>(side);
-    write_u32(bytes, 36, command.price);
-    write_u32(bytes, 40, command.quantity);
+    binary::store_le(bytes, 36, command.price);
+    binary::store_le(bytes, 40, command.quantity);
     return PayloadCodecStatus::Ok;
   }
   case CommandType::SaveSnapshot:
     return PayloadCodecStatus::Ok;
   case CommandType::LoadSnapshot:
-    write_u64(bytes, 16,
+    binary::store_le(bytes, 16,
               payload.message.load_snapshot.save_snapshot_command_sequence);
-    write_u64(bytes, 24,
+    binary::store_le(bytes, 24,
               payload.message.load_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case CommandType::Shutdown:
@@ -113,7 +81,7 @@ PayloadCodecStatus decode_command_wal_payload_v1(
   }
 
   CommandWalPayload decoded{};
-  decoded.client_id = read_u64(bytes, 0);
+  decoded.client_id = binary::load_le<std::uint64_t>(bytes, 0);
   const auto type = static_cast<CommandType>(bytes[8]);
 
   switch (type) {
@@ -123,8 +91,8 @@ PayloadCodecStatus decode_command_wal_payload_v1(
       return PayloadCodecStatus::InvalidField;
     }
     decoded.message = Command{NewLimitOrder{
-        read_u64(bytes, 16), read_u64(bytes, 24), static_cast<Side>(side),
-        read_u32(bytes, 36), read_u32(bytes, 40)}};
+        binary::load_le<std::uint64_t>(bytes, 16), binary::load_le<std::uint64_t>(bytes, 24), static_cast<Side>(side),
+        binary::load_le<std::uint32_t>(bytes, 36), binary::load_le<std::uint32_t>(bytes, 40)}};
     break;
   }
   case CommandType::SaveSnapshot:
@@ -132,7 +100,7 @@ PayloadCodecStatus decode_command_wal_payload_v1(
     break;
   case CommandType::LoadSnapshot:
     decoded.message = Command{LoadSnapshotCommand{
-        read_u64(bytes, 16), read_u64(bytes, 24)}};
+        binary::load_le<std::uint64_t>(bytes, 16), binary::load_le<std::uint64_t>(bytes, 24)}};
     break;
   case CommandType::Shutdown:
     decoded.message = Command{ShutdownCommand{}};
@@ -166,15 +134,15 @@ PayloadCodecStatus encode_event_wal_payload_v1(
   }
 
   std::fill(bytes.begin(), bytes.end(), std::byte{});
-  write_u64(bytes, 0, payload.client_id);
-  write_u64(bytes, 8, payload.caused_by_command_sequence);
-  write_u32(bytes, 16, payload.index_in_command);
+  binary::store_le(bytes, 0, payload.client_id);
+  binary::store_le(bytes, 8, payload.caused_by_command_sequence);
+  binary::store_le(bytes, 16, payload.index_in_command);
   bytes[20] = payload.is_last_for_command ? std::byte{1} : std::byte{0};
   bytes[21] = static_cast<std::byte>(payload.message.type);
 
   switch (payload.message.type) {
   case EventType::OrderAccepted:
-    write_u64(bytes, 24, payload.message.accepted.id);
+    binary::store_le(bytes, 24, payload.message.accepted.id);
     return PayloadCodecStatus::Ok;
   case EventType::OrderRejected: {
     const std::uint8_t reason =
@@ -182,17 +150,17 @@ PayloadCodecStatus encode_event_wal_payload_v1(
     if (!valid_reject_reason(reason)) {
       return PayloadCodecStatus::InvalidField;
     }
-    write_u64(bytes, 24, payload.message.rejected.id);
+    binary::store_le(bytes, 24, payload.message.rejected.id);
     bytes[32] = static_cast<std::byte>(reason);
     return PayloadCodecStatus::Ok;
   }
   case EventType::Trade:
-    write_u64(bytes, 24, payload.message.trade.taker_order_id);
-    write_u64(bytes, 32, payload.message.trade.maker_order_id);
-    write_u64(bytes, 40, payload.message.trade.taker_owner_id);
-    write_u64(bytes, 48, payload.message.trade.maker_owner_id);
-    write_u32(bytes, 56, payload.message.trade.price);
-    write_u32(bytes, 60, payload.message.trade.quantity);
+    binary::store_le(bytes, 24, payload.message.trade.taker_order_id);
+    binary::store_le(bytes, 32, payload.message.trade.maker_order_id);
+    binary::store_le(bytes, 40, payload.message.trade.taker_owner_id);
+    binary::store_le(bytes, 48, payload.message.trade.maker_owner_id);
+    binary::store_le(bytes, 56, payload.message.trade.price);
+    binary::store_le(bytes, 60, payload.message.trade.quantity);
     return PayloadCodecStatus::Ok;
   case EventType::OrderRested: {
     const std::uint8_t side =
@@ -200,22 +168,22 @@ PayloadCodecStatus encode_event_wal_payload_v1(
     if (!valid_side(side)) {
       return PayloadCodecStatus::InvalidField;
     }
-    write_u64(bytes, 24, payload.message.rested.id);
-    write_u64(bytes, 32, payload.message.rested.owner_id);
+    binary::store_le(bytes, 24, payload.message.rested.id);
+    binary::store_le(bytes, 32, payload.message.rested.owner_id);
     bytes[40] = static_cast<std::byte>(side);
-    write_u32(bytes, 44, payload.message.rested.price);
-    write_u32(bytes, 48, payload.message.rested.remaining);
+    binary::store_le(bytes, 44, payload.message.rested.price);
+    binary::store_le(bytes, 48, payload.message.rested.remaining);
     return PayloadCodecStatus::Ok;
   }
   case EventType::OrderDone:
-    write_u64(bytes, 24, payload.message.done.id);
+    binary::store_le(bytes, 24, payload.message.done.id);
     return PayloadCodecStatus::Ok;
   case EventType::SaveSnapshot:
     return PayloadCodecStatus::Ok;
   case EventType::LoadSnapshot:
-    write_u64(bytes, 24,
+    binary::store_le(bytes, 24,
               payload.message.load_snapshot.save_snapshot_command_sequence);
-    write_u64(bytes, 32,
+    binary::store_le(bytes, 32,
               payload.message.load_snapshot.snapshot_epoch_id);
     return PayloadCodecStatus::Ok;
   case EventType::Shutdown:
@@ -227,8 +195,8 @@ PayloadCodecStatus encode_event_wal_payload_v1(
       return PayloadCodecStatus::InvalidField;
     }
     bytes[24] = static_cast<std::byte>(reason);
-    write_u64(bytes, 32, payload.message.fatal.offending_order_id);
-    write_u64(bytes, 40, payload.message.fatal.last_order_id);
+    binary::store_le(bytes, 32, payload.message.fatal.offending_order_id);
+    binary::store_le(bytes, 40, payload.message.fatal.last_order_id);
     return PayloadCodecStatus::Ok;
   }
   case EventType::StartReplay:
@@ -251,15 +219,15 @@ PayloadCodecStatus decode_event_wal_payload_v1(
   }
 
   EventWalPayload decoded{};
-  decoded.client_id = read_u64(bytes, 0);
-  decoded.caused_by_command_sequence = read_u64(bytes, 8);
-  decoded.index_in_command = read_u32(bytes, 16);
+  decoded.client_id = binary::load_le<std::uint64_t>(bytes, 0);
+  decoded.caused_by_command_sequence = binary::load_le<std::uint64_t>(bytes, 8);
+  decoded.index_in_command = binary::load_le<std::uint32_t>(bytes, 16);
   decoded.is_last_for_command = final_flag != 0;
   const auto type = static_cast<EventType>(bytes[21]);
 
   switch (type) {
   case EventType::OrderAccepted:
-    decoded.message = Event{OrderAcceptedEvent{read_u64(bytes, 24)}};
+    decoded.message = Event{OrderAcceptedEvent{binary::load_le<std::uint64_t>(bytes, 24)}};
     break;
   case EventType::OrderRejected: {
     const std::uint8_t reason = static_cast<std::uint8_t>(bytes[32]);
@@ -267,13 +235,13 @@ PayloadCodecStatus decode_event_wal_payload_v1(
       return PayloadCodecStatus::InvalidField;
     }
     decoded.message = Event{OrderRejectedEvent{
-        read_u64(bytes, 24), static_cast<RejectReason>(reason)}};
+        binary::load_le<std::uint64_t>(bytes, 24), static_cast<RejectReason>(reason)}};
     break;
   }
   case EventType::Trade:
     decoded.message = Event{TradeEvent{
-        read_u64(bytes, 24), read_u64(bytes, 32), read_u64(bytes, 40),
-        read_u64(bytes, 48), read_u32(bytes, 56), read_u32(bytes, 60)}};
+        binary::load_le<std::uint64_t>(bytes, 24), binary::load_le<std::uint64_t>(bytes, 32), binary::load_le<std::uint64_t>(bytes, 40),
+        binary::load_le<std::uint64_t>(bytes, 48), binary::load_le<std::uint32_t>(bytes, 56), binary::load_le<std::uint32_t>(bytes, 60)}};
     break;
   case EventType::OrderRested: {
     const std::uint8_t side = static_cast<std::uint8_t>(bytes[40]);
@@ -281,19 +249,19 @@ PayloadCodecStatus decode_event_wal_payload_v1(
       return PayloadCodecStatus::InvalidField;
     }
     decoded.message = Event{OrderRestedEvent{
-        read_u64(bytes, 24), read_u64(bytes, 32), static_cast<Side>(side),
-        read_u32(bytes, 44), read_u32(bytes, 48)}};
+        binary::load_le<std::uint64_t>(bytes, 24), binary::load_le<std::uint64_t>(bytes, 32), static_cast<Side>(side),
+        binary::load_le<std::uint32_t>(bytes, 44), binary::load_le<std::uint32_t>(bytes, 48)}};
     break;
   }
   case EventType::OrderDone:
-    decoded.message = Event{OrderDoneEvent{read_u64(bytes, 24)}};
+    decoded.message = Event{OrderDoneEvent{binary::load_le<std::uint64_t>(bytes, 24)}};
     break;
   case EventType::SaveSnapshot:
     decoded.message = Event{SaveSnapshotEvent{}};
     break;
   case EventType::LoadSnapshot:
     decoded.message = Event{LoadSnapshotEvent{
-        read_u64(bytes, 24), read_u64(bytes, 32)}};
+        binary::load_le<std::uint64_t>(bytes, 24), binary::load_le<std::uint64_t>(bytes, 32)}};
     break;
   case EventType::Shutdown:
     decoded.message = Event{ShutdownEvent{}};
@@ -304,8 +272,8 @@ PayloadCodecStatus decode_event_wal_payload_v1(
       return PayloadCodecStatus::InvalidField;
     }
     decoded.message = Event{MatcherFatalEvent{
-        static_cast<FatalReason>(reason), read_u64(bytes, 32),
-        read_u64(bytes, 40)}};
+        static_cast<FatalReason>(reason), binary::load_le<std::uint64_t>(bytes, 32),
+        binary::load_le<std::uint64_t>(bytes, 40)}};
     break;
   }
   case EventType::StartReplay:
@@ -342,7 +310,7 @@ PayloadCodecStatus encode_command_wal_payload_v2(
   }
 
   std::fill(bytes.begin(), bytes.end(), std::byte{});
-  write_u64(bytes, 0, payload.client_id);
+  binary::store_le(bytes, 0, payload.client_id);
   bytes[8] = static_cast<std::byte>(payload.message.type);
   if (payload.message.type == CommandType::StartReplay) {
     return PayloadCodecStatus::Ok;
@@ -362,7 +330,7 @@ PayloadCodecStatus decode_command_wal_payload_v2(
   }
 
   CommandWalPayload decoded{};
-  decoded.client_id = read_u64(bytes, 0);
+  decoded.client_id = binary::load_le<std::uint64_t>(bytes, 0);
   if (type == CommandType::StartReplay) {
     decoded.message = Command{StartReplayCommand{}};
   } else {
@@ -395,9 +363,9 @@ PayloadCodecStatus encode_event_wal_payload_v2(
   }
 
   std::fill(bytes.begin(), bytes.end(), std::byte{});
-  write_u64(bytes, 0, payload.client_id);
-  write_u64(bytes, 8, payload.caused_by_command_sequence);
-  write_u32(bytes, 16, payload.index_in_command);
+  binary::store_le(bytes, 0, payload.client_id);
+  binary::store_le(bytes, 8, payload.caused_by_command_sequence);
+  binary::store_le(bytes, 16, payload.index_in_command);
   bytes[20] = payload.is_last_for_command ? std::byte{1} : std::byte{0};
   bytes[21] = static_cast<std::byte>(payload.message.type);
   if (payload.message.type == EventType::StartReplay) {
@@ -422,9 +390,9 @@ PayloadCodecStatus decode_event_wal_payload_v2(
   }
 
   EventWalPayload decoded{};
-  decoded.client_id = read_u64(bytes, 0);
-  decoded.caused_by_command_sequence = read_u64(bytes, 8);
-  decoded.index_in_command = read_u32(bytes, 16);
+  decoded.client_id = binary::load_le<std::uint64_t>(bytes, 0);
+  decoded.caused_by_command_sequence = binary::load_le<std::uint64_t>(bytes, 8);
+  decoded.index_in_command = binary::load_le<std::uint32_t>(bytes, 16);
   decoded.is_last_for_command = final_flag != 0;
   if (type == EventType::StartReplay) {
     decoded.message = Event{StartReplayEvent{}};
