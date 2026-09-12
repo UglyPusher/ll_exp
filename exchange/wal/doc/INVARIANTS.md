@@ -73,8 +73,6 @@ head - tail <= capacity
   caller-owned retention contract; availability does not prove durability.
 - `[head, tail + capacity)` is free capacity.
 - Position `p` maps to block `p % capacity`.
-- Position `p` maps to physical sequence `first_sequence + p` without unsigned
-  wraparound.
 
 Only the producer writes `head`, only `PersistenceSlider` writes `durable`, and
 only the composition reclaimer writes `tail`.

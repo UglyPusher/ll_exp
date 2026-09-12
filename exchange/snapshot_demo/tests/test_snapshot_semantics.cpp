@@ -75,8 +75,8 @@ template <class Module>
 [[nodiscard]] bool malformed_record_is_terminal() noexcept {
   auto malformed = snapshot_demo::encode_data(data(1));
   malformed[0] ^= std::byte{1};
-  Module module;
-  return !module.process({0, 10, malformed}) && module.state().failed &&
+  Module module(10);
+  return !module.process({0, malformed}) && module.state().failed &&
          module.state().processed_end == 0 &&
          module.pending_capture() == nullptr;
 }
@@ -84,8 +84,8 @@ template <class Module>
 template <class Module>
 [[nodiscard]] bool snapshot_generation_is_its_position() noexcept {
   const auto wrong_generation = snapshot_demo::encode_save_snapshot(9);
-  Module module;
-  return !module.process({0, 10, wrong_generation}) && module.state().failed &&
+  Module module(10);
+  return !module.process({0, wrong_generation}) && module.state().failed &&
          module.state().processed_end == 0 &&
          module.pending_capture() == nullptr;
 }
@@ -94,8 +94,8 @@ template <class Module, class Capture>
 [[nodiscard]] bool capture_is_state_after_and_immutable() noexcept {
   const auto snapshot = snapshot_demo::encode_save_snapshot(0);
   const auto ordinary = snapshot_demo::encode_data(data(5));
-  Module module;
-  if (!module.process({0, 100, snapshot})) return false;
+  Module module(100);
+  if (!module.process({0, snapshot})) return false;
   const Capture* pending = module.pending_capture();
   if (pending == nullptr || pending->generation_id != 0 ||
       pending->record_position != 0 || pending->processed_end != 1 ||
@@ -103,7 +103,7 @@ template <class Module, class Capture>
     return false;
   }
   const Capture captured = *pending;
-  if (!module.process({1, 101, ordinary}) || module.state().processed_end != 2) {
+  if (!module.process({1, ordinary}) || module.state().processed_end != 2) {
     return false;
   }
   return module.pending_capture() != nullptr &&
@@ -112,18 +112,18 @@ template <class Module, class Capture>
 
 [[nodiscard]] bool coordinator_waits_and_checks_identity() noexcept {
   const auto snapshot = snapshot_demo::encode_save_snapshot(0);
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(70);
+  snapshot_demo::BitAccumulatorModule bits(70);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
 
-  if (!hash.process({0, 70, snapshot}) ||
+  if (!hash.process({0, snapshot}) ||
       coordinator.collect(hash, bits) !=
           snapshot_demo::CollectStatus::MissingParticipant ||
       coordinator.pending_generation() != nullptr ||
       hash.pending_capture() == nullptr) {
     return false;
   }
-  if (!bits.process({0, 70, snapshot}) ||
+  if (!bits.process({0, snapshot}) ||
       coordinator.collect(hash, bits) !=
           snapshot_demo::CollectStatus::Complete) {
     return false;
@@ -144,11 +144,11 @@ template <class Module, class Capture>
     return false;
   }
 
-  snapshot_demo::HashChainModule mismatched_hash;
-  snapshot_demo::BitAccumulatorModule mismatched_bits;
+  snapshot_demo::HashChainModule mismatched_hash(80);
+  snapshot_demo::BitAccumulatorModule mismatched_bits(81);
   snapshot_demo::CaptureGenerationCoordinator mismatched_coordinator;
-  return mismatched_hash.process({0, 80, snapshot}) &&
-         mismatched_bits.process({0, 81, snapshot}) &&
+  return mismatched_hash.process({0, snapshot}) &&
+         mismatched_bits.process({0, snapshot}) &&
          mismatched_coordinator.collect(mismatched_hash, mismatched_bits) ==
              snapshot_demo::CollectStatus::Mismatch &&
          mismatched_coordinator.pending_generation() == nullptr;
@@ -158,7 +158,7 @@ template <class Module, class Capture>
   wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(
                         snapshot_demo::kApplicationPayloadSize),
-                    8, wal::default_alignment, 50})
+                    8, wal::default_alignment})
            .ok()) {
     return false;
   }
@@ -174,8 +174,8 @@ template <class Module, class Capture>
 
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(50);
+  snapshot_demo::BitAccumulatorModule bits(50);
   wal::Slider hash_slider(source, hash_frontier, hash);
   wal::Slider bit_slider(source, bit_frontier, bits);
 

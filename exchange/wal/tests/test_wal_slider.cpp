@@ -81,7 +81,7 @@ static_assert(!FrontierPublisher<const Frontier>);
 
 [[nodiscard]] bool open_tape(RecordTape& tape, std::uint32_t capacity = 4) {
   return tape.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
-                    default_alignment, 10})
+                    default_alignment})
       .ok();
 }
 

@@ -54,7 +54,7 @@ using Records = std::vector<snapshot_demo::ApplicationPayload>;
                                const Records& records) noexcept {
   if (!source.open({static_cast<std::uint32_t>(sizeof(Records::value_type)),
                     static_cast<std::uint32_t>(records.size()),
-                    wal::default_alignment, first_sequence})
+                    wal::default_alignment})
            .ok()) {
     return false;
   }
@@ -71,8 +71,8 @@ template <class Module>
                                  wal::Position begin,
                                  wal::Position end) noexcept {
   for (wal::Position position = begin; position < end; ++position) {
-    if (!module.process({position, first_sequence + position,
-                         std::span<const std::byte>{records[position]}})) {
+    if (!module.process(
+            {position, std::span<const std::byte>{records[position]}})) {
       return false;
     }
   }
@@ -102,8 +102,8 @@ template <std::size_t Size>
                                    snapshot_demo::HashChainState& hash_state,
                                    snapshot_demo::BitAccumulatorState&
                                        bit_state) {
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   if (!process_range(hash, records, 0, snapshot_position + 1u) ||
       !process_range(bits, records, 0, snapshot_position + 1u)) {
     return false;
@@ -129,8 +129,8 @@ template <std::size_t Size>
   if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier(1);
   wal::Frontier bit_frontier(1);
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   if (!process_range(hash, records, 0, 1) ||
       !process_range(bits, records, 0, 1)) {
     return false;
@@ -161,8 +161,8 @@ template <std::size_t Size>
     return false;
   }
 
-  snapshot_demo::HashChainModule continuous_hash;
-  snapshot_demo::BitAccumulatorModule continuous_bits;
+  snapshot_demo::HashChainModule continuous_hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule continuous_bits(first_sequence);
   if (!process_range(continuous_hash, records, 0, record_count) ||
       !process_range(continuous_bits, records, 0, record_count)) {
     std::filesystem::remove_all(root);
@@ -183,8 +183,8 @@ template <std::size_t Size>
   if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
-  snapshot_demo::HashChainModule restored_hash;
-  snapshot_demo::BitAccumulatorModule restored_bits;
+  snapshot_demo::HashChainModule restored_hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule restored_bits(first_sequence);
   wal::Slider hash_slider(source, hash_frontier, restored_hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          restored_bits);
@@ -229,8 +229,8 @@ template <std::size_t Size>
   if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   wal::Slider hash_slider(source, hash_frontier, hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bits);
@@ -242,8 +242,7 @@ template <std::size_t Size>
   }
   const snapshot_demo::BitAccumulatorState restored_bits = bits.state();
   const bool hash_processed = hash.process(
-      {supplied_position, first_sequence + resume_position,
-       std::span<const std::byte>{records[resume_position]}});
+      {supplied_position, std::span<const std::byte>{records[resume_position]}});
   const wal::SliderResult bit_result = bit_slider.process_available();
   return !hash_processed && hash.state().failed &&
          hash.state().processed_end == resume_position &&

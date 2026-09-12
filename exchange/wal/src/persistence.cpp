@@ -8,6 +8,7 @@
 
 #include "physical_wal_adapter.hpp"
 
+#include <limits>
 #include <new>
 
 namespace fexma::wal {
@@ -32,6 +33,7 @@ OpenResult PersistenceModule::open(const std::filesystem::path& path,
     physical_wal_.reset();
     return {status};
   }
+  first_sequence_ = config.first_sequence;
   failed_.store(false, std::memory_order_relaxed);
   return {OpenStatus::Ok};
 }
@@ -42,7 +44,10 @@ bool PersistenceModule::process(const RecordView& record) noexcept {
 
 bool PersistenceModule::append(const RecordView& record) noexcept {
   if (!is_open() || failed_.load(std::memory_order_acquire) ||
-      !physical_wal_->append_record(record.sequence, record.payload)) {
+      record.position > std::numeric_limits<std::uint64_t>::max() -
+                            first_sequence_ ||
+      !physical_wal_->append_record(first_sequence_ + record.position,
+                                    record.payload)) {
     failed_.store(true, std::memory_order_release);
     return false;
   }

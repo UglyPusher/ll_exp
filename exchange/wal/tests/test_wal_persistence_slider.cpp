@@ -77,7 +77,7 @@ constexpr PhysicalWalConfig physical_config{
 [[nodiscard]] bool open(RecordTape& tape, PersistenceModule& persistence,
                         const std::filesystem::path& path) {
   return tape.open({wal_config.payload_size, wal_config.capacity,
-                   wal_config.alignment, wal_config.first_sequence})
+                   wal_config.alignment})
              .ok() &&
          persistence.open(path, physical_config).ok();
 }

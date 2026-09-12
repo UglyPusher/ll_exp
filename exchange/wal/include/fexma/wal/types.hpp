@@ -2,7 +2,7 @@
 
 /**
  * @file types.hpp
- * @brief Public types for the fixed-payload WAL frontier ring.
+ * @brief Shared public types for the in-memory tape and physical WAL.
  */
 
 #include <cstddef>
@@ -19,7 +19,7 @@ inline constexpr std::uint32_t default_alignment = 64;
 using StreamId = std::uint64_t;
 using EpochId = std::uint64_t;
 using ManifestId = std::uint64_t;
-using Position = std::uint64_t; // Absolute zero-based runtime WAL position.
+using Position = std::uint64_t; // Absolute zero-based RecordTape position.
 
 enum class ViewStatus : std::uint8_t {
   Ok,
@@ -30,7 +30,6 @@ enum class ViewStatus : std::uint8_t {
 
 struct RecordView {
   Position position{};
-  std::uint64_t sequence{};
   std::span<const std::byte> payload{};
 };
 
@@ -78,14 +77,13 @@ enum class PublishStatus : std::uint8_t {
   Ok,
   Full,
   InvalidPayloadSize,
-  SequenceExhausted,
-  IoError,
+  PositionExhausted,
   Closed
 };
 
 struct PublishResult {
   PublishStatus status{PublishStatus::Closed};
-  std::uint64_t sequence{};
+  Position position{};
 
   [[nodiscard]] bool ok() const noexcept {
     return status == PublishStatus::Ok;

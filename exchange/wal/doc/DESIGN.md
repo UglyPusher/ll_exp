@@ -3,7 +3,7 @@
 ## Components
 
 `RecordTape` owns runtime lifecycle, bounded storage, `head`, `tail`, producer
-publication, reclamation, sequence exhaustion, and borrowed read-only position
+publication, reclamation, position exhaustion, and borrowed read-only position
 access. It has no filesystem path, physical writer, durable frontier, or I/O
 failure state.
 
@@ -54,8 +54,8 @@ slot only after validating the position. Reclamation publishes an exclusive
 absolute boundary and needs no slot cursor.
 
 `try_view(position)` validates the absolute position against `tail` and `head`
-before mapping it with `position % capacity`. It returns position, derived
-physical sequence, and a const span over the existing payload block. There is
+before mapping it with `position % capacity`. It returns position and a const
+span over the existing payload block. There is
 no second data store or per-reader payload copy. It may expose retained records
 that are not durable yet and never reclaims them.
 
@@ -92,12 +92,13 @@ again; it never repairs, skips, or resynchronizes around corruption.
 ## Operation Walkthrough
 
 `RecordTape::try_publish()` validates the call, uses the block at `head`, fills it,
-publishes `head + 1`, and returns the derived physical sequence.
+publishes `head + 1`, and returns the published position.
 
 The composition sets the persistence slider's maximum batch size and invokes
 `process_available()`. `PersistenceSlider` obtains each `RecordView`, calls
 `PersistenceModule::process()`, requests one sync, and publishes the range end
-as `durable` only after success.
+as `durable` only after success. `PersistenceModule` derives physical WAL
+sequence from its own `first_sequence` and the tape position.
 
 ## Frontier Layout
 

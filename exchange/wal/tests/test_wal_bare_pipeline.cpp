@@ -44,14 +44,14 @@ using Payload = std::array<std::byte, 16>;
   const Payload bytes = payload(position);
   const PublishResult result =
       tape.try_publish(std::span<const std::byte>{bytes});
-  return result.ok() && result.sequence == position + 1;
+  return result.ok() && result.position == position;
 }
 
 [[nodiscard]] bool stopped_slider_preserves_backpressure() {
   constexpr Position capacity = 3;
   RecordTape tape;
   if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)),
-                 static_cast<std::uint32_t>(capacity), default_alignment, 1})
+                 static_cast<std::uint32_t>(capacity), default_alignment})
            .ok()) {
     return false;
   }
@@ -97,7 +97,7 @@ using Payload = std::array<std::byte, 16>;
 [[nodiscard]] bool retains_slots_until_composition_reclaims() {
   RecordTape tape;
   if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)), 2,
-                 default_alignment, 1})
+                 default_alignment})
            .ok() ||
       !publish(tape, 0) || !publish(tape, 1)) {
     return false;
@@ -142,13 +142,9 @@ using Payload = std::array<std::byte, 16>;
 
 class OrderedProbeModule final {
 public:
-  explicit OrderedProbeModule(Position first_sequence) noexcept
-      : first_sequence_(first_sequence) {}
-
   [[nodiscard]] bool process(const RecordView& record) noexcept {
     const Payload expected_payload = payload(expected_position_);
     if (record.position != expected_position_ ||
-        record.sequence != first_sequence_ + expected_position_ ||
         !equal(record.payload, expected_payload)) {
       valid_ = false;
       return false;
@@ -161,7 +157,6 @@ public:
   [[nodiscard]] Position count() const noexcept { return expected_position_; }
 
 private:
-  Position first_sequence_{};
   Position expected_position_{};
   bool valid_{true};
 };
@@ -169,17 +164,16 @@ private:
 [[nodiscard]] bool producer_and_slider_wrap_concurrently() {
   constexpr Position message_count = 200'000;
   constexpr std::uint32_t capacity = 127;
-  constexpr Position first_sequence = 1000;
 
   RecordTape tape;
   if (!tape.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
-                 default_alignment, first_sequence})
+                 default_alignment})
            .ok()) {
     return false;
   }
 
   Frontier no_op_frontier;
-  OrderedProbeModule module(first_sequence);
+  OrderedProbeModule module;
   Slider slider(tape, no_op_frontier, module);
   std::atomic<bool> failed{false};
   std::atomic<bool> producer_done{false};
@@ -191,7 +185,7 @@ private:
       const PublishResult result =
           tape.try_publish(std::span<const std::byte>{bytes});
       if (result.ok()) {
-        if (result.sequence != first_sequence + position) {
+        if (result.position != position) {
           failed.store(true, std::memory_order_release);
           return;
         }

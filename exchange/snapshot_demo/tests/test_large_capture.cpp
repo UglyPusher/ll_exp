@@ -43,8 +43,10 @@ struct SyntheticCapture {
 
 class SyntheticLargeStateModule final {
 public:
-  explicit SyntheticLargeStateModule(std::size_t state_size)
-      : state_(state_size), capture_(state_size) {
+  SyntheticLargeStateModule(std::size_t state_size,
+                            std::uint64_t first_sequence)
+      : state_(state_size), capture_(state_size),
+        first_sequence_(first_sequence) {
     for (std::size_t index = 0; index < state_.size(); ++index) {
       state_[index] = static_cast<std::byte>(
           (index * 131u + index / 251u + 0x5au) & 0xffu);
@@ -56,7 +58,8 @@ public:
       failed_ = true;
       return false;
     }
-    apply_transition(record.position, record.sequence, record.payload.front());
+    const std::uint64_t sequence = first_sequence_ + record.position;
+    apply_transition(record.position, sequence, record.payload.front());
     ++processed_end_;
 
     if (record.position == 0) {
@@ -67,7 +70,7 @@ public:
       capture_generation_ = record.position;
       capture_position_ = record.position;
       capture_processed_end_ = processed_end_;
-      capture_sequence_ = record.sequence;
+      capture_sequence_ = sequence;
       capture_active_ = true;
     }
     return true;
@@ -124,6 +127,7 @@ private:
 
   std::vector<std::byte> state_;
   std::vector<std::byte> capture_;
+  std::uint64_t first_sequence_{};
   wal::Position processed_end_{};
   std::uint64_t capture_generation_{};
   wal::Position capture_position_{};
@@ -234,7 +238,7 @@ open_file(const std::filesystem::path& path, const wchar_t* windows_mode,
   wal::RecordTape source;
   const std::array first_payload{std::byte{0x53}};
   const std::array second_payload{std::byte{0x44}};
-  if (!source.open({1, 2, wal::default_alignment, 1000}).ok() ||
+  if (!source.open({1, 2, wal::default_alignment}).ok() ||
       !source.try_publish(first_payload).ok() ||
       !source.try_publish(second_payload).ok()) {
     std::filesystem::remove_all(root);
@@ -242,7 +246,7 @@ open_file(const std::filesystem::path& path, const wchar_t* windows_mode,
   }
   wal::Frontier upstream(1);
   wal::Frontier frontier;
-  SyntheticLargeStateModule module(state_size_mib * mib);
+  SyntheticLargeStateModule module(state_size_mib * mib, 1000);
   wal::Slider slider(source, upstream, frontier, module);
 
   const wal::SliderResult snapshot_result = slider.process_available();

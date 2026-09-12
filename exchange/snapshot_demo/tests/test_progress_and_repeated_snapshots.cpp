@@ -65,14 +65,14 @@ struct ExpectedSnapshot {
 [[nodiscard]] bool downstream_ahead_of_upstream_is_rejected() noexcept {
   wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 2,
-                    wal::default_alignment, first_sequence})
+                    wal::default_alignment})
            .ok()) {
     return false;
   }
 
   wal::Frontier upstream(1);
   wal::Frontier downstream(2);
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   snapshot_demo::BitAccumulatorState restored{};
   restored.processed_end = 2;
   bits.restore_quiescent(restored);
@@ -91,7 +91,7 @@ struct ExpectedSnapshot {
 [[nodiscard]] bool premature_tail_breaks_last_mandatory_stage() noexcept {
   wal::RecordTape source;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 4,
-                    wal::default_alignment, first_sequence})
+                    wal::default_alignment})
            .ok()) {
     return false;
   }
@@ -105,7 +105,7 @@ struct ExpectedSnapshot {
 
   wal::Frontier bit_upstream(1);
   wal::Frontier bit_frontier;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   wal::Slider bit_slider(source, bit_upstream, bit_frontier, bits);
 
   if (!accepted(bit_slider.process_available()) || bit_frontier.acquire() != 1 ||
@@ -166,7 +166,7 @@ random_snapshot_positions(wal::Position record_count) {
   wal::RecordTape source;
   wal::PersistenceModule persistence;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), 32,
-                    wal::default_alignment, first_sequence})
+                    wal::default_alignment})
            .ok() ||
       !persistence
            .open(wal_path,
@@ -185,16 +185,16 @@ random_snapshot_positions(wal::Position record_count) {
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
   wal::PersistenceSlider persistence_slider(source, durable, persistence, 1);
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule bits(first_sequence);
   wal::Slider hash_slider(source, durable, hash_frontier, hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bits);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   const snapshot_demo::SnapshotSink sink(root, identity);
 
-  snapshot_demo::HashChainModule expected_hash;
-  snapshot_demo::BitAccumulatorModule expected_bits;
+  snapshot_demo::HashChainModule expected_hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule expected_bits(first_sequence);
   std::vector<ExpectedSnapshot> expected_snapshots;
   expected_snapshots.reserve(snapshot_positions.size());
 
@@ -216,13 +216,11 @@ random_snapshot_positions(wal::Position record_count) {
       const wal::PublishResult published =
           source.try_publish(std::span<const std::byte>{payload});
       if (published.status == wal::PublishStatus::Full) break;
-      if (!published.ok() || published.sequence != first_sequence + produced ||
+      if (!published.ok() || published.position != produced ||
           !expected_hash.process(
-              {produced, published.sequence,
-               std::span<const std::byte>{payload}}) ||
+              {produced, std::span<const std::byte>{payload}}) ||
           !expected_bits.process(
-              {produced, published.sequence,
-               std::span<const std::byte>{payload}})) {
+              {produced, std::span<const std::byte>{payload}})) {
         valid = false;
         break;
       }

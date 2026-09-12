@@ -7,7 +7,7 @@
 ```cpp
 class RecordTape {
 public:
-  OpenResult open(const RecordTapeConfig& config) noexcept;
+  RecordTapeOpenResult open(const RecordTapeConfig& config) noexcept;
   PublishResult try_publish(std::span<const std::byte> payload) noexcept;
   AccessResult try_view(Position position) const noexcept;
   ReclaimStatus reclaim(Position end) noexcept;
@@ -44,7 +44,8 @@ persistence failure state. `reclaim(end)` accepts only monotonic exclusive
 boundaries in `[tail, head]`; the composition is responsible for proving that
 all mandatory readers have finished below `end`.
 
-`RecordTapeConfig` contains runtime storage and sequence fields only.
+`RecordTapeConfig` contains only runtime storage fields: fixed payload size,
+capacity, and allocation alignment.
 `PhysicalWalConfig` contains persisted identity and physical layout fields and
 does not contain runtime capacity. `PersistenceModule` owns the selected live
 physical writer and its terminal failure state. It does not own or publish a
@@ -152,7 +153,7 @@ roles to be stopped.
 
 ## Payload And Lifetime
 
-Each WAL instance has one non-zero `payload_size`, one file-level
+Each physical WAL instance has one non-zero `payload_size`, one file-level
 `payload_schema_version`, one stream identity, one epoch, one non-zero
 `first_sequence`, and bounded non-zero runtime `capacity`. Payload bytes and
 the meaning of the schema version are opaque to the WAL. Schema version `0` is
@@ -176,7 +177,7 @@ return.
 `try_view(position)` is a non-blocking, allocation-free borrowed read of the
 `RecordTape`. `Position` is an absolute zero-based position, never a slot number
 or a physical sequence. The result contains `ViewStatus` and a `RecordView`
-with `position`, physical `sequence`, and the complete fixed-size
+with `position` and the complete fixed-size
 `std::span<const std::byte> payload`. It does not copy payload bytes or move any
 frontier. The current storage has no additional per-position service fields or
 stage pockets.
@@ -188,7 +189,7 @@ Status checks precede address calculation:
 - `Unpublished`: `position >= head`;
 - `Ok`: `tail <= position < head`.
 
-Unsuccessful results contain an empty payload and zero position/sequence.
+Unsuccessful results contain an empty payload and zero position.
 Status reflects the observed frontiers; publication may advance concurrently.
 The operation acquires `head` before exposing producer-written bytes. It does
 not require persistence success or consult `durable`: retained pending records
@@ -200,16 +201,11 @@ Coordinates remain:
 
 ```text
 retained positions                  [tail, head)
-physical sequence of position p     first_sequence + p
 exclusive frontier after position p p + 1
-exclusive frontier after sequence N N - first_sequence + 1
 ```
 
-The last conversion applies to a sequence in this `RecordTape`. Publication checks
-sequence exhaustion, so a successfully viewed position has a representable
-physical sequence. Only the implementation maps `position % capacity` to a
-block. A reclaimed absolute identity cannot be used to read its replacement
-after ring wraparound.
+Only the implementation maps `position % capacity` to a block. A reclaimed
+absolute identity cannot be used to read its replacement after ring wraparound.
 
 **Caller-owned retention is a precondition, not a feature of the view.** Before
 requesting a potentially accessible position, the caller must coordinate with
@@ -230,8 +226,8 @@ positions from a previous open lifetime cannot be reused.
 ## Publish
 
 `try_publish()` is non-blocking and allocation-free. On success it copies one
-payload into the block at `head`, publishes `head + 1`, and returns physical
-sequence `first_sequence + position`.
+payload into the block at `head`, publishes `head + 1`, and returns the
+published position.
 
 It returns `Full` when `head - tail == capacity`. Success does not mean the
 payload is durable or available to a downstream stage.
@@ -239,9 +235,9 @@ payload is durable or available to a downstream stage.
 The persistence-free `RecordTape` does not infer downstream failure. A
 composition must stop production when its mandatory persistence module fails.
 
-Exhausting the physical sequence domain puts `RecordTape` into a distinct
-fail-closed `SequenceExhausted` producer state; no wrapped sequence is
-published. Downstream stages may finish the already published valid prefix.
+If the exclusive `head` reaches the end of the `Position` domain,
+`try_publish()` returns `PositionExhausted`; no wrapped position is published.
+Downstream stages may finish the already published valid prefix.
 
 ## Persistence Progress
 

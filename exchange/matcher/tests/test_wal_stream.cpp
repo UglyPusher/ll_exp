@@ -85,8 +85,7 @@ physical_config(const fexma::wal::WalConfig& config) noexcept {
     const CommandWalPayload& command = commands[index];
     if (encode_command_wal_payload_v2(command, bytes) !=
             PayloadCodecStatus::Ok ||
-        !persistence.append(
-            {index, config.first_sequence + index, bytes})) {
+        !persistence.append({index, bytes})) {
       return false;
     }
   }
@@ -137,8 +136,7 @@ physical_config(const fexma::wal::WalConfig& config) noexcept {
     const EventWalPayload& event = events[index];
     if (encode_event_wal_payload_v2(event, bytes) !=
             PayloadCodecStatus::Ok ||
-        !persistence.append(
-            {index, config.first_sequence + index, bytes})) {
+        !persistence.append({index, bytes})) {
       return false;
     }
   }

@@ -46,37 +46,37 @@ template <class Module>
   const Payload first_payload = payload(0);
   const Payload second_payload = payload(1);
 
-  Module repeated;
-  if (!repeated.process({0, 10, first_payload}) ||
-      repeated.process({0, 10, first_payload}) || !repeated.state().failed ||
+  Module repeated(10);
+  if (!repeated.process({0, first_payload}) ||
+      repeated.process({0, first_payload}) || !repeated.state().failed ||
       repeated.state().processed_end != 1) {
     return false;
   }
 
-  Module skipped;
-  if (skipped.process({1, 11, second_payload}) || !skipped.state().failed ||
+  Module skipped(10);
+  if (skipped.process({1, second_payload}) || !skipped.state().failed ||
       skipped.state().processed_end != 0) {
     return false;
   }
 
-  Module reordered;
-  return reordered.process({0, 10, first_payload}) &&
-         !reordered.process({2, 12, second_payload}) &&
+  Module reordered(10);
+  return reordered.process({0, first_payload}) &&
+         !reordered.process({2, second_payload}) &&
          reordered.state().failed && reordered.state().processed_end == 1;
 }
 
 [[nodiscard]] bool payload_changes_terminal_state() noexcept {
-  snapshot_demo::HashChainModule first_hash;
-  snapshot_demo::HashChainModule second_hash;
-  snapshot_demo::BitAccumulatorModule first_bits;
-  snapshot_demo::BitAccumulatorModule second_bits;
+  snapshot_demo::HashChainModule first_hash(100);
+  snapshot_demo::HashChainModule second_hash(100);
+  snapshot_demo::BitAccumulatorModule first_bits(100);
+  snapshot_demo::BitAccumulatorModule second_bits(100);
 
   for (wal::Position position = 0; position < 4; ++position) {
     Payload first = payload(position);
     Payload second = first;
     if (position == 2) second[23] ^= std::byte{0x40};
-    const wal::RecordView first_record{position, 100 + position, first};
-    const wal::RecordView second_record{position, 100 + position, second};
+    const wal::RecordView first_record{position, first};
+    const wal::RecordView second_record{position, second};
     if (!first_hash.process(first_record) || !second_hash.process(second_record) ||
         !first_bits.process(first_record) || !second_bits.process(second_record)) {
       return false;
@@ -99,7 +99,7 @@ template <class Module>
   wal::RecordTape source;
   wal::PersistenceModule persistence;
   if (!source.open({static_cast<std::uint32_t>(sizeof(Payload)), capacity,
-                    wal::default_alignment, first_sequence})
+                    wal::default_alignment})
            .ok() ||
       !persistence
            .open(path, {static_cast<std::uint32_t>(sizeof(Payload)),
@@ -112,18 +112,18 @@ template <class Module>
   wal::Frontier durable;
   wal::PersistenceSlider persistence_slider(source, durable, persistence, 1);
 
-  snapshot_demo::HashChainModule hash_module;
+  snapshot_demo::HashChainModule hash_module(first_sequence);
   wal::Frontier hash_frontier;
   wal::Slider hash_slider(source, durable, hash_frontier,
                           hash_module);
 
-  snapshot_demo::BitAccumulatorModule bit_module;
+  snapshot_demo::BitAccumulatorModule bit_module(first_sequence);
   wal::Frontier bit_frontier;
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bit_module);
 
-  snapshot_demo::HashChainModule expected_hash;
-  snapshot_demo::BitAccumulatorModule expected_bits;
+  snapshot_demo::HashChainModule expected_hash(first_sequence);
+  snapshot_demo::BitAccumulatorModule expected_bits(first_sequence);
   wal::Position produced = 0;
   std::uint64_t cycle = 0;
   bool saw_full = false;
@@ -139,10 +139,10 @@ template <class Module>
         saw_full = true;
         break;
       }
-      if (!result.ok() || result.sequence != first_sequence + produced) {
+      if (!result.ok() || result.position != produced) {
         return false;
       }
-      const wal::RecordView expected_record{produced, result.sequence, bytes};
+      const wal::RecordView expected_record{produced, bytes};
       if (!expected_hash.process(expected_record) ||
           !expected_bits.process(expected_record)) {
         return false;

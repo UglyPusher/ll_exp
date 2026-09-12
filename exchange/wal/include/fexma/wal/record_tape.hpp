@@ -19,7 +19,21 @@ struct RecordTapeConfig {
   std::uint32_t payload_size{};
   std::uint32_t capacity{};
   std::uint32_t alignment{default_alignment};
-  std::uint64_t first_sequence{1};
+};
+
+enum class RecordTapeOpenStatus : std::uint8_t {
+  Ok,
+  InvalidConfig,
+  AllocationFailed,
+  AlreadyOpen
+};
+
+struct RecordTapeOpenResult {
+  RecordTapeOpenStatus status{RecordTapeOpenStatus::InvalidConfig};
+
+  [[nodiscard]] bool ok() const noexcept {
+    return status == RecordTapeOpenStatus::Ok;
+  }
 };
 
 enum class ReclaimStatus : std::uint8_t {
@@ -43,7 +57,8 @@ public:
   RecordTape(RecordTape&&) = delete;
   RecordTape& operator=(RecordTape&&) = delete;
 
-  [[nodiscard]] OpenResult open(const RecordTapeConfig& config) noexcept;
+  [[nodiscard]] RecordTapeOpenResult
+  open(const RecordTapeConfig& config) noexcept;
   [[nodiscard]] PublishResult
   try_publish(std::span<const std::byte> payload) noexcept;
   [[nodiscard]] AccessResult try_view(Position position) const noexcept;
@@ -56,10 +71,8 @@ public:
   void close() noexcept;
 
   [[nodiscard]] bool is_open() const noexcept;
-  [[nodiscard]] bool sequence_exhausted() const noexcept;
   [[nodiscard]] Position head() const noexcept;
   [[nodiscard]] Position tail() const noexcept;
-  [[nodiscard]] const RecordTapeConfig& config() const noexcept;
 
 private:
   static constexpr std::size_t frontier_cache_line_size = 64;
@@ -82,7 +95,7 @@ private:
     Storage(const Storage&) = delete;
     Storage& operator=(const Storage&) = delete;
 
-    [[nodiscard]] OpenStatus
+    [[nodiscard]] RecordTapeOpenStatus
     initialize(const RecordTapeConfig& config) noexcept;
     void release() noexcept;
 
@@ -106,10 +119,7 @@ private:
   std::uint32_t head_slot_{};
   Storage storage_{};
   RecordTapeConfig config_{};
-  std::atomic<bool> sequence_exhausted_{false};
   std::atomic<bool> open_{false};
-
-  friend class WalTestAccess;
 };
 
 #if defined(_MSC_VER)

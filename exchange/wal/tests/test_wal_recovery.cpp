@@ -65,7 +65,7 @@ payload(std::uint64_t value) noexcept {
   }
   for (std::uint32_t index = 0; index < records; ++index) {
     const auto bytes = payload(index + 1u);
-    const RecordView record{index, config.first_sequence + index, bytes};
+    const RecordView record{index, bytes};
     if (!persistence.append(record)) {
       return false;
     }

@@ -49,6 +49,7 @@ public:
 
 private:
   std::unique_ptr<detail::PhysicalWalAdapter> physical_wal_{};
+  std::uint64_t first_sequence_{};
   std::atomic<bool> failed_{false};
 };
 

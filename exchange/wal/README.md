@@ -9,7 +9,7 @@ tail <= retained positions < head
 ```
 
 `RecordTape` provides producer publication, absolute-position immutable views,
-bounded reclamation, and sequence exhaustion handling. `PersistenceModule`
+bounded reclamation, and position exhaustion handling. `PersistenceModule`
 owns live append/sync and its failure state. Their lifecycles are independent.
 `PersistenceSlider` binds that module to `head`, owns its current position, and
 publishes the durable progress frontier only after a complete batch sync.

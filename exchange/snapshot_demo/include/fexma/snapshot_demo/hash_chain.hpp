@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace fexma::snapshot_demo {
@@ -37,11 +38,17 @@ struct HashChainCapture {
 
 class HashChainModule final {
 public:
+  explicit HashChainModule(std::uint64_t first_sequence = 1) noexcept
+      : first_sequence_(first_sequence) {}
+
   [[nodiscard]] bool process(const wal::RecordView& record) noexcept {
-    if (state_.failed || record.position != state_.processed_end) {
+    if (state_.failed || record.position != state_.processed_end ||
+        record.position > std::numeric_limits<std::uint64_t>::max() -
+                              first_sequence_) {
       state_.failed = true;
       return false;
     }
+    const std::uint64_t sequence = first_sequence_ + record.position;
 
     const DecodeResult decoded = decode_record(record.payload);
     if (!decoded) {
@@ -59,7 +66,7 @@ public:
 
     mix_byte(0xffu);
     mix_u64(record.position);
-    mix_u64(record.sequence);
+    mix_u64(sequence);
     mix_u64(static_cast<std::uint64_t>(record.payload.size()));
     for (const std::byte value : record.payload) {
       mix_byte(std::to_integer<std::uint8_t>(value));
@@ -70,7 +77,7 @@ public:
       capture_.emplace(HashChainCapture{decoded.record.generation_id,
                                         record.position,
                                         state_.processed_end,
-                                        record.sequence, state_});
+                                        sequence, state_});
       capture_duration_ns_ = static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - capture_started)
@@ -118,6 +125,7 @@ private:
     }
   }
 
+  std::uint64_t first_sequence_{1};
   HashChainState state_{};
   std::optional<HashChainCapture> capture_{};
   std::uint64_t capture_duration_ns_{};

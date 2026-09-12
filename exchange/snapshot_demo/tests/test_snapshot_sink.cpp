@@ -53,10 +53,8 @@ read_file(const std::filesystem::path& path) {
   const auto ordinary = snapshot_demo::encode_data(data);
   const auto snapshot = snapshot_demo::encode_save_snapshot(1);
 
-  if (!hash.process({0, 100, ordinary}) ||
-      !bits.process({0, 100, ordinary}) ||
-      !hash.process({1, 101, snapshot}) ||
-      !bits.process({1, 101, snapshot}) ||
+  if (!hash.process({0, ordinary}) || !bits.process({0, ordinary}) ||
+      !hash.process({1, snapshot}) || !bits.process({1, snapshot}) ||
       coordinator.collect(hash, bits) !=
           snapshot_demo::CollectStatus::Complete) {
     return false;
@@ -80,8 +78,8 @@ read_file(const std::filesystem::path& path) {
   const std::filesystem::path root = test_root();
   std::filesystem::remove_all(root);
 
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(100);
+  snapshot_demo::BitAccumulatorModule bits(100);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   if (!make_generation(hash, bits, coordinator)) return false;
   const snapshot_demo::CaptureGeneration generation =
@@ -194,8 +192,8 @@ read_file(const std::filesystem::path& path) {
 [[nodiscard]] bool invalid_input_is_rejected() {
   const std::filesystem::path root = test_root();
   std::filesystem::remove_all(root);
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(100);
+  snapshot_demo::BitAccumulatorModule bits(100);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   if (!make_generation(hash, bits, coordinator)) return false;
   const snapshot_demo::CaptureGeneration generation =
@@ -232,8 +230,8 @@ read_file(const std::filesystem::path& path) {
       test_root().string() + "_failure_" + std::to_string(failure_index);
   std::filesystem::remove_all(root);
 
-  snapshot_demo::HashChainModule hash;
-  snapshot_demo::BitAccumulatorModule bits;
+  snapshot_demo::HashChainModule hash(100);
+  snapshot_demo::BitAccumulatorModule bits(100);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   if (!make_generation(hash, bits, coordinator)) return false;
 
