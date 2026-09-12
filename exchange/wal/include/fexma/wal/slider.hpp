@@ -6,6 +6,7 @@
  */
 
 #include <fexma/wal/record_tape.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 
 #include <array>
 #include <atomic>

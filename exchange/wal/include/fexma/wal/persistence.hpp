@@ -5,6 +5,7 @@
  * @brief Live physical persistence module without progress ownership.
  */
 
+#include <fexma/wal/record_tape_types.hpp>
 #include <fexma/wal/types.hpp>
 
 #include <atomic>
@@ -19,7 +20,7 @@ class PhysicalWalAdapter;
 
 struct PhysicalWalConfig {
   std::uint32_t payload_size{};
-  std::uint32_t alignment{default_alignment};
+  std::uint32_t alignment{wal_default_alignment};
   std::uint32_t payload_schema_version{};
   StreamKind stream_kind{StreamKind::Generic};
   StreamId stream_id{};

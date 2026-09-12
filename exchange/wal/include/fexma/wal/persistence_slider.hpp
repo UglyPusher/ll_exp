@@ -7,6 +7,7 @@
 
 #include <fexma/wal/persistence.hpp>
 #include <fexma/wal/slider.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 
 namespace fexma::wal {
 

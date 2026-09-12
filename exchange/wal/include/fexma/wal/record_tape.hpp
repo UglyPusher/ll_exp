@@ -5,7 +5,7 @@
  * @brief Bounded in-memory RecordTape with head and tail boundaries.
  */
 
-#include <fexma/wal/types.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 
 #include <atomic>
 #include <cstddef>

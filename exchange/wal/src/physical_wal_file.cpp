@@ -275,7 +275,7 @@ OpenStatus PhysicalWalAdapter::create(const std::filesystem::path& path,
     return OpenStatus::IoError;
   }
 
-  const std::array<std::byte, default_alignment> zeros{};
+  const std::array<std::byte, wal_default_alignment> zeros{};
   std::uint32_t remaining = file_header_padding_size(config);
   while (remaining != 0) {
     const std::uint32_t chunk = std::min(
@@ -316,7 +316,7 @@ bool PhysicalWalAdapter::append_record(
     return false;
   }
 
-  const std::array<std::byte, default_alignment> zeros{};
+  const std::array<std::byte, wal_default_alignment> zeros{};
   std::uint32_t remaining = padding_size(config_);
   while (remaining != 0) {
     const std::uint32_t chunk = std::min(

@@ -103,7 +103,7 @@ template <class Module>
            .ok() ||
       !persistence
            .open(path, {static_cast<std::uint32_t>(sizeof(Payload)),
-                        wal::default_alignment, 1, wal::StreamKind::Generic,
+                        wal::wal_default_alignment, 1, wal::StreamKind::Generic,
                         31, 7, first_sequence, 13})
            .ok()) {
     return false;

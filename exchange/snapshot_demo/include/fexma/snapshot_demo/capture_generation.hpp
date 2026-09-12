@@ -7,6 +7,7 @@
 
 #include <fexma/snapshot_demo/bit_accumulator.hpp>
 #include <fexma/snapshot_demo/hash_chain.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 
 #include <chrono>
 #include <cstdint>

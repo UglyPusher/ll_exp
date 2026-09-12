@@ -60,7 +60,7 @@ public:
 
 constexpr WalConfig wal_config{static_cast<std::uint32_t>(sizeof(Payload)),
                                8,
-                               default_alignment,
+                               wal_default_alignment,
                                7,
                                StreamKind::Generic,
                                41,

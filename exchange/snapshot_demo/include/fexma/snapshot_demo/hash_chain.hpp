@@ -6,7 +6,7 @@
  */
 
 #include <fexma/snapshot_demo/record.hpp>
-#include <fexma/wal/types.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 
 #include <chrono>
 #include <cstddef>

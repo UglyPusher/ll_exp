@@ -6,6 +6,7 @@
  */
 
 #include <fexma/snapshot_demo/capture_generation.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 #include <fexma/wal/types.hpp>
 
 #include <array>

@@ -32,7 +32,7 @@ public:
 [[nodiscard]] fexma::wal::WalConfig command_config() noexcept {
   return {static_cast<std::uint32_t>(command_wal_payload_size_v2),
           4,
-          fexma::wal::default_alignment,
+          fexma::wal::wal_default_alignment,
           current_command_schema_version,
           fexma::wal::StreamKind::Command,
           101,
@@ -44,7 +44,7 @@ public:
 [[nodiscard]] fexma::wal::WalConfig event_config() noexcept {
   return {static_cast<std::uint32_t>(event_wal_payload_size_v2),
           4,
-          fexma::wal::default_alignment,
+          fexma::wal::wal_default_alignment,
           current_event_schema_version,
           fexma::wal::StreamKind::Event,
           201,

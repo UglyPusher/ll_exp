@@ -6,6 +6,7 @@
  */
 
 #include <fexma/snapshot_demo/snapshot_loader.hpp>
+#include <fexma/wal/record_tape_types.hpp>
 #include <fexma/wal/slider.hpp>
 
 #include <cstdint>

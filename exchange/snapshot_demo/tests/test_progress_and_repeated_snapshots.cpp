@@ -171,7 +171,7 @@ random_snapshot_positions(wal::Position record_count) {
       !persistence
            .open(wal_path,
                  {static_cast<std::uint32_t>(sizeof(Payload)),
-                  wal::default_alignment, 1, identity.stream_kind,
+                  wal::wal_default_alignment, 1, identity.stream_kind,
                   identity.stream_id, identity.epoch_id, first_sequence,
                   identity.manifest_id})
            .ok()) {
