@@ -7,7 +7,6 @@
 
 #include <fexma/wal/types.hpp>
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +43,7 @@ enum class ReclaimStatus : std::uint8_t {
 
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable : 4324) // Intentional cache-line frontier isolation.
+#pragma warning(disable : 4324) // Intentional cache-line boundary isolation.
 #endif
 
 class RecordTape final {
@@ -75,17 +74,15 @@ public:
   [[nodiscard]] Position tail() const noexcept;
 
 private:
-  static constexpr std::size_t frontier_cache_line_size = 64;
+  static constexpr std::size_t cache_line_size = 64;
 
-  struct alignas(frontier_cache_line_size) Frontier {
+  struct alignas(cache_line_size) TapeBoundary {
     std::atomic<Position> value{0};
-    std::array<std::byte,
-               frontier_cache_line_size - sizeof(std::atomic<Position>)>
-        padding{};
   };
 
   static_assert(std::atomic<Position>::is_always_lock_free);
-  static_assert(sizeof(Frontier) == frontier_cache_line_size);
+  static_assert(alignof(TapeBoundary) == cache_line_size);
+  static_assert(sizeof(TapeBoundary) == cache_line_size);
 
   class Storage final {
   public:
@@ -114,8 +111,10 @@ private:
     std::uint32_t alignment_{default_alignment};
   };
 
-  Frontier tail_frontier_{};
-  Frontier head_frontier_{};
+  // Each boundary is a complete cache line; adjacent members therefore have
+  // distinct cache-line storage and cannot share the producer/reclaimer line.
+  TapeBoundary tail_boundary_{};
+  TapeBoundary head_boundary_{};
   std::uint32_t head_slot_{};
   Storage storage_{};
   RecordTapeConfig config_{};

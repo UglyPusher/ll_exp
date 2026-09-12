@@ -117,8 +117,8 @@ RecordTape::open(const RecordTapeConfig& config) noexcept {
 
   config_ = config;
   head_slot_ = 0;
-  tail_frontier_.value.store(0, std::memory_order_relaxed);
-  head_frontier_.value.store(0, std::memory_order_relaxed);
+  tail_boundary_.value.store(0, std::memory_order_relaxed);
+  head_boundary_.value.store(0, std::memory_order_relaxed);
   open_.store(true, std::memory_order_release);
   return {RecordTapeOpenStatus::Ok};
 }
@@ -129,8 +129,8 @@ RecordTape::try_publish(std::span<const std::byte> payload) noexcept {
   if (payload.size() != config_.payload_size) {
     return {PublishStatus::InvalidPayloadSize, 0};
   }
-  const Position head = head_frontier_.value.load(std::memory_order_relaxed);
-  const Position tail = tail_frontier_.value.load(std::memory_order_acquire);
+  const Position head = head_boundary_.value.load(std::memory_order_relaxed);
+  const Position tail = tail_boundary_.value.load(std::memory_order_acquire);
   if (head - tail == config_.capacity) return {PublishStatus::Full, 0};
   if (head == std::numeric_limits<Position>::max()) {
     return {PublishStatus::PositionExhausted, 0};
@@ -139,16 +139,16 @@ RecordTape::try_publish(std::span<const std::byte> payload) noexcept {
   std::span<std::byte> block = storage_.block_at_slot(head_slot_);
   std::memcpy(block.data(), payload.data(), payload.size());
   head_slot_ = storage_.next_slot(head_slot_);
-  head_frontier_.value.store(head + 1u, std::memory_order_release);
+  head_boundary_.value.store(head + 1u, std::memory_order_release);
   return {PublishStatus::Ok, head};
 }
 
 AccessResult RecordTape::try_view(Position position) const noexcept {
   if (!is_open()) return {ViewStatus::Closed};
 
-  const Position tail = tail_frontier_.value.load(std::memory_order_acquire);
+  const Position tail = tail_boundary_.value.load(std::memory_order_acquire);
   if (position < tail) return {ViewStatus::Reclaimed};
-  const Position head = head_frontier_.value.load(std::memory_order_acquire);
+  const Position head = head_boundary_.value.load(std::memory_order_acquire);
   if (position >= head) return {ViewStatus::Unpublished};
 
   const auto slot = static_cast<std::uint32_t>(position % config_.capacity);
@@ -157,10 +157,10 @@ AccessResult RecordTape::try_view(Position position) const noexcept {
 
 ReclaimStatus RecordTape::reclaim(Position end) noexcept {
   if (!is_open()) return ReclaimStatus::Closed;
-  const Position tail = tail_frontier_.value.load(std::memory_order_relaxed);
-  const Position head = head_frontier_.value.load(std::memory_order_acquire);
+  const Position tail = tail_boundary_.value.load(std::memory_order_relaxed);
+  const Position head = head_boundary_.value.load(std::memory_order_acquire);
   if (end < tail || end > head) return ReclaimStatus::InvalidPosition;
-  tail_frontier_.value.store(end, std::memory_order_release);
+  tail_boundary_.value.store(end, std::memory_order_release);
   return ReclaimStatus::Ok;
 }
 
@@ -174,11 +174,11 @@ bool RecordTape::is_open() const noexcept {
 }
 
 Position RecordTape::head() const noexcept {
-  return head_frontier_.value.load(std::memory_order_acquire);
+  return head_boundary_.value.load(std::memory_order_acquire);
 }
 
 Position RecordTape::tail() const noexcept {
-  return tail_frontier_.value.load(std::memory_order_acquire);
+  return tail_boundary_.value.load(std::memory_order_acquire);
 }
 
 } // namespace fexma::wal
