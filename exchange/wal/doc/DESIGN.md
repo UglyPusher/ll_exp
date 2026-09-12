@@ -18,9 +18,10 @@ frontier only after the complete batch succeeds.
 
 `Slider` is a header-only template over only its concrete module. Its source is
 `RecordTape`; it reads either the tape head or an explicit upstream `Frontier`,
-processes the range visible in one upstream observation, and publishes its own
-frontier after each successful record. The caller owns repeated execution and
-all waiting or scheduling.
+reads its current exclusive end from its own `Frontier`, processes the range
+visible in one upstream observation, and publishes that Frontier after each
+successful record. There is no second slider-owned progress value. The caller
+owns repeated execution and all waiting or scheduling.
 
 `Frontier` owns one monotonic exclusive-end atomic. Ordinary constness separates
 capabilities: an upstream `const Frontier&` can only acquire, while Slider holds
@@ -102,8 +103,9 @@ sequence from its own `first_sequence` and the tape position.
 
 ## Frontier Layout
 
-Each `RecordTape` boundary and slider `Frontier` is stored in its own
-explicitly padded 64-byte aligned object.
+Each `RecordTape` boundary and slider `Frontier` occupies one 64-byte aligned
+object. `RecordTape::TapeBoundary` relies on `alignas` plus `alignof`/`sizeof`
+static assertions; it does not use manual padding.
 The layout removes false sharing caused by unrelated owners writing `tail`,
 `durable`, and `head` in one cache line.
 
@@ -144,6 +146,12 @@ Stream, epoch, manifest, and schema metadata apply to every payload in the file
 and are not repeated in records. Zero padding fills the gap between the
 canonical file header and the first record so every record starts at an aligned
 offset.
+
+RecordTape public value types are isolated in `record_tape_types.hpp`.
+Physical format and lifecycle types are isolated in `types.hpp`; RecordTape
+does not include or depend on that header. `default_alignment` configures tape
+storage, while `wal_default_alignment` configures the physical layout. Their
+current equal value does not couple the contracts.
 
 ## Test Boundary
 

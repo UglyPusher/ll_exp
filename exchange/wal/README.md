@@ -11,8 +11,9 @@ tail <= retained positions < head
 `RecordTape` provides producer publication, absolute-position immutable views,
 bounded reclamation, and position exhaustion handling. `PersistenceModule`
 owns live append/sync and its failure state. Their lifecycles are independent.
-`PersistenceSlider` binds that module to `head`, owns its current position, and
-publishes the durable progress frontier only after a complete batch sync.
+`PersistenceSlider` binds that module to `head`, reads its current position from
+the durable `Frontier`, and publishes that authoritative progress only after a
+complete batch sync.
 
 `Slider` provides synchronous stage mechanics over `RecordTape`. It reads
 either `RecordTape::head()` or an upstream `Frontier`, invokes one statically
@@ -21,6 +22,12 @@ successful record. It owns no worker, polling loop, wait strategy, or domain
 semantics.
 `NoOpModule` is the trivial successful stage used to prove the first bare
 composition: `head -> NoOpSlider -> tail`.
+
+RecordTape public value types live in `record_tape_types.hpp`; physical WAL
+format and lifecycle types live in `types.hpp`. RecordTape headers do not
+include the physical WAL types. The current RecordTape `default_alignment` and
+physical `wal_default_alignment` are both 64 but are independent defaults, not
+a shared contract.
 
 One static `RecordTape`/persistence-slider composition can be wired as:
 

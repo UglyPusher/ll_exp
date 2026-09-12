@@ -25,6 +25,7 @@ public:
   bool append(const RecordView& record) noexcept;
   bool sync() noexcept;
   bool close() noexcept;
+  bool is_open() const noexcept;
   bool failed() const noexcept;
 };
 
@@ -34,9 +35,17 @@ public:
                     PersistenceModule& persistence,
                     Position maximum_count = 0) noexcept;
   SliderResult process_available() noexcept;
+  Position current() const noexcept;
+  void reset_quiescent(Position initial) noexcept;
   void set_maximum_count(Position maximum_count) noexcept;
 };
 ```
+
+RecordTape value types are declared in `record_tape_types.hpp`; physical WAL
+format and lifecycle types are declared in `types.hpp`. RecordTape headers do
+not depend on physical WAL definitions. Tape `default_alignment` and physical
+`wal_default_alignment` are independent defaults even though both currently
+equal 64.
 
 `RecordTape` owns bounded warmed storage and the intrinsic `head` and `tail`
 boundaries. It performs no file operation and has no durable boundary or

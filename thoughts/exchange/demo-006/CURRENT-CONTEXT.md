@@ -1,328 +1,311 @@
 # Demo 006 — current context
 
-Status: working context  
-Updated: 2026-09-09
-Repository: `UglyPusher/ll_exp`  
-Branch: `demo/simple-snapshot`
+Status: RecordTape refactor and Demo 006 acceptance complete
+Updated: 2026-09-13
+Repository: `UglyPusher/ll_exp`
+Branch: `rnd/demo-006-refactor`
+Production baseline commit: `9596ed3`
 
 ## Purpose
 
-This document preserves the current understanding reached while comparing the
-existing WAL implementation, the old `CommandPipeline` prototype, and the
-accepted FTTh design for application `001-exchange/006-simple-snapshot-demo`.
+This is the canonical checkpoint for the accepted RecordTape, WAL, and
+Snapshot Demo 006 boundaries. It records the as-built state needed to begin the
+final RecordTape public API review without reconstructing decisions from chat
+history. The historical implementation sequence remains in
+`IMPLEMENTATION-PLAN.md`.
 
-This is an implementation working note. It does not replace FTTh ADRs.
-
-## Existing code
-
-### WAL
-
-Steps 1 through 5 now provide this static runtime structure:
+## Accepted component model
 
 ```text
-RecordTape::head -> PersistenceSlider -> DurableF
-                       |
-                       v
-              PersistenceModule
+RecordTape
+    ordered bounded in-memory record storage
 
-RecordTape::tail <- composition reclaimer <- downstream sliders
+Record
+    immutable after publication
+
+Position
+    absolute zero-based RecordTape position
+
+head / tail
+    intrinsic RecordTape publication and reclamation boundaries
+
+TapeBoundary
+    private cache-line-isolated RecordTape implementation detail
+
+Frontier
+    authoritative progress boundary of one consumer/module
 ```
 
-`RecordTape` has independent runtime lifecycle and no path, physical writer,
-durable frontier, or persistence failure state. `PersistenceModule` has an
-independent physical lifecycle, accepts immutable `RecordView` values, and
-owns append/sync failure. Runtime capacity is absent from its
-`PhysicalWalConfig`.
+`RecordTape` knows nothing about physical WAL sequence, `first_sequence`,
+stream/epoch/manifest identity, persistence, WAL format, CRC, or snapshots.
+Its public value types are declared in `record_tape_types.hpp`.
 
-Persistence is attached through its dedicated `PersistenceSlider`. It calls
-`PersistenceModule::process()` for every immutable `RecordTape` position in a
-bounded batch, performs one sync, and publishes `DurableF` only after success.
+`RecordTape` exposes immutable retained records through
+`try_view(Position)`. The implementation alone maps a position to a ring slot.
+A view is valid only while the composition prevents `tail` from passing its
+position. `head` moves monotonically after publication; `tail` moves
+monotonically after all mandatory users have finished.
 
-Generic slider mechanics are now available in
-`exchange/wal/include/fexma/wal/slider.hpp`.
-`Frontier` owns one cache-line-isolated monotonic exclusive-end position.
-Ordinary constness separates upstream reads from Slider's own publication.
-`Slider` obtains immutable absolute `RecordTape` views, synchronously invokes
-one statically bound module, and publishes its own frontier after each
-successful record. Repeated execution, waiting, reclamation, and lifecycle
-remain composition responsibilities.
-
-The first bare composition is now implemented and tested as:
+## Slider and Frontier
 
 ```text
-RecordTape::head -> NoOpSlider -> NoOpF -> composition reclaimer -> tail
+Slider<Module>
+    source RecordTape
+    optional upstream Frontier
+    own Frontier
+    Module
 ```
 
-`NoOpModule` supplies the minimal successful module. Publishing `NoOpF` and
-advancing `tail` remain separate actions; the composition reclaims only after
-the synchronous slider invocation has retired every view in the processed
-range.
+The own `Frontier` is the only authoritative consumer progress. Slider does
+not maintain a second current-position field: it acquires the current exclusive
+end from its own Frontier, views records in order, invokes
+`module.process(record)`, and publishes the next exclusive end only after the
+module succeeds.
 
-The first two stateful application modules now live in
-`exchange/snapshot_demo`. `HashChainModule` maintains a deterministic ordered
-digest; `BitAccumulatorModule` maintains a payload set-bit count and an
-order-sensitive rolling fold. Both include absolute position, physical
-sequence, payload size, and every payload byte in their transition, require
-strictly consecutive positions, and fail closed on gaps, duplicates, or
-reordering.
+The first stage observes `RecordTape::head()` directly. Later stages observe a
+read-only upstream Frontier. Slider owns no thread, polling policy, persistence,
+snapshot logic, domain interpretation, or reclaim policy. The application owns
+all objects and the execution schedule; Slider stores references.
 
-The tested full tract is now:
+Do not reintroduce the removed `Progress`, `Reader`, or `Writer` abstractions.
+
+## Persistence and physical WAL
+
+The live persistence path is:
 
 ```text
-head -> PersistenceSlider -> DurableF
-     -> HashChainSlider -> HashF
-     -> BitAccumulatorSlider -> BitF
-     -> composition reclaimer -> tail
+RecordTape
+    -> PersistenceSlider
+    -> PersistenceModule
+    -> PhysicalWalAdapter
+    -> file
 ```
 
-The application payload is now a fixed canonical 64-byte record encoding for
-`Data` and `SaveSnapshot`. A `SaveSnapshot` record at absolute position `N`
-names generation `N`. Both stateful modules apply the ordinary transition for
-that record before storing an immutable `StateAfter(N)` capture. Because
-frontiers are exclusive ends, successful processing then permits publication
-of `N + 1`.
+`PersistenceSlider` is special consumer mechanics. It selects a bounded range,
+passes each `RecordView` to `PersistenceModule`, performs one sync for the
+complete non-empty batch, and publishes the durable Frontier only after sync
+succeeds. It owns no file handle, WAL identity, sequence conversion, or format
+logic.
 
-Each module owns one allocation-free capture slot. A second snapshot command
-is retryable while the first slot remains occupied, so the ordinary slider stays
-at that position without learning snapshot semantics. The composition-owned
-`CaptureGenerationCoordinator` publishes an in-memory full generation only
-when hash and bit captures match in generation, position, processed end, and
-physical sequence. It retains both module slots until the complete generation
-is released.
-
-The composition-level `SnapshotSink` now persists each complete generation as
-two canonical module files plus a checksummed binary description. It assembles
-the files under `snapshot-N.pending`, flushes and synchronizes every file,
-creates the description after both required module files, and publishes the
-generation by renaming the staging directory to `snapshot-N`. A failed save
-does not release the coordinator or either module capture; retry removes stale
-staging data. An existing published generation is never overwritten.
-
-Save results report module-capture, generation-completion, serialization,
-write, flush, fsync, publication, and sink-call total durations separately.
-
-Bootstrap restore now loads a named published generation into an isolated
-`PreparedSnapshot`. Before exposing it, the loader validates the description,
-expected stream/epoch/manifest and composition identities, generation and
-exclusive boundary, required module identities and schema versions, exact file
-sizes, checksums, module encodings, and matching capture metadata. The
-quiescent composition helper changes nothing on load failure. On success it
-publishes both module states and resets both stateful slider positions and
-frontiers to `N + 1`, the first unprocessed absolute position.
-
-The first Step 10 negative pass now covers semantic corruption hidden behind
-valid outer checksums: captures from different processed boundaries and a
-malformed module body are rejected after checksum validation. Identity,
-missing-file, checksum, schema, boundary, and module-decoding failures all leave
-both existing module states, slider positions, and frontiers unchanged. Replay
-that repeats `N` or omits `N + 1` stops at the resume frontier.
-
-The Step 10 progress and repeated-generation pass now verifies that a downstream
-frontier beyond its upstream is rejected without state change, and that
-reclaiming through `HashF` rather than the last mandatory `BitF` makes the
-unfinished bit position observably reclaimed. The complete tract publishes and
-loads every snapshot from both fixed and reproducibly randomized schedules while
-preserving `tail <= BitF <= HashF <= DurableF <= head` through `RecordTape` wraparound.
-
-The final Step 10 stress pass uses a test-only synthetic module with preallocated
-mutable state and immutable capture buffers of 1, 10, 100, and 500 MiB. Its
-slider publishes only after the entire `StateAfter(N)` copy. The live state then
-continues to change while the capture remains stable; a composition-side harness
-writes, synchronizes, publishes by rename, and byte-verifies the complete
-capture before release. This adds no production module or snapshot schema.
-
-Before the extraction, the component in
-[`exchange/wal`](../../../exchange/wal) was a well-tested monolithic
-three-stage construction:
+`PersistenceModule` owns the live physical adapter and terminal persistence
+failure state. It is the explicit coordinate boundary:
 
 ```text
-Producer -> Persistence -> Consumer
-   head       durable       tail
+physical_sequence = first_sequence + record.position
 ```
 
-It owned:
+The addition is overflow-checked before the physical append. `first_sequence`
+never flows back into RecordTape, Frontier, or Slider.
 
-- a bounded preallocated ring of fixed-size payload blocks;
-- absolute `head`, `durable`, and `tail` frontiers;
-- physical append and synchronization;
-- canonical little-endian file and record formats;
+The physical WAL layer is accepted as clean for the current milestone. Its
+responsibilities are:
+
+- file and record headers;
+- physical sequence encoding;
+- alignment and zero padding;
 - CRC validation;
-- a sequential reader and scanner;
-- conservative recovery of an incomplete physical tail;
-- failure semantics and lifecycle.
+- append and physical sync;
+- physical byte reads;
+- conservative incomplete-tail recovery.
 
-The existing WAL tests were also compiled directly with GCC 13.3 during the
-review and passed:
+`WalReader` reads persisted WAL records and tracks physical byte offsets.
+`recover_incomplete_tail()` scans, truncates only a proven incomplete physical
+tail, synchronizes it, and validates the retained file again. Neither component
+contains application snapshot, rebuild, or replay behavior.
 
-```text
-test_wal_frontier_ring: PASS
-test_wal_reader:        PASS
-test_wal_recovery:      PASS
-```
-
-The low-level storage access remains:
-
-```cpp
-Storage::block_at_slot(std::uint32_t slot)
-```
-
-It is private and slot-based. Public module access now uses
-`RecordTape::try_view(Position)`, which validates the absolute position against
-`tail` and `head` before returning immutable payload access.
-
-### CommandPipeline
-
-[`exchange/matcher/CommandPipeline`](../../../exchange/matcher/COMMAND_PIPELINE.md)
-is a separate, hard-coded prototype:
+## Type boundary and alignment defaults
 
 ```text
-head -> durable -> risk_checked -> reserve_checked -> tail
+record_tape_types.hpp
+    Position
+    ViewStatus / RecordView / AccessResult
+    PublishStatus / PublishResult
+    default_alignment
+
+types.hpp
+    physical format magic/version
+    stream/epoch/manifest identity
+    StreamKind
+    WalConfig
+    physical open status/result
+    wal_default_alignment
 ```
 
-It is not connected to the live WAL writer. The intended persistence bridge was
-never implemented: an external component was expected to copy pending commands,
-write and synchronize them, and then call `publish_durable()`.
+RecordTape headers do not include the physical WAL type header. Physical WAL
+code may consume a RecordTape `RecordView` only at the explicit persistence
+boundary.
 
-`CommandPipeline` remains useful as a source of tested ideas:
+`default_alignment` and `wal_default_alignment` both currently equal 64. They
+are independent defaults, not one shared contract: one configures RecordTape
+storage and the other configures the persisted physical layout.
 
-- per-stage frontiers;
-- single-writer progress;
-- release/acquire publication;
-- bounded backpressure;
-- sidecar ownership;
-- separation of ring position from command sequence;
-- live/replay publication scenarios.
+## Demo 006 acceptance topology
 
-The class itself is not a target component for Demo 006 because its topology
-and domain stages are manually embedded in its API.
-
-## Current target model
-
-`RecordTape` is the common ordered record sequence.
-
-It intrinsically owns only two special boundaries:
+The application owns this static composition:
 
 ```text
-tail <= retained positions < head
+RecordTape source
+├── PersistenceSlider
+│   ├── durable Frontier
+│   └── PersistenceModule
+├── Slider<HashChainModule>
+│   ├── upstream: durable
+│   ├── own: hash_frontier
+│   └── HashChainModule
+└── Slider<BitAccumulatorModule>
+    ├── upstream: hash_frontier
+    ├── own: bit_frontier
+    └── BitAccumulatorModule
 ```
 
-- `head` publishes the end of produced data;
-- `tail` publishes the end of reclaimed data and permits slot reuse.
-
-Everything else is a module attached to `RecordTape` through its own slider:
+The application owns Tape, modules, Frontiers, Sliders, persistence, snapshot
+coordinator, sink, and loader. Sliders store references and do not own Tape,
+modules, or Frontiers. The verified linear invariant is:
 
 ```text
-head
-  |
-  v
-PersistenceSlider
-  |
-  v
-HashChainSlider
-  |
-  v
-BitAccumulatorSlider
-  |
-  v
-tail
+tail <= bit_frontier <= hash_frontier <= durable <= head
 ```
 
-The current monolithic `durable` frontier is therefore not a fundamental third
-`RecordTape` boundary. It becomes the published frontier of `PersistenceSlider`.
+Demo 006 reaches RecordTape only through its public lifecycle, publication,
+view/traversal, boundary, and reclamation contracts. It does not know ring
+slots, `TapeBoundary`, allocation layout, or memory-ordering implementation.
 
-For a linear composition:
+## Snapshot capture and publication
+
+A `SaveSnapshot` application record at RecordTape position `N` defines the
+snapshot boundary. After each stateful module processes that record:
 
 ```text
-tail <= BitF <= HashF <= DurableF <= head
+record_position = N
+processed_end   = N + 1
+sequence        = first_sequence + N
 ```
 
-Data does not move from module to module. Every slider addresses the same
-retained `RecordTape` position. What moves through the pipeline is permission to process
-that position, expressed by the upstream frontier.
+Each module copies `StateAfter(N)` into its pending capture. The capture owns
+its state and does not retain a `RecordView` or require the corresponding
+RecordTape record to remain retained. A second snapshot marker applies
+backpressure until the first capture is released.
 
-## Slider relationship
+`CaptureGenerationCoordinator` creates a generation only when both module
+captures agree on generation, position, processed end, sequence, and captured
+state boundary. `SnapshotSink` writes and synchronizes both module files and
+the description in a staging directory, then publishes the completed directory
+by rename. Captures are released only after successful publication.
 
-Each slider:
-
-- has read-only access to `RecordTape`;
-- has read-only access to the frontier immediately upstream;
-- owns its current position;
-- is the sole writer of its published frontier;
-- holds or references one concrete domain module;
-- invokes that module synchronously in the current thread;
-- does not own an execution loop or waiting strategy.
-
-Conceptually:
-
-```cpp
-const RecordTape& tape;
-const UpstreamProgress& upstream;
-Module& module;
-Position current;
-OwnProgress& published;
-```
-
-In the implementation, `current` and every frontier are exclusive ends. A
-value `N` means positions `[0, N)` have completed. Slider publishes `p + 1`
-only after the module successfully processes absolute position `p`.
-
-A downstream slider does not know the type of the upstream module. It knows
-only its read-only progress interface.
-
-The slider obtains the complete data object for a position and passes it to the
-module without interpreting its contents.
-
-## RecordTape position access
-
-Modules must address an absolute position or physical sequence, never a raw
-ring slot. The mapping remains internal:
+## Snapshot load and quiescent restore
 
 ```text
-slot = absolute_position % capacity
+read and validate description
+    -> read and validate module snapshots
+    -> prepare complete module states
+    -> quiescent restore
+    -> restore modules
+    -> Slider::reset_quiescent(processed_end)
+    -> continue suffix processing
 ```
 
-A safe read-only access operation must distinguish at least:
+Loading is isolated: no live state changes until the description and every
+mandatory module capture pass identity, boundary, schema, size, checksum, and
+encoding validation. `restore_snapshot_quiescent()` restores both module states
+and their Slider Frontiers to the same exclusive `processed_end`. The caller
+must stop all relevant roles before invoking it.
 
-- position not yet published by `head`;
-- position already reclaimed by `tail`;
-- retained accessible position.
-
-A returned view must remain valid until `tail` passes that position.
+No snapshot-specific state belongs in RecordTape or Slider.
 
 ## Reclamation
 
-A module never advances `tail` merely because it has processed a position.
+The current linear Demo uses the last mandatory consumer as its safe boundary:
 
-For the strictly linear Demo 006 composition, the composition/reclaimer may
-advance `tail` through the published frontier of the last mandatory slider.
-Until then the slot remains retained for all downstream modules.
+```cpp
+source.reclaim(bit_frontier.acquire());
+```
 
-## Demo 006 scope
+This is valid because `bit_frontier <= hash_frontier <= durable <= head`.
+Snapshot captures contain copied state and therefore add no RecordTape
+retention requirement. There is one application-level reclaimer. A generic
+reclaim coordinator is neither implemented nor required for this topology.
 
-The first milestone contains:
+## Completed refactor checkpoint
 
-- the existing `RecordTape` as the common ordered record sequence;
-- a persistence slider;
-- `HashChainModule`;
-- `BitAccumulatorModule`;
-- one slider per module;
-- a snapshot generation containing both module captures;
-- a composition-level snapshot sink;
-- bootstrap restore;
-- continuation from `N + 1`;
-- comparison with uninterrupted execution.
+| Stage | Status |
+|---|---|
+| Legacy `Wal` facade removal | DONE |
+| WAL inventory | DONE |
+| Progress replaced by `Frontier` | DONE |
+| RecordTape head/progress cleanup | DONE |
+| `Slider<Module>` simplification | DONE |
+| Generic/policy cleanup | DONE |
+| `PersistenceSlider` separation | DONE |
+| RecordTape semantic cleanup | DONE |
+| RecordTape physical header boundary | DONE |
+| Physical WAL review | DONE |
+| Demo 006 acceptance review | DONE |
+| Final RecordTape public API review | NEXT |
+| Library extraction | PENDING |
+| Final documentation | PENDING |
 
-The first milestone intentionally excludes:
+## Open questions / Next session
 
-- Matcher and OrderBook;
-- Risk and Reserve;
-- Event WAL;
-- live persisted `LoadSnapshot`;
-- rewind of a running tract;
-- global quiescence;
-- multiple snapshot generations in flight;
-- production snapshot format;
-- production throughput claims.
+### Cold restart path
 
-Matcher, rebuild, and replay are later integration steps after the tract and
-snapshot mechanics are proven.
+Production Demo 006 does not yet contain the complete restart path:
+
+```text
+process
+    -> physical WAL
+    -> snapshot
+    -> process dies
+
+new process
+    -> physical WAL recovery
+    -> load snapshot
+    -> WalReader
+    -> RecordTape population
+    -> restored Slider topology
+    -> suffix rebuild
+```
+
+Current acceptance proves snapshot load, module restore, Frontier restore, and
+suffix Slider processing from an already available source. The missing disk
+restart composition is an application-level orchestration gap, not a proven
+RecordTape API defect.
+
+### Coordinate origin
+
+Before finalizing the public API, determine how positions in a new RecordTape
+instance relate to snapshot `processed_end` when only a WAL suffix is loaded.
+Do not choose an origin or add offset machinery without a concrete restart
+contract.
+
+### Durable Frontier after restart
+
+Determine what the persistence `durable` Frontier means in a newly constructed
+Tape and whether it must be restored. Current bootstrap restores only the two
+stateful module Frontiers.
+
+### `first_sequence` consistency
+
+`first_sequence` is supplied independently to `PersistenceModule` and the
+domain modules/verification logic. Consistency currently belongs to application
+composition. Do not introduce shared context or configuration without a
+separate decision.
+
+### `WalConfig`
+
+`WalConfig` still contains `capacity`, while `PersistenceModule` builds its
+internal physical configuration with `capacity = 1`. This may be residue from
+the older combined runtime-writer configuration. Leave it unchanged until a
+real public-contract problem requires a decision.
+
+## NEXT
+
+Final RecordTape public API review.
+
+Before changing the API, perform the cold-restart thought experiment:
+
+```text
+WalReader -> RecordTape -> restored Frontiers -> Slider suffix processing
+```
+
+Do not implement a restart framework unless that review exposes a concrete
+missing contract.

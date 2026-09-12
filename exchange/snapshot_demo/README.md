@@ -2,6 +2,9 @@
 
 Application modules and static composition tests for Demo 006.
 
+Implementation and acceptance review are complete on
+`rnd/demo-006-refactor`; the final RecordTape public API review is next.
+
 Подробное описание назначения, архитектуры и структуры проекта находится в
 [`doc/README.md`](doc/README.md).
 
@@ -77,3 +80,10 @@ the full `StateAfter(N)` copy, continues changing the live state while the
 capture stays unchanged, and atomically publishes and byte-verifies the full
 capture at 1, 10, 100, and 500 MiB. The harness is test-only; it does not add a
 module, widen a production snapshot file, or change the WAL format.
+
+The current acceptance covers snapshot load, quiescent module/Frontier restore,
+and suffix Slider processing. It does not yet contain the complete cold-restart
+composition from physical recovery through `WalReader` into a new RecordTape.
+That gap and the corresponding position origin/durable Frontier questions are
+recorded in
+[`CURRENT-CONTEXT.md`](../../thoughts/exchange/demo-006/CURRENT-CONTEXT.md).

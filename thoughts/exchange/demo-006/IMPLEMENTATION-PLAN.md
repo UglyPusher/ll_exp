@@ -1,18 +1,46 @@
 # Demo 006 — implementation plan
 
-Status: IMPLEMENTED / awaiting milestone freeze
+Status: initial implementation and refactor acceptance complete
 
-Updated: 2026-09-10
-Target branch: `demo/simple-snapshot`
+Updated: 2026-09-13
+Target branch: `rnd/demo-006-refactor`
 
-This plan is complete and retained as the implementation record for the
-first Demo 006 milestone. It is no longer a working plan.
-
-Current project state: implementation complete; awaiting independent review.
-The milestone remains awaiting freeze until that review is complete.
+This plan is retained as the historical implementation record for the first
+Demo 006 milestone. Current accepted boundaries and next-session context are
+recorded in `CURRENT-CONTEXT.md`.
 
 Further changes to Demo 006 must be introduced and implemented through
 separate implementation plans.
+
+## Current checkpoint
+
+Production baseline commit: `9596ed3`
+
+| Stage | Status |
+|---|---|
+| Legacy `Wal` facade removal | DONE |
+| WAL inventory | DONE |
+| Progress replaced by `Frontier` | DONE |
+| RecordTape head/progress cleanup | DONE |
+| `Slider<Module>` simplification | DONE |
+| Generic/policy cleanup | DONE |
+| `PersistenceSlider` separation | DONE |
+| RecordTape semantic cleanup | DONE |
+| RecordTape physical header boundary | DONE |
+| Physical WAL review | DONE |
+| Demo 006 acceptance review | DONE |
+| Final RecordTape public API review | NEXT |
+| Library extraction | PENDING |
+| Final documentation | PENDING |
+
+The next review must begin with the cold-restart thought experiment:
+
+```text
+WalReader -> RecordTape -> restored Frontiers -> Slider suffix processing
+```
+
+Do not introduce restart machinery unless that review demonstrates a concrete
+missing public contract.
 
 ## Objective
 
@@ -105,7 +133,7 @@ Retain in `RecordTape`:
 - absolute-position-to-slot mapping;
 - read-only access to a retained position;
 - reclamation and capacity checks;
-- producer sequence exhaustion handling.
+- position-domain exhaustion handling.
 
 Move out of `RecordTape`:
 
@@ -144,9 +172,10 @@ Step 1 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
 Implemented:
 
 - `RecordTape` owns only warmed bounded storage, `head`, `tail`, producer
-  publication, absolute-position views, reclamation, and producer sequence
+  publication, absolute-position views, reclamation, and position-domain
   exhaustion;
-- `RecordTapeConfig` contains only runtime storage and sequence fields;
+- `RecordTapeConfig` contains only payload size, capacity, and storage
+  alignment;
 - `PersistenceModule` owns the selected physical writer and terminal I/O
   failure state;
 - `PhysicalWalConfig` contains physical layout and persisted identity without
@@ -173,7 +202,7 @@ Release:
   `CommandPipeline` tests.
 
 `test_record_tape` verifies persistence-free open, bounded publish/view/reclaim,
-invalid reclamation, wraparound, sequence exhaustion, concurrent producer and
+invalid reclamation, wraparound, position exhaustion, concurrent producer and
 reclaimer operation, independent `RecordTape`/persistence lifecycles, and compatibility
 of the resulting physical file with the unchanged `WalReader`.
 
@@ -193,7 +222,8 @@ AccessResult try_view(Position position) const noexcept;
 
 The API must:
 
-- accept an absolute position or sequence, not a slot number;
+- accept an absolute RecordTape position, not a physical sequence or slot
+  number;
 - reject a position before `tail`;
 - reject a position at or after `head`;
 - return immutable access;
@@ -667,7 +697,7 @@ Before worker threads start:
 4. prepare both module states in isolation;
 5. publish neither state if any preparation fails;
 6. publish the complete prepared composition;
-7. initialize both slider positions/frontiers to exclusive end `N + 1`;
+7. initialize both authoritative Frontiers to exclusive end `N + 1`;
 8. begin processing at `N + 1`.
 
 Gate:
@@ -699,7 +729,7 @@ Implemented in `exchange/snapshot_demo`:
 - successful loading produces an isolated `PreparedSnapshot` without changing
   live modules, sliders, or frontiers;
 - `restore_snapshot_quiescent()` applies both prepared module states and resets
-  both stateful slider positions and frontiers to `N + 1` only after every
+  both stateful authoritative Frontiers to `N + 1` only after every
   participant has passed preparation;
 - module restore hooks clear capture slots and telemetry and are explicitly
   restricted to bootstrap while all execution roles are stopped.
@@ -752,7 +782,7 @@ The bootstrap negative suite now additionally verifies:
   checksum is rejected as `ModuleDecodeError`;
 - identity, missing-description, missing-module, checksum, schema, boundary,
   and module-decoding failures publish none of the prepared state and leave
-  both existing module states, slider positions, and frontiers unchanged;
+  both existing module states and Frontiers unchanged;
 - a suffix source that repeats absolute position `N` or supplies `N + 2` in
   place of `N + 1` terminally fails the first stateful module without advancing
   either restored frontier.
@@ -825,8 +855,9 @@ Verification on 2026-09-10:
 - direct GCC 500 MiB measurements: 547 ms capture, 15598 ms write/sync, and
   1436 ms read/verify.
 
-All Step 10 scenarios listed above now have implemented coverage. Independent
-review of the first Demo 006 milestone remains pending.
+All Step 10 scenarios listed above have implemented coverage. The subsequent
+RecordTape/WAL refactor and Demo 006 acceptance reviews are complete; the final
+RecordTape public API review is next.
 
 ## Later work
 

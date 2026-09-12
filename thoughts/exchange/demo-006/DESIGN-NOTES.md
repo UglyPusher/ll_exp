@@ -1,7 +1,7 @@
 # Demo 006 — design notes and invariants
 
-Status: working decisions  
-Updated: 2026-09-09
+Status: accepted through Demo 006 acceptance review
+Updated: 2026-09-13
 
 ## Central idea
 
@@ -55,10 +55,10 @@ the next slider permission to address the already existing RecordTape position.
 6. Positions are processed strictly in order and without gaps.
 7. Source record bytes are immutable after publication.
 8. A module writes only its own state or designated pocket.
-9. A slider publishes position `N` only after its module has completed
-   processing through `N`.
-10. Release publication of `N` makes all stage output through `N` visible to
-    the acquire-reading downstream slider.
+9. After successfully processing position `N`, a slider publishes exclusive
+   end `N + 1`.
+10. Release publication of `N + 1` makes all stage output through position `N`
+    visible to the acquire-reading downstream slider.
 11. A retained position remains valid until `tail` passes it.
 12. `head - tail <= capacity`.
 13. Raw slot numbers are never used as public logical identities.
@@ -110,9 +110,9 @@ The slider and module execute synchronously in the same calling thread.
 
 ## Persistence interpretation
 
-Persistence is not a third intrinsic `RecordTape` boundary.
-
-It is the first ordinary attached stage for the live durable composition:
+Persistence is not a third intrinsic `RecordTape` boundary. It is the first
+attached stage for the live durable composition, with dedicated mechanics
+because progress may be published only after a complete batch sync:
 
 ```text
 upstream = head
@@ -128,7 +128,8 @@ append complete batch
 -> publish frontier
 ```
 
-The old `durable_frontier_` becomes this slider's published progress.
+The old RecordTape-owned `durable_frontier_` has been removed. Durable progress
+is now the ordinary `Frontier` published by `PersistenceSlider`.
 
 The physical reader, scanner, file format, and recovery remain WAL-related cold
 path components. Extracting the live persistence stage does not invalidate or
@@ -206,7 +207,7 @@ process position N
 -> StateAfter(N)
 -> immutable Capture@Module@N
 -> module completion
--> slider may publish N
+-> slider may publish exclusive end N + 1
 ```
 
 The complete application snapshot is:
@@ -226,7 +227,7 @@ The first milestone uses bootstrap restore:
 validate complete snapshot
 -> prepare every module state
 -> publish the complete composition
--> set slider positions/frontiers to N
+-> set slider frontiers to N + 1
 -> begin at N + 1
 ```
 
@@ -264,14 +265,18 @@ snapshot.
   `N + 1` only after all validation succeeds.
 - Matcher is not part of the first milestone.
 
-## Questions deliberately left for implementation or later work
+## Questions deliberately left for later work
 
-- Exact C++ names and concepts for typed progress readers/writers.
-- Whether position access returns a reference, span, or small view object.
-- Exact ownership representation for stage pockets.
+- Cold restart from physical recovery through `WalReader`, a new RecordTape,
+  restored Frontiers, and suffix processing.
+- The coordinate origin of a new Tape populated with only the WAL suffix after
+  a snapshot boundary.
+- The meaning and initialization of the durable Frontier after restart.
+- Application-owned consistency of `first_sequence` across persistence and
+  domain modules.
+- Whether `WalConfig::capacity` belongs in a physical-format configuration.
 - Worker wait strategy and CPU affinity.
 - Reclaim policy for non-linear topology.
-- Live persisted `LoadSnapshot`.
 - Multiple snapshot generations in flight.
 - Production batching and performance tuning.
 - Matcher, Event WAL, rebuild protocol, and verification replay integration.

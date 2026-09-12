@@ -23,19 +23,19 @@ state.
 
 ## Slider Frontier
 
-Every slider frontier and current value is an exclusive end:
+The own Frontier is the slider's single authoritative current exclusive end:
 
 ```text
-own frontier <= slider current <= observed upstream frontier
+own frontier <= observed upstream frontier
 ```
 
 - The upstream reference is const and therefore read-only.
 - Only the slider holding its own non-const frontier reference publishes it.
-- A range must begin at `current` and end no later than the acquired upstream
-  frontier.
+- A range must begin at the own Frontier value acquired at entry and end no
+  later than the acquired upstream frontier.
 - A record view is obtained by its absolute zero-based position.
-- The module must complete position `p` successfully before current becomes
-  `p + 1`.
+- The module must complete position `p` successfully before the own Frontier
+  becomes `p + 1`.
 - Own frontier publication occurs only after successful module completion.
 - Release publication of exclusive end `p + 1` makes module output for
   position `p` visible to an acquire-reading downstream stage.

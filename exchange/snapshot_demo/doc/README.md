@@ -5,10 +5,9 @@
 Этот документ описывает текущее фактически реализованное состояние Demo 006.
 Он не является планом дальнейшей разработки или roadmap.
 
-**Project status:** implementation complete; awaiting independent review.
-После успешного review первый milestone может быть переведён в состояние
-frozen. Все дальнейшие изменения выполняются через отдельные implementation
-plans.
+**Project status:** implementation and acceptance review complete. Final
+RecordTape public API review is next. Все дальнейшие изменения выполняются
+через отдельные implementation plans.
 
 ## Назначение
 
@@ -72,8 +71,9 @@ flowchart TB
 диапазон `[0, X)`. После успешной обработки позиции `N` слайдер может
 опубликовать `N + 1`.
 
-Слайдер читает `RecordTape` и upstream-фронтир, владеет своей текущей абсолютной позицией
-и единолично публикует собственный фронтир. Он вызывает конкретный модуль
+Слайдер читает `RecordTape` и upstream-фронтир, получает текущую exclusive-end
+позицию из собственного authoritative `Frontier` и единолично публикует этот
+фронтир. Отдельного slider-owned progress state нет. Он вызывает конкретный модуль
 синхронно и не содержит worker thread, polling loop, ожидание, файловый snapshot
 I/O или runtime registry.
 
@@ -224,8 +224,8 @@ capture. Проверка выполняется в изолированном �
 
 [`restore_snapshot_quiescent()`](../include/fexma/snapshot_demo/bootstrap.hpp)
 применяет подготовленное состояние только в quiescent-режиме, когда слайдеры и
-читатели состояния остановлены. После успеха оба модуля, обе позиции слайдеров и
-оба фронтира устанавливаются в `N + 1`.
+читатели состояния остановлены. После успеха оба модуля и оба authoritative
+Frontier устанавливаются в `N + 1`.
 
 ```mermaid
 sequenceDiagram
@@ -319,6 +319,34 @@ ctest --preset windows-msvc-release -R "^test_snapshot_demo_"
 ```powershell
 ctest --preset windows-msvc-release -R "^test_snapshot_demo_large_capture$"
 ```
+
+## Cold restart boundary
+
+Текущий acceptance подтверждает:
+
+```text
+snapshot load
+-> module restore
+-> Frontier restore
+-> suffix Slider processing
+```
+
+Production Demo 006 пока не реализует полный disk restart:
+
+```text
+physical WAL recovery
+-> load snapshot
+-> WalReader
+-> populate a new RecordTape
+-> restore Frontiers
+-> rebuild the suffix
+```
+
+Перед финализацией RecordTape API необходимо определить coordinate origin для
+нового Tape, заполняемого только WAL suffix, и смысл durable Frontier после
+restart. Это application-level orchestration gap, а не доказанный недостаток
+RecordTape. `first_sequence` также пока согласуется отдельно в persistence и
+domain modules силами composition.
 
 ## Границы первого этапа
 
