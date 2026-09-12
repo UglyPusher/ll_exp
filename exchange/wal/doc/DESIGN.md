@@ -17,11 +17,6 @@ position, select a batch, or publish progress.
 successful sync of the complete selected batch permits the slider to publish
 its durable frontier.
 
-`Wal` is a compatibility facade over a static `RecordTape`,
-`PersistenceModule`, `PersistenceSlider`, and durable `Progress`. It retains
-the old three-role API and lifecycle/failure behavior without owning a separate
-special durable atomic.
-
 `Slider` is a header-only, statically bound mechanics template. Its parameters
 are the view source, upstream progress reader, own progress writer, concrete
 module, acquire policy, and publish policy. One call processes at most the
@@ -62,15 +57,13 @@ absolute boundary and needs no slot cursor.
 `try_view(position)` validates the absolute position against `tail` and `head`
 before mapping it with `position % capacity`. It returns position, derived
 physical sequence, and a const span over the existing payload block. There is
-no second data store or per-reader payload copy. Unlike `try_consume()`, it may
-expose retained records that are not durable yet and never reclaims them.
+no second data store or per-reader payload copy. It may expose retained records
+that are not durable yet and never reclaims them.
 
 The caller or composition owns retention coordination: no reclaimer may pass a
 borrowed position during access or use. The view is not a reader registration
 or a slot pin. Lifecycle operations require all views to be retired. `Slider`
 enforces its upstream permission separately from this storage-access check.
-The compatibility producer, durability, consume, and close behavior remains
-unchanged externally.
 
 `PhysicalWalAdapter` owns the hardware-specific persistence mechanics. The
 default filesystem implementation owns the native OS file handle, creates the
@@ -102,15 +95,11 @@ again; it never repairs, skips, or resynchronizes around corruption.
 `RecordTape::try_publish()` validates the call, uses the block at `head`, fills it,
 publishes `head + 1`, and returns the derived physical sequence.
 
-The compatibility `advance_durable()` sets the persistence slider's bounded
-range size and invokes `process_available()`. Generic slider mechanics obtain
-each `RecordView` and call `PersistenceModule::process()`. The persistence
-publish policy requests one sync and permits publication of the range end as
-`durable` only after success.
-
-The compatibility `try_consume()` obtains the readable block at `tail`, copies
-it to caller memory, calls `RecordTape::reclaim()` with `tail + 1`, and returns the
-physical sequence.
+The composition sets the persistence slider's bounded range size and invokes
+`process_available()`. Generic slider mechanics obtain each `RecordView` and
+call `PersistenceModule::process()`. The persistence publish policy requests
+one sync and permits publication of the range end as `durable` only after
+success.
 
 ## Frontier Layout
 

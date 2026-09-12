@@ -5,7 +5,6 @@ add_library(fexma_wal STATIC
   src/physical_wal_file.cpp
   src/reader.cpp
   src/recovery.cpp
-  src/wal.cpp
 )
 
 add_library(fexma::wal ALIAS fexma_wal)
@@ -39,12 +38,6 @@ endfunction()
 
 fexma_wal_apply_warnings(fexma_wal)
 
-add_executable(test_wal_frontier_ring tests/test_wal_frontier_ring.cpp)
-target_link_libraries(test_wal_frontier_ring PRIVATE fexma::wal)
-target_include_directories(test_wal_frontier_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-fexma_wal_apply_warnings(test_wal_frontier_ring)
-add_test(NAME test_wal_frontier_ring COMMAND test_wal_frontier_ring)
-
 add_executable(test_wal_reader tests/test_wal_reader.cpp)
 target_link_libraries(test_wal_reader PRIVATE fexma::wal)
 fexma_wal_apply_warnings(test_wal_reader)
@@ -55,11 +48,6 @@ target_link_libraries(test_wal_recovery PRIVATE fexma::wal)
 target_include_directories(test_wal_recovery PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 fexma_wal_apply_warnings(test_wal_recovery)
 add_test(NAME test_wal_recovery COMMAND test_wal_recovery)
-
-add_executable(test_wal_position_view tests/test_wal_position_view.cpp)
-target_link_libraries(test_wal_position_view PRIVATE fexma::wal)
-fexma_wal_apply_warnings(test_wal_position_view)
-add_test(NAME test_wal_position_view COMMAND test_wal_position_view)
 
 add_executable(test_record_tape tests/test_record_tape.cpp)
 target_link_libraries(test_record_tape PRIVATE fexma::wal)

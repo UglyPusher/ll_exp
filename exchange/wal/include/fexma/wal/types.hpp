@@ -59,12 +59,6 @@ struct WalConfig {
   ManifestId manifest_id{};
 };
 
-struct WalSnapshot {
-  std::uint64_t tail{};
-  std::uint64_t durable{};
-  std::uint64_t head{};
-};
-
 enum class OpenStatus : std::uint8_t {
   Ok,
   InvalidConfig,
@@ -96,54 +90,6 @@ struct PublishResult {
   [[nodiscard]] bool ok() const noexcept {
     return status == PublishStatus::Ok;
   }
-};
-
-enum class DurabilityStatus : std::uint8_t {
-  Ok,
-  SequenceExhausted,
-  IoError,
-  Closed
-};
-
-struct DurabilityResult {
-  DurabilityStatus status{DurabilityStatus::Closed};
-  std::uint64_t durable_frontier{};
-  std::uint32_t records{};
-
-  [[nodiscard]] bool ok() const noexcept {
-    return status == DurabilityStatus::Ok;
-  }
-};
-
-enum class ConsumeStatus : std::uint8_t {
-  Ok,
-  Empty,
-  InvalidPayloadSize,
-  Closed
-};
-
-struct ConsumeResult {
-  ConsumeStatus status{ConsumeStatus::Closed};
-  std::uint64_t sequence{};
-
-  [[nodiscard]] bool ok() const noexcept {
-    return status == ConsumeStatus::Ok;
-  }
-};
-
-enum class CloseStatus : std::uint8_t {
-  Ok,
-  PendingConsumption,
-  PendingDurability,
-  SequenceExhausted,
-  IoError,
-  AlreadyClosed
-};
-
-struct CloseResult {
-  CloseStatus status{CloseStatus::AlreadyClosed};
-
-  [[nodiscard]] bool ok() const noexcept { return status == CloseStatus::Ok; }
 };
 
 } // namespace fexma::wal

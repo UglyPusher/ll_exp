@@ -6,7 +6,6 @@
 #include <fexma/wal/noop_module.hpp>
 #include <fexma/wal/persistence_slider.hpp>
 #include <fexma/wal/reader.hpp>
-#include <fexma/wal/wal.hpp>
 
 #include "physical_wal_file.hpp"
 
@@ -86,11 +85,6 @@ constexpr PhysicalWalConfig physical_config{
 [[nodiscard]] bool publish(RecordTape& tape, std::uint64_t value) noexcept {
   const Payload bytes = payload(value);
   return tape.try_publish(std::span<const std::byte>{bytes}).ok();
-}
-
-[[nodiscard]] bool publish(Wal& wal, std::uint64_t value) noexcept {
-  const Payload bytes = payload(value);
-  return wal.try_publish(std::span<const std::byte>{bytes}).ok();
 }
 
 [[nodiscard]] bool batches_sync_then_release_downstream() {
@@ -261,41 +255,11 @@ constexpr PhysicalWalConfig physical_config{
   return valid;
 }
 
-[[nodiscard]] bool compatibility_composition_reopens_with_fresh_progress() {
-  const auto first_path = test_path("fexma_wal_slider_reopen_first.wal");
-  const auto second_path = test_path("fexma_wal_slider_reopen_second.wal");
-  std::filesystem::remove(first_path);
-  std::filesystem::remove(second_path);
-
-  Wal wal;
-  Payload output{};
-  if (!wal.open(first_path, wal_config).ok() || !publish(wal, 0) ||
-      !wal.advance_durable().ok() || !wal.try_consume(output).ok() ||
-      !equal(output, payload(0)) || !wal.close().ok()) {
-    return false;
-  }
-
-  const PublishResult closed_publish = wal.try_publish(payload(1));
-  if (closed_publish.status != PublishStatus::Closed ||
-      !wal.open(second_path, wal_config).ok() ||
-      wal.snapshot().tail != 0 || wal.snapshot().durable != 0 ||
-      wal.snapshot().head != 0 || !publish(wal, 0) ||
-      !wal.advance_durable().ok() || !wal.try_consume(output).ok() ||
-      !equal(output, payload(0)) || !wal.close().ok()) {
-    return false;
-  }
-
-  std::filesystem::remove(first_path);
-  std::filesystem::remove(second_path);
-  return true;
-}
-
 } // namespace
 
 int main() {
   if (!batches_sync_then_release_downstream()) return 1;
   if (!append_failure_does_not_publish()) return 2;
   if (!sync_failure_hides_batch_but_durable_prefix_drains()) return 3;
-  if (!compatibility_composition_reopens_with_fresh_progress()) return 4;
   return 0;
 }

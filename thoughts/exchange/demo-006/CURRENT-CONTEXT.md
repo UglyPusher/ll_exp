@@ -39,11 +39,6 @@ uses a bounded acquire policy, calls `PersistenceModule::process()` for every
 immutable `RecordTape` position in the selected batch, performs one sync through its
 publish policy, and publishes `DurableF` only after success.
 
-The public `Wal` class remains as a compatibility facade. It statically owns
-`RecordTape`, `PersistenceModule`, `PersistenceSlider`, and the slider's durable
-`Progress`, preserving the previous three-role API and failure behavior. The
-old special `durable_frontier_` no longer exists.
-
 Generic slider mechanics are now available in
 `exchange/wal/include/fexma/wal/slider.hpp`.
 `Progress` separates read-only and writer capabilities over one exclusive-end

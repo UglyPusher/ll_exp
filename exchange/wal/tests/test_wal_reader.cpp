@@ -4,8 +4,8 @@
  */
 
 #include <fexma/wal/format.hpp>
+#include <fexma/wal/persistence.hpp>
 #include <fexma/wal/reader.hpp>
-#include <fexma/wal/wal.hpp>
 
 #include <array>
 #include <cstddef>
@@ -37,25 +37,23 @@ payload(std::uint64_t value) noexcept {
 [[nodiscard]] bool create_wal(const std::filesystem::path& path,
                               std::uint32_t records) {
   std::filesystem::remove(path);
-  Wal wal;
-  if (!wal.open(path, config).ok()) {
+  PersistenceModule persistence;
+  const PhysicalWalConfig physical_config{
+      config.payload_size,           config.alignment,
+      config.payload_schema_version, config.stream_kind,
+      config.stream_id,              config.epoch_id,
+      config.first_sequence,         config.manifest_id};
+  if (!persistence.open(path, physical_config).ok()) {
     return false;
   }
   for (std::uint32_t index = 0; index < records; ++index) {
-    if (!wal.try_publish(payload(index + 1u)).ok()) {
+    const auto bytes = payload(index + 1u);
+    const RecordView record{index, config.first_sequence + index, bytes};
+    if (!persistence.append(record)) {
       return false;
     }
   }
-  if (!wal.advance_durable().ok()) {
-    return false;
-  }
-  std::array<std::byte, config.payload_size> out{};
-  for (std::uint32_t index = 0; index < records; ++index) {
-    if (!wal.try_consume(out).ok()) {
-      return false;
-    }
-  }
-  return wal.close().ok();
+  return persistence.sync() && persistence.close();
 }
 
 void overwrite(const std::filesystem::path& path, std::uint64_t offset,

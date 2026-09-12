@@ -65,11 +65,11 @@ The owner approved adding the Step 2 absolute read-only position API before
 the Step 1 persistence extraction. This provides the tested access boundary
 needed for that extraction while retaining the existing three-role API.
 
-The first patch adds `Position`, `RecordView`, `AccessResult`, and
-`Wal::try_view()`, documents caller-owned retention and coordinate conversion,
-and registers `test_wal_position_view`. Existing WAL test sources, physical
-format, adapter, reader, scanner, recovery, and CRC contracts are unchanged.
-Persistence extraction and generic slider implementation remain pending.
+The first patch added `Position`, `RecordView`, `AccessResult`, and
+`RecordTape::try_view()`, and documented caller-owned retention and coordinate
+conversion. Physical format, adapter, reader, scanner, recovery, and CRC
+contracts were unchanged. Persistence extraction and generic slider
+implementation remained pending.
 
 First patch status: IMPLEMENTED; independent review remains pending.
 
@@ -113,7 +113,7 @@ Move out of `RecordTape`:
 - `durable_slot_`;
 - live physical writer ownership;
 - `io_failed_` as persistence state;
-- the persistence work currently performed by `advance_durable()`.
+- the persistence work then performed by the combined composition.
 
 Do not discard:
 
@@ -151,14 +151,11 @@ Implemented:
   failure state;
 - `PhysicalWalConfig` contains physical layout and persisted identity without
   runtime capacity;
-- `Wal` remains a transitional compatibility composition over `RecordTape` and
-  `PersistenceModule`, preserving its existing three-role API and failure and
-  lifecycle behavior;
-- at Step 1 completion, `durable_frontier_` remained only in that compatibility
+- at Step 1 completion, `durable_frontier_` remained in the transitional
   composition; Step 5 subsequently replaced it with `PersistenceSlider`'s
   ordinary `Progress` frontier;
-- `durable_slot_` was removed; compatibility persistence reads `RecordTape` by
-  absolute position;
+- `durable_slot_` was removed; persistence reads `RecordTape` by absolute
+  position;
 - shared `valid_config()` logic moved to `config.cpp` without changing the
   physical configuration contract.
 
@@ -415,13 +412,12 @@ Implemented:
   successful sync;
 - `PersistenceSlider` is a static specialization of the generic `Slider` over
   `RecordTape`, `RecordTapeHeadProgress`, `PersistenceModule`, and those two policies;
-- `Wal` now statically owns that slider and its ordinary durable `Progress`;
-  the special `durable_frontier_` implementation was removed while the legacy
-  public API and statuses were preserved;
+- the special `durable_frontier_` implementation was replaced by the slider's
+  ordinary durable `Progress`;
 - persistence failure publication is atomic so the producer role observes the
   terminal failure without a data race;
-- quiescent reset of `Progress` and `Slider` preserves facade reopen behavior
-  and provides the initialization primitive later needed by bootstrap restore.
+- quiescent reset of `Progress` and `Slider` provides the initialization
+  primitive later needed by bootstrap restore.
 
 `test_wal_persistence_slider` proves the direct tract:
 

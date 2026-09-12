@@ -57,18 +57,18 @@ call has returned and its borrowed views are retired. Stopping either slider
 execution or composition reclamation therefore preserves bounded
 backpressure.
 
-## Compatibility Composition Frontier Order
+## Persistence Composition Frontier Order
 
-The compatibility `Wal` facade preserves the previous three observable
-frontiers while `durable` is owned by `PersistenceSlider`:
+A composition may maintain three frontiers while `durable` is owned by
+`PersistenceSlider`:
 
 ```text
 tail <= durable <= head
 head - tail <= capacity
 ```
 
-- `[tail, durable)` is readable by `try_consume()`.
-- `[durable, head)` is published but not readable by `try_consume()`.
+- `[tail, durable)` is available to a downstream stage.
+- `[durable, head)` is published but not yet durable.
 - `[tail, head)` is accessible through read-only `try_view()` under the
   caller-owned retention contract; availability does not prove durability.
 - `[head, tail + capacity)` is free capacity.
@@ -77,7 +77,7 @@ head - tail <= capacity
   wraparound.
 
 Only the producer writes `head`, only `PersistenceSlider` writes `durable`, and
-only the compatibility consumer writes `tail`.
+only the composition reclaimer writes `tail`.
 
 ## Ownership
 
@@ -127,17 +127,12 @@ No frontier operation uses `seq_cst`.
 
 - Empty durability batches do not append or synchronize.
 - A failed append or sync does not move `durable`.
-- No position at or above `durable` is returned by `try_consume()`; retained
-  views remain independent of durability and do not grant downstream permission.
-- I/O failure stops producer and durability progress, but not reading below the
-  existing durable frontier.
-- `close()` never releases storage while `tail != durable`.
-- After an I/O failure, `close()` returns `PendingConsumption` until durable
-  backlog is consumed, then releases resources and returns `IoError`.
+- Retained views remain independent of durability and do not grant downstream
+  permission.
+- A failed persistence module prevents further durable progress.
 
-These persistence failure rules belong to the compatibility composition.
-`PersistenceModule` owns its terminal failure state; `RecordTape` remains unaware
-of it. Any direct composition with mandatory persistence must stop its producer
+`PersistenceModule` owns its terminal failure state; `RecordTape` remains
+unaware of it. A composition with mandatory persistence must stop its producer
 after observing that failure.
 
 ## Post-Crash Tail

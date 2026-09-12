@@ -5,8 +5,8 @@
 #include <fexma/matcher/codec.hpp>
 #include <fexma/matcher/matcher.hpp>
 #include <fexma/matcher/replay.hpp>
+#include <fexma/wal/persistence.hpp>
 #include <fexma/wal/reader.hpp>
-#include <fexma/wal/wal.hpp>
 
 #include <array>
 #include <cstddef>
@@ -53,10 +53,23 @@ public:
           1001};
 }
 
+[[nodiscard]] fexma::wal::PhysicalWalConfig
+physical_config(const fexma::wal::WalConfig& config) noexcept {
+  return {config.payload_size,
+          config.alignment,
+          config.payload_schema_version,
+          config.stream_kind,
+          config.stream_id,
+          config.epoch_id,
+          config.first_sequence,
+          config.manifest_id};
+}
+
 [[nodiscard]] bool write_command_stream(const std::filesystem::path& path) {
   std::filesystem::remove(path);
-  fexma::wal::Wal wal;
-  if (!wal.open(path, command_config()).ok()) {
+  const auto config = command_config();
+  fexma::wal::PersistenceModule persistence;
+  if (!persistence.open(path, physical_config(config)).ok()) {
     return false;
   }
 
@@ -68,24 +81,16 @@ public:
       CommandWalPayload{17, Command{ShutdownCommand{}}}};
   std::array<std::byte, command_wal_payload_size_v2> bytes{};
 
-  for (const CommandWalPayload& command : commands) {
+  for (std::size_t index = 0; index < commands.size(); ++index) {
+    const CommandWalPayload& command = commands[index];
     if (encode_command_wal_payload_v2(command, bytes) !=
             PayloadCodecStatus::Ok ||
-        !wal.try_publish(bytes).ok()) {
+        !persistence.append(
+            {index, config.first_sequence + index, bytes})) {
       return false;
     }
   }
-  const fexma::wal::DurabilityResult durable =
-      wal.advance_durable(static_cast<std::uint32_t>(commands.size()));
-  if (!durable.ok() || durable.records != commands.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < commands.size(); ++index) {
-    if (!wal.try_consume(bytes).ok()) {
-      return false;
-    }
-  }
-  return wal.close().ok();
+  return persistence.sync() && persistence.close();
 }
 
 [[nodiscard]] bool read_command_stream(const std::filesystem::path& path) {
@@ -114,8 +119,9 @@ public:
 
 [[nodiscard]] bool write_event_stream(const std::filesystem::path& path) {
   std::filesystem::remove(path);
-  fexma::wal::Wal wal;
-  if (!wal.open(path, event_config()).ok()) {
+  const auto config = event_config();
+  fexma::wal::PersistenceModule persistence;
+  if (!persistence.open(path, physical_config(config)).ok()) {
     return false;
   }
 
@@ -127,24 +133,16 @@ public:
                       Event{StartReplayEvent{}}}};
   std::array<std::byte, event_wal_payload_size_v2> bytes{};
 
-  for (const EventWalPayload& event : events) {
+  for (std::size_t index = 0; index < events.size(); ++index) {
+    const EventWalPayload& event = events[index];
     if (encode_event_wal_payload_v2(event, bytes) !=
             PayloadCodecStatus::Ok ||
-        !wal.try_publish(bytes).ok()) {
+        !persistence.append(
+            {index, config.first_sequence + index, bytes})) {
       return false;
     }
   }
-  const fexma::wal::DurabilityResult durable =
-      wal.advance_durable(static_cast<std::uint32_t>(events.size()));
-  if (!durable.ok() || durable.records != events.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < events.size(); ++index) {
-    if (!wal.try_consume(bytes).ok()) {
-      return false;
-    }
-  }
-  return wal.close().ok();
+  return persistence.sync() && persistence.close();
 }
 
 [[nodiscard]] bool read_event_stream(const std::filesystem::path& path) {

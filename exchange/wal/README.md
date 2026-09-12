@@ -22,25 +22,23 @@ the slider owns no worker, polling loop, wait strategy, or domain semantics.
 `NoOpModule` is the trivial successful stage used to prove the first bare
 composition: `head -> NoOpSlider -> tail`.
 
-The existing `Wal` class remains as a compatibility facade over the static
-`RecordTape`/persistence-slider composition:
+One static `RecordTape`/persistence-slider composition can be wired as:
 
 ```text
 producer -> [durable, head) -> physical sync -> [tail, durable) -> consumer
 ```
 
-That compatibility composition exposes three absolute frontiers:
+That composition has three absolute frontiers:
 
 ```text
 tail <= durable <= head
 head - tail <= capacity
 ```
 
-`try_publish()` writes one block and publishes `head`. `advance_durable()` sets
-the bounded acquire policy and invokes `PersistenceSlider`, which appends a
-batch, performs one OS-level physical sync, and then publishes `durable`.
-`try_consume()` exposes only positions below `durable` and publishes `tail`
-after copying the block.
+`RecordTape::try_publish()` writes one block and publishes `head`.
+`PersistenceSlider::process_available()` appends a bounded batch, performs one
+OS-level physical sync, and then publishes `durable`. The composition reclaims
+positions through its final mandatory downstream frontier.
 
 `open()` creates only a new WAL file and never truncates an existing path. The
 physical file uses canonical little-endian headers and aligned record offsets.
