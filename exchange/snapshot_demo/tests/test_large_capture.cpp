@@ -250,16 +250,16 @@ open_file(const std::filesystem::path& path, const wchar_t* windows_mode,
   const std::filesystem::path published = root / "capture.published";
 
   SyntheticSource source;
-  wal::Progress upstream(1);
-  wal::Progress frontier;
+  wal::Frontier upstream(1);
+  wal::Frontier frontier;
   SyntheticLargeStateModule module(state_size_mib * mib);
-  wal::Slider slider(source, upstream.reader(), frontier.writer(), module);
+  wal::Slider slider(source, upstream, frontier, module);
 
   const wal::SliderResult snapshot_result = slider.process_available();
   const SyntheticCapture capture = module.pending_capture();
   if (snapshot_result.status != wal::SliderStatus::Processed ||
       snapshot_result.processed_count != 1 || slider.current() != 1 ||
-      frontier.reader().acquire() != 1 || module.failed() ||
+      frontier.acquire() != 1 || module.failed() ||
       module.processed_end() != 1 ||
       capture.state.size() != state_size_mib * mib ||
       capture.generation_id != 0 || capture.record_position != 0 ||
@@ -272,14 +272,14 @@ open_file(const std::filesystem::path& path, const wchar_t* windows_mode,
 
   const std::byte first_capture_byte = capture.state.front();
   const std::byte last_capture_byte = capture.state.back();
-  if (!upstream.writer().publish(2)) {
+  if (!upstream.publish(2)) {
     std::filesystem::remove_all(root);
     return false;
   }
   const wal::SliderResult continued = slider.process_available();
   if (continued.status != wal::SliderStatus::Processed ||
       continued.processed_count != 1 || slider.current() != 2 ||
-      frontier.reader().acquire() != 2 || module.failed() ||
+      frontier.acquire() != 2 || module.failed() ||
       module.processed_end() != 2 ||
       module.pending_capture().state.data() != capture.state.data() ||
       capture.state.front() != first_capture_byte ||

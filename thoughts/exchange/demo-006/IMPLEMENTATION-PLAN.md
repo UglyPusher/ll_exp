@@ -153,7 +153,7 @@ Implemented:
   runtime capacity;
 - at Step 1 completion, `durable_frontier_` remained in the transitional
   composition; Step 5 subsequently replaced it with `PersistenceSlider`'s
-  ordinary `Progress` frontier;
+  ordinary frontier;
 - `durable_slot_` was removed; persistence reads `RecordTape` by absolute
   position;
 - shared `valid_config()` logic moved to `config.cpp` without changing the
@@ -253,11 +253,11 @@ Step 3 status: IMPLEMENTED on 2026-09-08; independent review remains pending.
 
 Implemented in `exchange/wal/include/fexma/wal/slider.hpp`:
 
-- `Progress` owns one cache-line-isolated atomic exclusive-end frontier and
-  exposes distinct embedded `Reader` and `Writer` capabilities;
+- `Frontier` owns one cache-line-isolated atomic exclusive-end position and
+  uses constness to separate read and publish capabilities;
 - `RecordTapeHeadProgress` adapts the `RecordTape` head as a read-only upstream frontier;
-- `Slider` is parameterized by view source, upstream progress, own progress,
-  module, acquire policy, and publish policy;
+- `Slider` is parameterized by view source, upstream progress, module, acquire
+  policy, and publish policy, and holds its own `Frontier&`;
 - `AvailableRangeAcquire` selects the consecutive range visible in one
   upstream observation;
 - `OnePositionPublish` authorizes publication after each successful module
@@ -325,7 +325,7 @@ Implemented:
 - `NoOpModule` is a trivial statically bound module that completes every full
   `RecordView` synchronously;
 - the bare composition wires `RecordTapeHeadProgress`, `Slider<NoOpModule>`, its own
-  `Progress`, and composition-owned `RecordTape::reclaim()` without another queue
+  `Frontier`, and composition-owned `RecordTape::reclaim()` without another queue
   or payload copy;
 - publication of the NoOp frontier and advancement of `tail` are distinct;
   only the composition reclaims after the slider invocation and its borrowed
@@ -413,10 +413,10 @@ Implemented:
 - `PersistenceSlider` is a static specialization of the generic `Slider` over
   `RecordTape`, `RecordTapeHeadProgress`, `PersistenceModule`, and those two policies;
 - the special `durable_frontier_` implementation was replaced by the slider's
-  ordinary durable `Progress`;
+  ordinary durable frontier;
 - persistence failure publication is atomic so the producer role observes the
   terminal failure without a data race;
-- quiescent reset of `Progress` and `Slider` provides the initialization
+- quiescent reset of `Frontier` through `Slider` provides the initialization
   primitive later needed by bootstrap restore.
 
 `test_wal_persistence_slider` proves the direct tract:

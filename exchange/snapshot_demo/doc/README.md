@@ -138,7 +138,7 @@ hash_slider.process_available();
 bit_slider.process_available();
 
 // После завершения всех пользователей заимствованных view:
-tape.reclaim(bit_frontier.reader().acquire());
+tape.reclaim(bit_frontier.acquire());
 ```
 
 Порядок и частота вызовов являются политикой композиции. Стадии могут
@@ -275,7 +275,7 @@ exchange/snapshot_demo/
 └── README.md
 ```
 
-Общие механизмы `RecordTape`, `Progress`, `Slider`, `PersistenceModule` и
+Общие механизмы `RecordTape`, `Frontier`, `Slider`, `PersistenceModule` и
 `PersistenceSlider` находятся в [`exchange/wal`](../../wal). Snapshot-приложение
 использует их как нижележащий механизм и не дублирует хранилище `RecordTape`.
 

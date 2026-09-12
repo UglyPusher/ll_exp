@@ -26,7 +26,7 @@ public:
 };
 
 using PersistenceSlider =
-    Slider<RecordTape, RecordTapeHeadProgress, Progress::Writer, PersistenceModule,
+    Slider<RecordTape, RecordTapeHeadProgress, PersistenceModule,
            BoundedRangeAcquire, PersistenceBatchPublish>;
 
 static_assert(SliderModule<PersistenceModule>);

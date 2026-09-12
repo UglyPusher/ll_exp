@@ -173,12 +173,12 @@ template <class Module, class Capture>
   }
 
   wal::RecordTapeHeadProgress head(source);
-  wal::Progress hash_frontier;
-  wal::Progress bit_frontier;
+  wal::Frontier hash_frontier;
+  wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, head, hash_frontier.writer(), hash);
-  wal::Slider bit_slider(source, head, bit_frontier.writer(), bits);
+  wal::Slider hash_slider(source, head, hash_frontier, hash);
+  wal::Slider bit_slider(source, head, bit_frontier, bits);
 
   const wal::SliderResult hash_blocked = hash_slider.process_available();
   const wal::SliderResult bits_blocked = bit_slider.process_available();
@@ -186,8 +186,8 @@ template <class Module, class Capture>
       bits_blocked.status != wal::SliderStatus::ModuleFailed ||
       hash_blocked.processed_count != 2 || bits_blocked.processed_count != 2 ||
       hash_slider.current() != 2 || bit_slider.current() != 2 ||
-      hash_frontier.reader().acquire() != 2 ||
-      bit_frontier.reader().acquire() != 2 || hash.state().failed ||
+      hash_frontier.acquire() != 2 ||
+      bit_frontier.acquire() != 2 || hash.state().failed ||
       bits.state().failed || hash.state().processed_end != 2 ||
       bits.state().processed_end != 2) {
     return false;
@@ -213,8 +213,8 @@ template <class Module, class Capture>
                      bits_second.status == wal::SliderStatus::Processed &&
                      hash_second.processed_count == 1 &&
                      bits_second.processed_count == 1 &&
-                     hash_frontier.reader().acquire() == 3 &&
-                     bit_frontier.reader().acquire() == 3 &&
+                     hash_frontier.acquire() == 3 &&
+                     bit_frontier.acquire() == 3 &&
                      hash.pending_capture() != nullptr &&
                      bits.pending_capture() != nullptr &&
                      hash.pending_capture()->generation_id == 2 &&

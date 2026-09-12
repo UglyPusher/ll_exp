@@ -69,31 +69,31 @@ static_assert(SliderModule<NoOpModule>);
   }
 
   RecordTapeHeadProgress head(tape);
-  Progress no_op_frontier;
+  Frontier no_op_frontier;
   NoOpModule module;
-  Slider slider(tape, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier, module);
 
   const SliderResult processed = slider.process_available();
   if (processed.status != SliderStatus::Processed ||
       processed.processed_count != capacity ||
-      no_op_frontier.reader().acquire() != capacity || tape.tail() != 0 ||
+      no_op_frontier.acquire() != capacity || tape.tail() != 0 ||
       tape.try_publish(std::span<const std::byte>{blocked_payload}).status !=
           PublishStatus::Full) {
     return false;
   }
 
-  if (tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok ||
+  if (tape.reclaim(no_op_frontier.acquire()) != ReclaimStatus::Ok ||
       !publish(tape, capacity)) {
     return false;
   }
   const SliderResult wrapped = slider.process_available();
   if (!wrapped.ok() || wrapped.current != capacity + 1 ||
-      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      tape.reclaim(no_op_frontier.acquire()) != ReclaimStatus::Ok) {
     return false;
   }
 
   return tape.tail() == capacity + 1 &&
-         no_op_frontier.reader().acquire() == tape.tail() &&
+         no_op_frontier.acquire() == tape.tail() &&
          tape.head() == tape.tail();
 }
 
@@ -111,9 +111,9 @@ static_assert(SliderModule<NoOpModule>);
   const std::byte* const first_address = before.record.payload.data();
 
   RecordTapeHeadProgress head(tape);
-  Progress no_op_frontier;
+  Frontier no_op_frontier;
   NoOpModule module;
-  Slider slider(tape, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier, module);
   if (!slider.process_available().ok()) return false;
 
   const AccessResult retained = tape.try_view(0);
@@ -137,8 +137,8 @@ static_assert(SliderModule<NoOpModule>);
   }
 
   if (!slider.process_available().ok() ||
-      no_op_frontier.reader().acquire() != 3 ||
-      tape.reclaim(no_op_frontier.reader().acquire()) != ReclaimStatus::Ok) {
+      no_op_frontier.acquire() != 3 ||
+      tape.reclaim(no_op_frontier.acquire()) != ReclaimStatus::Ok) {
     return false;
   }
   return tape.tail() == 3 && tape.head() == 3;
@@ -185,9 +185,9 @@ static_assert(SliderModule<OrderedProbeModule>);
   }
 
   RecordTapeHeadProgress head(tape);
-  Progress no_op_frontier;
+  Frontier no_op_frontier;
   OrderedProbeModule module(first_sequence);
-  Slider slider(tape, head, no_op_frontier.writer(), module);
+  Slider slider(tape, head, no_op_frontier, module);
   std::atomic<bool> failed{false};
   std::atomic<bool> producer_done{false};
 
@@ -218,7 +218,7 @@ static_assert(SliderModule<OrderedProbeModule>);
       if (failed.load(std::memory_order_acquire)) return;
       const SliderResult result = slider.process_available();
       if (result.status == SliderStatus::Processed) {
-        const Position published = no_op_frontier.reader().acquire();
+        const Position published = no_op_frontier.acquire();
         if (published != slider.current() || published > tape.head() ||
             tape.reclaim(published) != ReclaimStatus::Ok) {
           failed.store(true, std::memory_order_release);
@@ -243,7 +243,7 @@ static_assert(SliderModule<OrderedProbeModule>);
 
   return !failed.load(std::memory_order_acquire) && module.valid() &&
          module.count() == message_count && tape.tail() == message_count &&
-         no_op_frontier.reader().acquire() == message_count &&
+         no_op_frontier.acquire() == message_count &&
          tape.head() == message_count;
 }
 

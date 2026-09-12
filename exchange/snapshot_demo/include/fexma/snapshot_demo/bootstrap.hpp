@@ -16,9 +16,8 @@ template <class HashSlider, class BitAccumulatorSlider>
 [[nodiscard]] SnapshotLoadStatus restore_snapshot_quiescent(
     const SnapshotLoader& loader, std::uint64_t generation_id,
     HashChainModule& hash_chain, BitAccumulatorModule& bit_accumulator,
-    HashSlider& hash_slider, wal::Progress& hash_frontier,
-    BitAccumulatorSlider& bit_accumulator_slider,
-    wal::Progress& bit_accumulator_frontier) noexcept {
+    HashSlider& hash_slider,
+    BitAccumulatorSlider& bit_accumulator_slider) noexcept {
   SnapshotLoadResult loaded = loader.load(generation_id);
   if (!loaded.ok()) return loaded.status;
 
@@ -30,9 +29,7 @@ template <class HashSlider, class BitAccumulatorSlider>
   hash_chain.restore_quiescent(prepared.hash_chain);
   bit_accumulator.restore_quiescent(prepared.bit_accumulator);
   hash_slider.reset_quiescent(resume_position);
-  hash_frontier.reset_quiescent(resume_position);
   bit_accumulator_slider.reset_quiescent(resume_position);
-  bit_accumulator_frontier.reset_quiescent(resume_position);
   return SnapshotLoadStatus::Ok;
 }
 

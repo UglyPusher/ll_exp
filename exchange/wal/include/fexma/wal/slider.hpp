@@ -16,87 +16,42 @@
 
 namespace fexma::wal {
 
-class Progress final {
+class alignas(64) Frontier final {
 public:
-  class Reader final {
-  public:
-    Reader(const Reader&) = delete;
-    Reader& operator=(const Reader&) = delete;
-    Reader(Reader&&) = delete;
-    Reader& operator=(Reader&&) = delete;
+  explicit Frontier(Position initial = 0) noexcept : value_(initial) {}
 
-    [[nodiscard]] Position acquire() const noexcept {
-      return value_->load(std::memory_order_acquire);
-    }
+  Frontier(const Frontier&) = delete;
+  Frontier& operator=(const Frontier&) = delete;
+  Frontier(Frontier&&) = delete;
+  Frontier& operator=(Frontier&&) = delete;
 
-  private:
-    explicit Reader(const std::atomic<Position>& value) noexcept
-        : value_(&value) {}
+  [[nodiscard]] Position acquire() const noexcept {
+    return value_.load(std::memory_order_acquire);
+  }
 
-    const std::atomic<Position>* value_{};
-    friend class Progress;
-  };
-
-  class Writer final {
-  public:
-    Writer(const Writer&) = delete;
-    Writer& operator=(const Writer&) = delete;
-    Writer(Writer&&) = delete;
-    Writer& operator=(Writer&&) = delete;
-
-    [[nodiscard]] Position acquire() const noexcept {
-      return value_->load(std::memory_order_acquire);
-    }
-
-    [[nodiscard]] bool publish(Position end) noexcept {
-      const Position current = value_->load(std::memory_order_relaxed);
-      if (end < current) return false;
-      value_->store(end, std::memory_order_release);
-      return true;
-    }
-
-  private:
-    explicit Writer(std::atomic<Position>& value) noexcept : value_(&value) {}
-
-    std::atomic<Position>* value_{};
-    friend class Progress;
-  };
-
-  explicit Progress(Position initial = 0) noexcept
-      : cell_(initial), reader_(cell_.value), writer_(cell_.value) {}
-
-  Progress(const Progress&) = delete;
-  Progress& operator=(const Progress&) = delete;
-  Progress(Progress&&) = delete;
-  Progress& operator=(Progress&&) = delete;
-
-  [[nodiscard]] const Reader& reader() const noexcept { return reader_; }
-  [[nodiscard]] Writer& writer() noexcept { return writer_; }
+  [[nodiscard]] bool publish(Position end) noexcept {
+    const Position current = value_.load(std::memory_order_relaxed);
+    if (end < current) return false;
+    value_.store(end, std::memory_order_release);
+    return true;
+  }
 
   // Cold-path initialization: no reader or writer may be active.
   void reset_quiescent(Position initial) noexcept {
-    cell_.value.store(initial, std::memory_order_relaxed);
+    value_.store(initial, std::memory_order_relaxed);
   }
 
 private:
   static constexpr std::size_t cache_line_size = 64;
-
-  struct alignas(cache_line_size) Cell final {
-    explicit Cell(Position initial) noexcept : value(initial) {}
-
-    std::atomic<Position> value{};
-    std::array<std::byte,
-               cache_line_size - sizeof(std::atomic<Position>)>
-        padding{};
-  };
-
   static_assert(std::atomic<Position>::is_always_lock_free);
-  static_assert(sizeof(Cell) == cache_line_size);
 
-  Cell cell_;
-  Reader reader_;
-  Writer writer_;
+  std::atomic<Position> value_{};
+  std::array<std::byte,
+             cache_line_size - sizeof(std::atomic<Position>)>
+      padding_{};
 };
+
+static_assert(sizeof(Frontier) == 64);
 
 class RecordTapeHeadProgress final {
 public:
@@ -167,7 +122,6 @@ enum class SliderStatus : std::uint8_t {
   Processed,
   Empty,
   UpstreamRegression,
-  ProgressMismatch,
   InvalidRange,
   ViewUnavailable,
   ModuleFailed,
@@ -196,12 +150,6 @@ concept SliderUpstreamProgress = requires(const Upstream& upstream) {
   { upstream.acquire() } noexcept -> std::same_as<Position>;
 };
 
-template <class OwnProgress>
-concept SliderOwnProgress = requires(OwnProgress& own, Position end) {
-  { own.acquire() } noexcept -> std::same_as<Position>;
-  { own.publish(end) } noexcept -> std::same_as<bool>;
-};
-
 template <class Module>
 concept SliderModule = requires(Module& module, const RecordView& record) {
   { module.process(record) } noexcept -> std::same_as<bool>;
@@ -224,70 +172,70 @@ concept SliderPublishPolicy =
     };
 
 template <SliderViewSource ViewSource, SliderUpstreamProgress UpstreamProgress,
-          SliderOwnProgress OwnProgress, SliderModule Module,
+          SliderModule Module,
           SliderAcquirePolicy AcquirePolicy = AvailableRangeAcquire,
           class PublishPolicy = OnePositionPublish>
   requires SliderPublishPolicy<PublishPolicy, Module>
 class Slider final {
 public:
   Slider(const ViewSource& source, const UpstreamProgress& upstream,
-         OwnProgress& own, Module& module, Position initial = 0,
+         Frontier& own, Module& module,
          AcquirePolicy acquire_policy = {},
          PublishPolicy publish_policy = {}) noexcept
       : source_(source), upstream_(upstream), own_(own), module_(module),
-        current_(initial), acquire_policy_(std::move(acquire_policy)),
+        acquire_policy_(std::move(acquire_policy)),
         publish_policy_(std::move(publish_policy)) {}
 
   [[nodiscard]] SliderResult process_available() noexcept {
-    if (own_.acquire() != current_) {
-      return {SliderStatus::ProgressMismatch, current_, 0};
-    }
+    Position current = own_.acquire();
 
     const Position available_end = upstream_.acquire();
-    if (available_end < current_) {
-      return {SliderStatus::UpstreamRegression, current_, 0};
+    if (available_end < current) {
+      return {SliderStatus::UpstreamRegression, current, 0};
     }
 
     const PositionRange range =
-        acquire_policy_.acquire(current_, available_end);
-    if (range.begin != current_ || range.end < range.begin ||
+        acquire_policy_.acquire(current, available_end);
+    if (range.begin != current || range.end < range.begin ||
         range.end > available_end) {
-      return {SliderStatus::InvalidRange, current_, 0};
+      return {SliderStatus::InvalidRange, current, 0};
     }
     if (range.begin == range.end) {
-      return {SliderStatus::Empty, current_, 0};
+      return {SliderStatus::Empty, current, 0};
     }
 
-    const Position first = current_;
+    const Position first = current;
     std::uint64_t processed_count = 0;
-    while (current_ < range.end) {
-      const AccessResult access = source_.try_view(current_);
+    while (current < range.end) {
+      const AccessResult access = source_.try_view(current);
       if (!access.ok()) {
-        return {SliderStatus::ViewUnavailable, current_, processed_count,
+        return {SliderStatus::ViewUnavailable, current, processed_count,
                 access.status};
       }
       if (!module_.process(access.record)) {
-        return {SliderStatus::ModuleFailed, current_, processed_count};
+        return {SliderStatus::ModuleFailed, current, processed_count};
       }
 
-      ++current_;
+      ++current;
       ++processed_count;
       if (!apply_publish_decision(
-              publish_policy_.after_process(module_, current_))) {
-        return {SliderStatus::PublishFailed, current_, processed_count};
+              publish_policy_.after_process(module_, current), current)) {
+        return {SliderStatus::PublishFailed, current, processed_count};
       }
     }
 
     if (!apply_publish_decision(
-            publish_policy_.after_range(module_, first, current_))) {
-      return {SliderStatus::PublishFailed, current_, processed_count};
+            publish_policy_.after_range(module_, first, current), current)) {
+      return {SliderStatus::PublishFailed, current, processed_count};
     }
-    return {SliderStatus::Processed, current_, processed_count};
+    return {SliderStatus::Processed, current, processed_count};
   }
 
-  [[nodiscard]] Position current() const noexcept { return current_; }
+  [[nodiscard]] Position current() const noexcept { return own_.acquire(); }
   // Cold-path initialization: process_available() must not be active.
-  void reset_quiescent(Position initial) noexcept { current_ = initial; }
+  void reset_quiescent(Position initial) noexcept {
+    own_.reset_quiescent(initial);
+  }
 
   [[nodiscard]] AcquirePolicy& acquire_policy() noexcept {
     return acquire_policy_;
@@ -295,16 +243,15 @@ public:
 
 private:
   [[nodiscard]] bool
-  apply_publish_decision(PublishDecision decision) noexcept {
+  apply_publish_decision(PublishDecision decision, Position current) noexcept {
     if (decision == PublishDecision::Failed) return false;
-    return decision == PublishDecision::Hold || own_.publish(current_);
+    return decision == PublishDecision::Hold || own_.publish(current);
   }
 
   const ViewSource& source_;
   const UpstreamProgress& upstream_;
-  OwnProgress& own_;
+  Frontier& own_;
   Module& module_;
-  Position current_{};
   [[no_unique_address]] AcquirePolicy acquire_policy_;
   [[no_unique_address]] PublishPolicy publish_policy_;
 };

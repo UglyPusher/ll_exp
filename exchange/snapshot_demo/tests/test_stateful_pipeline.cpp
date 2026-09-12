@@ -110,19 +110,19 @@ template <class Module>
   }
 
   wal::RecordTapeHeadProgress head(source);
-  wal::Progress durable;
+  wal::Frontier durable;
   wal::PersistenceSlider persistence_slider(
-      source, head, durable.writer(), persistence, 0,
+      source, head, durable, persistence,
       wal::BoundedRangeAcquire{1}, wal::PersistenceBatchPublish{});
 
   snapshot_demo::HashChainModule hash_module;
-  wal::Progress hash_frontier;
-  wal::Slider hash_slider(source, durable.reader(), hash_frontier.writer(),
+  wal::Frontier hash_frontier;
+  wal::Slider hash_slider(source, durable, hash_frontier,
                           hash_module);
 
   snapshot_demo::BitAccumulatorModule bit_module;
-  wal::Progress bit_frontier;
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
+  wal::Frontier bit_frontier;
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bit_module);
 
   snapshot_demo::HashChainModule expected_hash;
@@ -160,16 +160,16 @@ template <class Module>
     }
     if ((cycle % 7) == 0) {
       if (!accepted(bit_slider.process_available()) ||
-          source.reclaim(bit_frontier.reader().acquire()) !=
+          source.reclaim(bit_frontier.acquire()) !=
               wal::ReclaimStatus::Ok) {
         return false;
       }
     }
 
     const wal::Position tail = source.tail();
-    const wal::Position bit = bit_frontier.reader().acquire();
-    const wal::Position hash = hash_frontier.reader().acquire();
-    const wal::Position durable_end = durable.reader().acquire();
+    const wal::Position bit = bit_frontier.acquire();
+    const wal::Position hash = hash_frontier.acquire();
+    const wal::Position durable_end = durable.acquire();
     const wal::Position head_end = source.head();
     if (!(tail <= bit && bit <= hash && hash <= durable_end &&
           durable_end <= head_end)) {
@@ -182,9 +182,9 @@ template <class Module>
 
   const bool valid = produced == message_count && saw_full &&
                      saw_persistence_lead && saw_hash_lead &&
-                     source.tail() == bit_frontier.reader().acquire() &&
-                     source.tail() == hash_frontier.reader().acquire() &&
-                     source.tail() == durable.reader().acquire() &&
+                     source.tail() == bit_frontier.acquire() &&
+                     source.tail() == hash_frontier.acquire() &&
+                     source.tail() == durable.acquire() &&
                      source.tail() == source.head() && !hash_module.state().failed &&
                      !bit_module.state().failed &&
                      hash_module.state() == expected_hash.state() &&

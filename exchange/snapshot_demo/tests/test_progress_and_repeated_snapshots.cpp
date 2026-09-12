@@ -1,6 +1,6 @@
 /**
  * @file test_progress_and_repeated_snapshots.cpp
- * @brief Progress-violation and repeated-generation checks for Demo 006.
+ * @brief Frontier-violation and repeated-generation checks for Demo 006.
  */
 
 #include <fexma/snapshot_demo/record.hpp>
@@ -70,19 +70,19 @@ struct ExpectedSnapshot {
     return false;
   }
 
-  wal::Progress upstream(1);
-  wal::Progress downstream(2);
+  wal::Frontier upstream(1);
+  wal::Frontier downstream(2);
   snapshot_demo::BitAccumulatorModule bits;
   snapshot_demo::BitAccumulatorState restored{};
   restored.processed_end = 2;
   bits.restore_quiescent(restored);
-  wal::Slider slider(source, upstream.reader(), downstream.writer(), bits, 2);
+  wal::Slider slider(source, upstream, downstream, bits);
 
   const wal::SliderResult result = slider.process_available();
   const bool valid = result.status == wal::SliderStatus::UpstreamRegression &&
                      result.current == 2 && result.processed_count == 0 &&
                      slider.current() == 2 &&
-                     downstream.reader().acquire() == 2 &&
+                     downstream.acquire() == 2 &&
                      bits.state() == restored;
   source.close();
   return valid;
@@ -104,29 +104,29 @@ struct ExpectedSnapshot {
   }
 
   wal::RecordTapeHeadProgress head(source);
-  wal::Progress hash_frontier;
-  wal::Progress bit_frontier;
+  wal::Frontier hash_frontier;
+  wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, head, hash_frontier.writer(), hash);
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
-                         bits, 0, wal::BoundedRangeAcquire{1},
+  wal::Slider hash_slider(source, head, hash_frontier, hash);
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
+                         bits, wal::BoundedRangeAcquire{1},
                          wal::OnePositionPublish{});
 
   if (!accepted(hash_slider.process_available()) ||
       !accepted(bit_slider.process_available()) ||
-      hash_frontier.reader().acquire() != 3 ||
-      bit_frontier.reader().acquire() != 1 ||
-      source.reclaim(bit_frontier.reader().acquire()) !=
+      hash_frontier.acquire() != 3 ||
+      bit_frontier.acquire() != 1 ||
+      source.reclaim(bit_frontier.acquire()) !=
           wal::ReclaimStatus::Ok ||
       !accepted(bit_slider.process_available()) ||
-      bit_frontier.reader().acquire() != 2) {
+      bit_frontier.acquire() != 2) {
     source.close();
     return false;
   }
 
   const snapshot_demo::BitAccumulatorState retained_state = bits.state();
-  if (source.reclaim(hash_frontier.reader().acquire()) !=
+  if (source.reclaim(hash_frontier.acquire()) !=
       wal::ReclaimStatus::Ok) {
     source.close();
     return false;
@@ -137,7 +137,7 @@ struct ExpectedSnapshot {
                      result.view_status == wal::ViewStatus::Reclaimed &&
                      result.current == 2 && result.processed_count == 0 &&
                      bit_slider.current() == 2 &&
-                     bit_frontier.reader().acquire() == 2 &&
+                     bit_frontier.acquire() == 2 &&
                      bits.state() == retained_state;
   source.close();
   return valid;
@@ -189,19 +189,19 @@ random_snapshot_positions(wal::Position record_count) {
   }
 
   wal::RecordTapeHeadProgress head(source);
-  wal::Progress durable;
-  wal::Progress hash_frontier;
-  wal::Progress bit_frontier;
+  wal::Frontier durable;
+  wal::Frontier hash_frontier;
+  wal::Frontier bit_frontier;
   wal::PersistenceSlider persistence_slider(
-      source, head, durable.writer(), persistence, 0,
+      source, head, durable, persistence,
       wal::BoundedRangeAcquire{1}, wal::PersistenceBatchPublish{});
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, durable.reader(), hash_frontier.writer(),
-                          hash, 0, wal::BoundedRangeAcquire{1},
+  wal::Slider hash_slider(source, durable, hash_frontier,
+                          hash, wal::BoundedRangeAcquire{1},
                           wal::OnePositionPublish{});
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
-                         bits, 0, wal::BoundedRangeAcquire{1},
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
+                         bits, wal::BoundedRangeAcquire{1},
                          wal::OnePositionPublish{});
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   const snapshot_demo::SnapshotSink sink(root, identity);
@@ -285,9 +285,9 @@ random_snapshot_positions(wal::Position record_count) {
     }
 
     const wal::Position tail = source.tail();
-    const wal::Position bit = bit_frontier.reader().acquire();
-    const wal::Position hash_end = hash_frontier.reader().acquire();
-    const wal::Position durable_end = durable.reader().acquire();
+    const wal::Position bit = bit_frontier.acquire();
+    const wal::Position hash_end = hash_frontier.acquire();
+    const wal::Position durable_end = durable.acquire();
     const wal::Position head_end = source.head();
     if (!(tail <= bit && bit <= hash_end && hash_end <= durable_end &&
           durable_end <= head_end) ||
@@ -302,9 +302,9 @@ random_snapshot_positions(wal::Position record_count) {
           saved_count == snapshot_positions.size() &&
           expected_snapshots.size() == snapshot_positions.size() &&
           source.tail() == record_count &&
-          bit_frontier.reader().acquire() == record_count &&
-          hash_frontier.reader().acquire() == record_count &&
-          durable.reader().acquire() == record_count &&
+          bit_frontier.acquire() == record_count &&
+          hash_frontier.acquire() == record_count &&
+          durable.acquire() == record_count &&
           source.head() == record_count && !hash.state().failed &&
           !bits.state().failed && hash.state() == expected_hash.state() &&
           bits.state() == expected_bits.state() &&

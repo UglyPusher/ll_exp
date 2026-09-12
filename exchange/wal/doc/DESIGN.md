@@ -23,19 +23,20 @@ module, acquire policy, and publish policy. One call processes at most the
 range allowed by one upstream observation. The caller owns repeated execution
 and all waiting or scheduling.
 
-`Progress` separates capabilities: its `Reader` can only acquire an exclusive
-end, while its single embedded `Writer` can publish a monotonic exclusive end.
-The publish policy returns a decision to `Slider`; it never receives the writer.
-This preserves one runtime publisher for every intermediate frontier while
-allowing later batch policies to complete module work before publication.
+`Frontier` owns one monotonic exclusive-end atomic. Ordinary constness separates
+capabilities: an upstream `const Frontier&` can only acquire, while Slider holds
+its own `Frontier&` and may publish. The publish policy returns a decision to
+Slider and never receives the frontier. This preserves one runtime publisher
+for every intermediate frontier while allowing batch policies to complete
+module work before publication.
 
 The first concrete static composition uses `NoOpModule`:
 
 ```text
-producer -> RecordTape::head -> Slider<NoOpModule> -> Progress -> reclaimer -> tail
+producer -> RecordTape::head -> Slider<NoOpModule> -> Frontier -> reclaimer -> tail
 ```
 
-The slider publishes its `Progress`; after the synchronous slider call retires
+The slider publishes its `Frontier`; after the synchronous slider call retires
 all borrowed views, the composition reads that frontier and advances `tail`.
 These are distinct operations. If the composition does not run the slider or
 does not reclaim, the bounded producer eventually observes `Full`.
@@ -103,7 +104,7 @@ success.
 
 ## Frontier Layout
 
-Each `RecordTape` boundary and slider `Progress` frontier is stored in its own
+Each `RecordTape` boundary and slider `Frontier` is stored in its own
 explicitly padded 64-byte aligned object.
 The layout removes false sharing caused by unrelated owners writing `tail`,
 `durable`, and `head` in one cache line.

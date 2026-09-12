@@ -149,31 +149,27 @@ template <std::size_t Size>
     snapshot_demo::SnapshotLoadStatus expected_status,
     const Records& records) noexcept {
   ReplaySource source(records);
-  wal::Progress upstream(record_count);
-  wal::Progress hash_frontier(1);
-  wal::Progress bit_frontier(1);
+  wal::Frontier upstream(record_count);
+  wal::Frontier hash_frontier(1);
+  wal::Frontier bit_frontier(1);
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
   if (!process_range(hash, records, 0, 1) ||
       !process_range(bits, records, 0, 1)) {
     return false;
   }
-  wal::Slider hash_slider(source, upstream.reader(), hash_frontier.writer(),
-                          hash, 1);
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
-                         bits, 1);
+  wal::Slider hash_slider(source, upstream, hash_frontier, hash);
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier, bits);
   const auto original_hash = hash.state();
   const auto original_bits = bits.state();
 
   const snapshot_demo::SnapshotLoadStatus status =
       snapshot_demo::restore_snapshot_quiescent(
-          loader, snapshot_position, hash, bits, hash_slider, hash_frontier,
-          bit_slider, bit_frontier);
+          loader, snapshot_position, hash, bits, hash_slider, bit_slider);
   return status == expected_status && hash.state() == original_hash &&
          bits.state() == original_bits && hash_slider.current() == 1 &&
          bit_slider.current() == 1 &&
-         hash_frontier.reader().acquire() == 1 &&
-         bit_frontier.reader().acquire() == 1;
+         hash_frontier.acquire() == 1 && bit_frontier.acquire() == 1;
 }
 
 [[nodiscard]] bool restore_matches_continuous_execution() {
@@ -207,24 +203,24 @@ template <std::size_t Size>
   }
 
   ReplaySource source(records);
-  wal::Progress upstream(record_count);
-  wal::Progress hash_frontier;
-  wal::Progress bit_frontier;
+  wal::Frontier upstream(record_count);
+  wal::Frontier hash_frontier;
+  wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule restored_hash;
   snapshot_demo::BitAccumulatorModule restored_bits;
-  wal::Slider hash_slider(source, upstream.reader(), hash_frontier.writer(),
+  wal::Slider hash_slider(source, upstream, hash_frontier,
                           restored_hash);
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          restored_bits);
 
   if (snapshot_demo::restore_snapshot_quiescent(
           loader, snapshot_position, restored_hash, restored_bits, hash_slider,
-          hash_frontier, bit_slider, bit_frontier) !=
+          bit_slider) !=
           snapshot_demo::SnapshotLoadStatus::Ok ||
       hash_slider.current() != snapshot_position + 1u ||
       bit_slider.current() != snapshot_position + 1u ||
-      hash_frontier.reader().acquire() != snapshot_position + 1u ||
-      bit_frontier.reader().acquire() != snapshot_position + 1u ||
+      hash_frontier.acquire() != snapshot_position + 1u ||
+      bit_frontier.acquire() != snapshot_position + 1u ||
       restored_hash.state() != captured_hash ||
       restored_bits.state() != captured_bits ||
       restored_hash.pending_capture() != nullptr ||
@@ -241,8 +237,8 @@ template <std::size_t Size>
                      bit_result.status == wal::SliderStatus::Processed &&
                      hash_result.processed_count == suffix_size &&
                      bit_result.processed_count == suffix_size &&
-                     hash_frontier.reader().acquire() == record_count &&
-                     bit_frontier.reader().acquire() == record_count &&
+                     hash_frontier.acquire() == record_count &&
+                     bit_frontier.acquire() == record_count &&
                      restored_hash.state() == continuous_hash.state() &&
                      restored_bits.state() == continuous_bits.state();
   std::filesystem::remove_all(root);
@@ -254,19 +250,19 @@ template <std::size_t Size>
     wal::Position supplied_position) noexcept {
   const wal::Position resume_position = snapshot_position + 1u;
   PositionFaultSource source(records, supplied_position);
-  wal::Progress upstream(resume_position + 1u);
-  wal::Progress hash_frontier;
-  wal::Progress bit_frontier;
+  wal::Frontier upstream(resume_position + 1u);
+  wal::Frontier hash_frontier;
+  wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, upstream.reader(), hash_frontier.writer(),
+  wal::Slider hash_slider(source, upstream, hash_frontier,
                           hash);
-  wal::Slider bit_slider(source, hash_frontier.reader(), bit_frontier.writer(),
+  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bits);
 
   if (snapshot_demo::restore_snapshot_quiescent(
-          loader, snapshot_position, hash, bits, hash_slider, hash_frontier,
-          bit_slider, bit_frontier) != snapshot_demo::SnapshotLoadStatus::Ok) {
+          loader, snapshot_position, hash, bits, hash_slider, bit_slider) !=
+      snapshot_demo::SnapshotLoadStatus::Ok) {
     return false;
   }
   const snapshot_demo::BitAccumulatorState restored_bits = bits.state();
@@ -276,11 +272,11 @@ template <std::size_t Size>
          hash_result.processed_count == 0 && hash.state().failed &&
          hash.state().processed_end == resume_position &&
          hash_slider.current() == resume_position &&
-         hash_frontier.reader().acquire() == resume_position &&
+         hash_frontier.acquire() == resume_position &&
          bit_result.status == wal::SliderStatus::Empty &&
          bits.state() == restored_bits &&
          bit_slider.current() == resume_position &&
-         bit_frontier.reader().acquire() == resume_position;
+         bit_frontier.acquire() == resume_position;
 }
 
 [[nodiscard]] bool invalid_snapshots_are_rejected_atomically() {

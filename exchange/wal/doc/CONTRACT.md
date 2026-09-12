@@ -29,7 +29,7 @@ public:
 };
 
 using PersistenceSlider =
-    Slider<RecordTape, RecordTapeHeadProgress, Progress::Writer, PersistenceModule,
+    Slider<RecordTape, RecordTapeHeadProgress, PersistenceModule,
            BoundedRangeAcquire, PersistenceBatchPublish>;
 ```
 
@@ -50,19 +50,18 @@ role can stop after observing a terminal append or sync failure.
 Generic stage mechanics are provided by `slider.hpp`:
 
 ```cpp
-Progress progress(initial_exclusive_end);
+Frontier frontier(initial_exclusive_end);
 RecordTapeHeadProgress upstream(tape);
-Slider slider(tape, upstream, progress.writer(), module);
+Slider slider(tape, upstream, frontier, module);
 
 SliderResult result = slider.process_available();
-Position visible_downstream = progress.reader().acquire();
+Position visible_downstream = frontier.acquire();
 ```
 
-Every progress value is an exclusive end: value `N` certifies completion of
-positions `[0, N)`. `Progress` owns one cache-line-isolated atomic and exposes
-one embedded read-only `Reader` capability and one embedded `Writer`
-capability. A composition gives downstream stages only the reader. Each slider
-holds its own writer and is the only runtime publisher for that frontier.
+Every frontier value is an exclusive end: value `N` certifies completion of
+positions `[0, N)`. `Frontier` owns one cache-line-isolated atomic. A Slider
+holds its own non-const frontier reference and is its only runtime publisher;
+downstream stages receive a const reference and can only acquire it.
 
 `process_available()` is one bounded synchronous call. It snapshots the
 upstream exclusive end, asks `AcquirePolicy` for a consecutive subrange,
@@ -96,7 +95,7 @@ storage.
 `NoOpModule` accepts every complete `RecordView` without changing application
 state. It exists as the minimal module for composition tests. In the linear
 bare pipeline, the composition may call
-`tape.reclaim(no_op_progress.reader().acquire())` only after the slider call has
+`tape.reclaim(no_op_frontier.acquire())` only after the slider call has
 returned and all views from the reclaimed range are retired. Publishing the
 module frontier alone does not release storage or remove producer backpressure.
 

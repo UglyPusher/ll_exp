@@ -41,12 +41,12 @@ publish policy, and publishes `DurableF` only after success.
 
 Generic slider mechanics are now available in
 `exchange/wal/include/fexma/wal/slider.hpp`.
-`Progress` separates read-only and writer capabilities over one exclusive-end
-frontier. `Slider` reads one upstream frontier, obtains immutable absolute `RecordTape`
-views, synchronously invokes one statically bound module, and exclusively
-publishes its own frontier according to compile-time acquire and publish
-policies. Repeated execution, waiting, reclamation, and lifecycle remain
-composition responsibilities.
+`Frontier` owns one cache-line-isolated monotonic exclusive-end position.
+Ordinary constness separates upstream reads from Slider's own publication.
+`Slider` obtains immutable absolute `RecordTape` views, synchronously invokes
+one statically bound module, and publishes its own frontier according to
+compile-time acquire and publish policies. Repeated execution, waiting,
+reclamation, and lifecycle remain composition responsibilities.
 
 The first bare composition is now implemented and tested as:
 

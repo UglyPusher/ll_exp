@@ -21,7 +21,7 @@ head - tail <= capacity
 `RecordTape` contains no `durable` frontier, file writer, or persistence failure
 state.
 
-## Slider Progress
+## Slider Frontier
 
 Every slider frontier and current value is an exclusive end:
 
@@ -29,8 +29,8 @@ Every slider frontier and current value is an exclusive end:
 own frontier <= slider current <= observed upstream frontier
 ```
 
-- The upstream capability is read-only.
-- Only the slider holding the own writer capability publishes its frontier.
+- The upstream reference is const and therefore read-only.
+- Only the slider holding its own non-const frontier reference publishes it.
 - A range must begin at `current` and end no later than the acquired upstream
   frontier.
 - A record view is obtained by its absolute zero-based position.
