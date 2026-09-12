@@ -33,24 +33,6 @@ using Clock = std::chrono::steady_clock;
 constexpr std::size_t mib = 1024u * 1024u;
 constexpr std::size_t io_chunk_size = 4u * mib;
 
-class SyntheticSource final {
-public:
-  [[nodiscard]] wal::AccessResult
-  try_view(wal::Position position) const noexcept {
-    if (position >= payloads_.size()) {
-      return {wal::ViewStatus::Unpublished, {}};
-    }
-    return {wal::ViewStatus::Ok,
-            {position, 1000u + position,
-             std::span<const std::byte>{payloads_[position]}}};
-  }
-
-private:
-  const std::array<std::array<std::byte, 1>, 2> payloads_{
-      std::array<std::byte, 1>{std::byte{0x53}},
-      std::array<std::byte, 1>{std::byte{0x44}}};
-};
-
 struct SyntheticCapture {
   std::uint64_t generation_id{};
   wal::Position record_position{};
@@ -249,7 +231,15 @@ open_file(const std::filesystem::path& path, const wchar_t* windows_mode,
   const std::filesystem::path staging = root / "capture.pending";
   const std::filesystem::path published = root / "capture.published";
 
-  SyntheticSource source;
+  wal::RecordTape source;
+  const std::array first_payload{std::byte{0x53}};
+  const std::array second_payload{std::byte{0x44}};
+  if (!source.open({1, 2, wal::default_alignment, 1000}).ok() ||
+      !source.try_publish(first_payload).ok() ||
+      !source.try_publish(second_payload).ok()) {
+    std::filesystem::remove_all(root);
+    return false;
+  }
   wal::Frontier upstream(1);
   wal::Frontier frontier;
   SyntheticLargeStateModule module(state_size_mib * mib);

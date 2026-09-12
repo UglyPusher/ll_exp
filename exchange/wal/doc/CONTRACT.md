@@ -28,9 +28,14 @@ public:
   bool failed() const noexcept;
 };
 
-using PersistenceSlider =
-    Slider<RecordTape, RecordTapeHeadProgress, PersistenceModule,
-           BoundedRangeAcquire, PersistenceBatchPublish>;
+class PersistenceSlider {
+public:
+  PersistenceSlider(const RecordTape& source, Frontier& durable,
+                    PersistenceModule& persistence,
+                    Position maximum_count = 0) noexcept;
+  SliderResult process_available() noexcept;
+  void set_maximum_count(Position maximum_count) noexcept;
+};
 ```
 
 `RecordTape` owns bounded warmed storage and the intrinsic `head` and `tail`
@@ -47,12 +52,11 @@ frontier and does not select batches. `process(record)` is its slider-facing
 append operation. Persistence failure publication is atomic so the producer
 role can stop after observing a terminal append or sync failure.
 
-Generic stage mechanics are provided by `slider.hpp`:
+Ordinary stage mechanics are provided by `slider.hpp`:
 
 ```cpp
 Frontier frontier(initial_exclusive_end);
-RecordTapeHeadProgress upstream(tape);
-Slider slider(tape, upstream, frontier, module);
+Slider slider(tape, frontier, module); // upstream is RecordTape::head()
 
 SliderResult result = slider.process_available();
 Position visible_downstream = frontier.acquire();
@@ -63,27 +67,17 @@ positions `[0, N)`. `Frontier` owns one cache-line-isolated atomic. A Slider
 holds its own non-const frontier reference and is its only runtime publisher;
 downstream stages receive a const reference and can only acquire it.
 
-`process_available()` is one bounded synchronous call. It snapshots the
-upstream exclusive end, asks `AcquirePolicy` for a consecutive subrange,
-validates that the range starts at the slider's current position and does not
-pass upstream, obtains each immutable `RecordView`, and calls
-`module.process(record)`. The module returns `true` only after processing that
-position is complete. Only then does the slider advance its current position
-and apply `PublishPolicy`.
+`process_available()` is one synchronous call. It snapshots the upstream
+exclusive end, obtains every consecutive immutable `RecordView` through that
+end, and calls `module.process(record)`. The module returns `true` only after
+processing that position is complete. Only then does Slider publish the next
+exclusive end to its own frontier.
 
-`PublishPolicy` returns `Hold`, `Publish`, or `Failed`; it never receives the
-frontier writer. This lets a policy perform a synchronous module-level batch
-completion operation before authorizing publication while keeping the slider
-as the sole frontier publisher. The supplied `AvailableRangeAcquire` selects
-the whole observed range, and `OnePositionPublish` publishes after each
-successfully processed position.
-
-`BoundedRangeAcquire` selects at most its configured maximum count.
-`PersistenceBatchPublish` holds progress after every successful append, calls
-`PersistenceModule::sync()` once after the complete non-empty selected range,
-and authorizes publication of the range end only after that sync succeeds. An
-empty range never reaches the policy and performs no sync. Append or sync
-failure leaves the durable progress unchanged and is terminal for the module.
+The first stage reads `RecordTape::head()` directly. A later stage receives an
+explicit `const Frontier&` as upstream. `PersistenceSlider` is separate because
+it selects a bounded batch, appends every selected record, synchronizes the
+complete batch once, and only then publishes the durable frontier. Append or
+sync failure leaves durable progress unchanged and is terminal for the module.
 
 The slider owns no thread, scheduling loop, wait/spin/yield behavior, runtime
 registry, virtual dispatch, neighbor type, persistence operation, or snapshot
@@ -251,9 +245,9 @@ published. Downstream stages may finish the already published valid prefix.
 
 ## Persistence Progress
 
-`PersistenceSlider::process_available()` uses `BoundedRangeAcquire` to select
-positions from `[durable, head)`. An empty selection is a successful no-op and
-performs no physical sync.
+`PersistenceSlider::process_available()` selects at most its configured
+maximum count from `[durable, head)`. An empty selection is a successful no-op
+and performs no physical sync.
 
 For a non-empty batch the physical writer:
 

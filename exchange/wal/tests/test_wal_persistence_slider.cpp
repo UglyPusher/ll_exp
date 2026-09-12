@@ -98,11 +98,8 @@ constexpr PhysicalWalConfig physical_config{
     if (!publish(tape, value)) return false;
   }
 
-  RecordTapeHeadProgress head(tape);
   Frontier durable;
-  PersistenceSlider persistence_slider(
-      tape, head, durable, persistence, BoundedRangeAcquire{},
-      PersistenceBatchPublish{});
+  PersistenceSlider persistence_slider(tape, durable, persistence);
   Frontier no_op_frontier;
   NoOpModule no_op;
   Slider no_op_slider(tape, durable, no_op_frontier, no_op);
@@ -116,7 +113,7 @@ constexpr PhysicalWalConfig physical_config{
     return false;
   }
 
-  persistence_slider.acquire_policy().set_maximum_count(2);
+  persistence_slider.set_maximum_count(2);
   const SliderResult first = persistence_slider.process_available();
   if (!first.ok() || first.processed_count != 2 ||
       durable.acquire() != 2 || control.append_calls != 2 ||
@@ -135,7 +132,7 @@ constexpr PhysicalWalConfig physical_config{
     return false;
   }
 
-  persistence_slider.acquire_policy().set_maximum_count(8);
+  persistence_slider.set_maximum_count(8);
   const SliderResult third = persistence_slider.process_available();
   const SliderResult empty = persistence_slider.process_available();
   if (!third.ok() || third.processed_count != 1 ||
@@ -180,11 +177,8 @@ constexpr PhysicalWalConfig physical_config{
   if (!open(tape, persistence, path) || !publish(tape, 0) || !publish(tape, 1)) {
     return false;
   }
-  RecordTapeHeadProgress head(tape);
   Frontier durable;
-  PersistenceSlider slider(tape, head, durable, persistence,
-                           BoundedRangeAcquire{2},
-                           PersistenceBatchPublish{});
+  PersistenceSlider slider(tape, durable, persistence, 2);
 
   detail::PhysicalWalFileTestControl control{};
   control.fail_append_call = 0;
@@ -208,11 +202,8 @@ constexpr PhysicalWalConfig physical_config{
   PersistenceModule persistence;
   if (!open(tape, persistence, path) || !publish(tape, 0)) return false;
 
-  RecordTapeHeadProgress head(tape);
   Frontier durable;
-  PersistenceSlider persistence_slider(
-      tape, head, durable, persistence, BoundedRangeAcquire{1},
-      PersistenceBatchPublish{});
+  PersistenceSlider persistence_slider(tape, durable, persistence, 1);
   Frontier no_op_frontier;
   NoOpModule no_op;
   Slider no_op_slider(tape, durable, no_op_frontier, no_op);
@@ -226,7 +217,7 @@ constexpr PhysicalWalConfig physical_config{
     return false;
   }
 
-  persistence_slider.acquire_policy().set_maximum_count(2);
+  persistence_slider.set_maximum_count(2);
   detail::PhysicalWalFileTestControl failure_control{};
   failure_control.fail_sync_call = 0;
   SliderResult failed{};

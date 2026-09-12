@@ -47,8 +47,6 @@ using Payload = std::array<std::byte, 16>;
   return result.ok() && result.sequence == position + 1;
 }
 
-static_assert(SliderModule<NoOpModule>);
-
 [[nodiscard]] bool stopped_slider_preserves_backpressure() {
   constexpr Position capacity = 3;
   RecordTape tape;
@@ -68,10 +66,9 @@ static_assert(SliderModule<NoOpModule>);
     return false;
   }
 
-  RecordTapeHeadProgress head(tape);
   Frontier no_op_frontier;
   NoOpModule module;
-  Slider slider(tape, head, no_op_frontier, module);
+  Slider slider(tape, no_op_frontier, module);
 
   const SliderResult processed = slider.process_available();
   if (processed.status != SliderStatus::Processed ||
@@ -110,10 +107,9 @@ static_assert(SliderModule<NoOpModule>);
   if (!before.ok() || !equal(before.record.payload, payload(0))) return false;
   const std::byte* const first_address = before.record.payload.data();
 
-  RecordTapeHeadProgress head(tape);
   Frontier no_op_frontier;
   NoOpModule module;
-  Slider slider(tape, head, no_op_frontier, module);
+  Slider slider(tape, no_op_frontier, module);
   if (!slider.process_available().ok()) return false;
 
   const AccessResult retained = tape.try_view(0);
@@ -170,8 +166,6 @@ private:
   bool valid_{true};
 };
 
-static_assert(SliderModule<OrderedProbeModule>);
-
 [[nodiscard]] bool producer_and_slider_wrap_concurrently() {
   constexpr Position message_count = 200'000;
   constexpr std::uint32_t capacity = 127;
@@ -184,10 +178,9 @@ static_assert(SliderModule<OrderedProbeModule>);
     return false;
   }
 
-  RecordTapeHeadProgress head(tape);
   Frontier no_op_frontier;
   OrderedProbeModule module(first_sequence);
-  Slider slider(tape, head, no_op_frontier, module);
+  Slider slider(tape, no_op_frontier, module);
   std::atomic<bool> failed{false};
   std::atomic<bool> producer_done{false};
 

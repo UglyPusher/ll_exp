@@ -172,13 +172,12 @@ template <class Module, class Capture>
     return false;
   }
 
-  wal::RecordTapeHeadProgress head(source);
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, head, hash_frontier, hash);
-  wal::Slider bit_slider(source, head, bit_frontier, bits);
+  wal::Slider hash_slider(source, hash_frontier, hash);
+  wal::Slider bit_slider(source, bit_frontier, bits);
 
   const wal::SliderResult hash_blocked = hash_slider.process_available();
   const wal::SliderResult bits_blocked = bit_slider.process_available();

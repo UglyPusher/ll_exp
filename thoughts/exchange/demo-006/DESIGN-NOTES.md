@@ -90,15 +90,9 @@ RecordTape access
 +
 read-only upstream progress
 +
-current position
-+
 own published progress
 +
 concrete module
-+
-acquire policy
-+
-publish policy
 ```
 
 A slider is not:
@@ -249,8 +243,7 @@ snapshot.
 - One writer of each published frontier.
 - Full data object passed opaquely to the module.
 - Slider and module execute synchronously.
-- `AvailableRangeAcquire` and `OnePositionPublish` for the first stateful
-  Demo 006 stages.
+- Per-record frontier publication for the first stateful Demo 006 stages.
 - Two stateful modules: `HashChainModule` and `BitAccumulatorModule`.
 - `HashChainModule` uses a deterministic non-cryptographic ordered digest over
   record identity and payload bytes.
@@ -276,7 +269,6 @@ snapshot.
 - Exact C++ names and concepts for typed progress readers/writers.
 - Whether position access returns a reference, span, or small view object.
 - Exact ownership representation for stage pockets.
-- Exact acquire/publish policy interfaces.
 - Worker wait strategy and CPU affinity.
 - Reclaim policy for non-linear topology.
 - Live persisted `LoadSnapshot`.

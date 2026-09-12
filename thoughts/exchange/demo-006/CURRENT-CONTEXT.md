@@ -34,19 +34,18 @@ independent physical lifecycle, accepts immutable `RecordView` values, and
 owns append/sync failure. Runtime capacity is absent from its
 `PhysicalWalConfig`.
 
-Persistence is now attached through the generic slider. `PersistenceSlider`
-uses a bounded acquire policy, calls `PersistenceModule::process()` for every
-immutable `RecordTape` position in the selected batch, performs one sync through its
-publish policy, and publishes `DurableF` only after success.
+Persistence is attached through its dedicated `PersistenceSlider`. It calls
+`PersistenceModule::process()` for every immutable `RecordTape` position in a
+bounded batch, performs one sync, and publishes `DurableF` only after success.
 
 Generic slider mechanics are now available in
 `exchange/wal/include/fexma/wal/slider.hpp`.
 `Frontier` owns one cache-line-isolated monotonic exclusive-end position.
 Ordinary constness separates upstream reads from Slider's own publication.
 `Slider` obtains immutable absolute `RecordTape` views, synchronously invokes
-one statically bound module, and publishes its own frontier according to
-compile-time acquire and publish policies. Repeated execution, waiting,
-reclamation, and lifecycle remain composition responsibilities.
+one statically bound module, and publishes its own frontier after each
+successful record. Repeated execution, waiting, reclamation, and lifecycle
+remain composition responsibilities.
 
 The first bare composition is now implemented and tested as:
 
@@ -84,7 +83,7 @@ frontiers are exclusive ends, successful processing then permits publication
 of `N + 1`.
 
 Each module owns one allocation-free capture slot. A second snapshot command
-is retryable while the first slot remains occupied, so the generic slider stays
+is retryable while the first slot remains occupied, so the ordinary slider stays
 at that position without learning snapshot semantics. The composition-owned
 `CaptureGenerationCoordinator` publishes an in-memory full generation only
 when hash and bit captures match in generation, position, processed end, and
@@ -264,9 +263,8 @@ OwnProgress& published;
 ```
 
 In the implementation, `current` and every frontier are exclusive ends. A
-value `N` means positions `[0, N)` have completed. The supplied
-`OnePositionPublish` policy therefore authorizes publication of `p + 1` only
-after the module successfully processes absolute position `p`.
+value `N` means positions `[0, N)` have completed. Slider publishes `p + 1`
+only after the module successfully processes absolute position `p`.
 
 A downstream slider does not know the type of the upstream module. It knows
 only its read-only progress interface.

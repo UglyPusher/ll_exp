@@ -103,22 +103,15 @@ struct ExpectedSnapshot {
     }
   }
 
-  wal::RecordTapeHeadProgress head(source);
-  wal::Frontier hash_frontier;
+  wal::Frontier bit_upstream(1);
   wal::Frontier bit_frontier;
-  snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, head, hash_frontier, hash);
-  wal::Slider bit_slider(source, hash_frontier, bit_frontier,
-                         bits, wal::BoundedRangeAcquire{1},
-                         wal::OnePositionPublish{});
+  wal::Slider bit_slider(source, bit_upstream, bit_frontier, bits);
 
-  if (!accepted(hash_slider.process_available()) ||
-      !accepted(bit_slider.process_available()) ||
-      hash_frontier.acquire() != 3 ||
-      bit_frontier.acquire() != 1 ||
+  if (!accepted(bit_slider.process_available()) || bit_frontier.acquire() != 1 ||
       source.reclaim(bit_frontier.acquire()) !=
           wal::ReclaimStatus::Ok ||
+      !bit_upstream.publish(2) ||
       !accepted(bit_slider.process_available()) ||
       bit_frontier.acquire() != 2) {
     source.close();
@@ -126,8 +119,8 @@ struct ExpectedSnapshot {
   }
 
   const snapshot_demo::BitAccumulatorState retained_state = bits.state();
-  if (source.reclaim(hash_frontier.acquire()) !=
-      wal::ReclaimStatus::Ok) {
+  if (source.reclaim(3) != wal::ReclaimStatus::Ok ||
+      !bit_upstream.publish(3)) {
     source.close();
     return false;
   }
@@ -188,21 +181,15 @@ random_snapshot_positions(wal::Position record_count) {
     return false;
   }
 
-  wal::RecordTapeHeadProgress head(source);
   wal::Frontier durable;
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
-  wal::PersistenceSlider persistence_slider(
-      source, head, durable, persistence,
-      wal::BoundedRangeAcquire{1}, wal::PersistenceBatchPublish{});
+  wal::PersistenceSlider persistence_slider(source, durable, persistence, 1);
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, durable, hash_frontier,
-                          hash, wal::BoundedRangeAcquire{1},
-                          wal::OnePositionPublish{});
+  wal::Slider hash_slider(source, durable, hash_frontier, hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
-                         bits, wal::BoundedRangeAcquire{1},
-                         wal::OnePositionPublish{});
+                         bits);
   snapshot_demo::CaptureGenerationCoordinator coordinator;
   const snapshot_demo::SnapshotSink sink(root, identity);
 
@@ -253,12 +240,8 @@ random_snapshot_positions(wal::Position record_count) {
     }
     if (!valid) break;
 
-    persistence_slider.acquire_policy().set_maximum_count(
+    persistence_slider.set_maximum_count(
         1u + next_random(schedule_state) % 13u);
-    hash_slider.acquire_policy().set_maximum_count(
-        1u + next_random(schedule_state) % 7u);
-    bit_slider.acquire_policy().set_maximum_count(
-        1u + next_random(schedule_state) % 5u);
 
     const wal::SliderResult persistence_result =
         persistence_slider.process_available();

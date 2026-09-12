@@ -12,23 +12,21 @@ failure state. It accepts immutable `RecordView` values, appends them using the
 unchanged physical format, and synchronizes when instructed. It does not own a
 position, select a batch, or publish progress.
 
-`PersistenceSlider` binds `PersistenceModule` to `RecordTape::head` with
-`BoundedRangeAcquire` and `PersistenceBatchPublish`. Appends hold progress; one
-successful sync of the complete selected batch permits the slider to publish
-its durable frontier.
+`PersistenceSlider` is the dedicated bounded persistence stage. It appends the
+selected `RecordTape` range, performs one sync, and publishes its durable
+frontier only after the complete batch succeeds.
 
-`Slider` is a header-only, statically bound mechanics template. Its parameters
-are the view source, upstream progress reader, own progress writer, concrete
-module, acquire policy, and publish policy. One call processes at most the
-range allowed by one upstream observation. The caller owns repeated execution
-and all waiting or scheduling.
+`Slider` is a header-only template over only its concrete module. Its source is
+`RecordTape`; it reads either the tape head or an explicit upstream `Frontier`,
+processes the range visible in one upstream observation, and publishes its own
+frontier after each successful record. The caller owns repeated execution and
+all waiting or scheduling.
 
 `Frontier` owns one monotonic exclusive-end atomic. Ordinary constness separates
 capabilities: an upstream `const Frontier&` can only acquire, while Slider holds
-its own `Frontier&` and may publish. The publish policy returns a decision to
-Slider and never receives the frontier. This preserves one runtime publisher
-for every intermediate frontier while allowing batch policies to complete
-module work before publication.
+its own `Frontier&` and may publish. This preserves one runtime publisher for
+every intermediate frontier. Persistence uses its separate stage because its
+frontier publication is conditional on batch sync.
 
 The first concrete static composition uses `NoOpModule`:
 
@@ -96,11 +94,10 @@ again; it never repairs, skips, or resynchronizes around corruption.
 `RecordTape::try_publish()` validates the call, uses the block at `head`, fills it,
 publishes `head + 1`, and returns the derived physical sequence.
 
-The composition sets the persistence slider's bounded range size and invokes
-`process_available()`. Generic slider mechanics obtain each `RecordView` and
-call `PersistenceModule::process()`. The persistence publish policy requests
-one sync and permits publication of the range end as `durable` only after
-success.
+The composition sets the persistence slider's maximum batch size and invokes
+`process_available()`. `PersistenceSlider` obtains each `RecordView`, calls
+`PersistenceModule::process()`, requests one sync, and publishes the range end
+as `durable` only after success.
 
 ## Frontier Layout
 

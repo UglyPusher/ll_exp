@@ -25,8 +25,9 @@ order-sensitive rolling fold over record identity and payload. Both modules
 require the next absolute position exactly, process synchronously without
 allocation, and become fail-closed on a gap, duplicate, or reordered position.
 
-Both sliders use `AvailableRangeAcquire` and `OnePositionPublish`. Only the
-composition advances `tail`, and it follows `BitF`, the last mandatory stage.
+Both ordinary sliders process through one observed upstream frontier and
+publish after each successful record. Only the composition advances `tail`,
+and it follows `BitF`, the last mandatory stage.
 
 The fixed 64-byte application payload distinguishes `Data` and
 `SaveSnapshot`. A snapshot generation is identified by the absolute position

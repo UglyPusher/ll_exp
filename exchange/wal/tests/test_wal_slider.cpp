@@ -6,6 +6,7 @@
 #include <fexma/wal/slider.hpp>
 
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -57,23 +58,13 @@ private:
   std::size_t count_{};
 };
 
-class MissingProcess final {};
-class ThrowingProcess final {
-public:
-  bool process(const RecordView&) { return true; }
-};
-
 template <class T>
 concept FrontierPublisher = requires(T& frontier, Position end) {
   { frontier.publish(end) } noexcept -> std::same_as<bool>;
 };
 
-static_assert(SliderModule<RecordingModule>);
-static_assert(!SliderModule<MissingProcess>);
-static_assert(!SliderModule<ThrowingProcess>);
 static_assert(!std::is_polymorphic_v<RecordingModule>);
 static_assert(!std::is_copy_constructible_v<Frontier>);
-static_assert(SliderUpstreamProgress<Frontier>);
 static_assert(FrontierPublisher<Frontier>);
 static_assert(!FrontierPublisher<const Frontier>);
 
@@ -106,10 +97,9 @@ static_assert(!FrontierPublisher<const Frontier>);
     return false;
   }
 
-  RecordTapeHeadProgress upstream(tape);
   Frontier progress;
   RecordingModule module(progress);
-  Slider slider(tape, upstream, progress, module);
+  Slider slider(tape, progress, module);
 
   const SliderResult result = slider.process_available();
   if (result.status != SliderStatus::Processed || result.processed_count != 3 ||
@@ -166,49 +156,7 @@ static_assert(!FrontierPublisher<const Frontier>);
          module.position(2) == 2 && own.acquire() == 3;
 }
 
-struct InvalidRangeAcquire final {
-  [[nodiscard]] PositionRange acquire(Position current,
-                                      Position available) const noexcept {
-    return {current, available + 1};
-  }
-};
-
-struct WholeRangePublish final {
-  template <class Module>
-  [[nodiscard]] PublishDecision after_process(Module&,
-                                              Position) const noexcept {
-    return PublishDecision::Hold;
-  }
-
-  template <class Module>
-  [[nodiscard]] PublishDecision after_range(Module&, Position,
-                                            Position) const noexcept {
-    return PublishDecision::Publish;
-  }
-};
-
-[[nodiscard]] bool publishes_according_to_range_policy() {
-  RecordTape tape;
-  if (!open_tape(tape) || !publish(tape, 1) || !publish(tape, 2) ||
-      !publish(tape, 3)) {
-    return false;
-  }
-
-  RecordTapeHeadProgress upstream(tape);
-  Frontier progress;
-  RecordingModule module(progress);
-  Slider slider(tape, upstream, progress, module,
-                AvailableRangeAcquire{}, WholeRangePublish{});
-
-  const SliderResult result = slider.process_available();
-  return result.status == SliderStatus::Processed &&
-         result.processed_count == 3 && progress.acquire() == 3 &&
-         module.published_on_entry(0) == 0 &&
-         module.published_on_entry(1) == 0 &&
-         module.published_on_entry(2) == 0;
-}
-
-[[nodiscard]] bool rejects_regressed_upstream_and_invalid_ranges() {
+[[nodiscard]] bool rejects_regressed_upstream() {
   RecordTape tape;
   if (!open_tape(tape) || !publish(tape, 1)) return false;
 
@@ -216,18 +164,9 @@ struct WholeRangePublish final {
   Frontier regressed_own(1);
   RecordingModule regressed_module(regressed_own);
   Slider regressed(tape, regressed_upstream, regressed_own, regressed_module);
-  if (regressed.process_available().status !=
-      SliderStatus::UpstreamRegression) {
-    return false;
-  }
-
-  Frontier available(1);
-  Frontier ranged_own;
-  RecordingModule ranged_module(ranged_own);
-  Slider invalid(tape, available, ranged_own, ranged_module,
-                 InvalidRangeAcquire{});
-  return invalid.process_available().status == SliderStatus::InvalidRange &&
-         ranged_module.count() == 0 && ranged_own.acquire() == 0;
+  return regressed.process_available().status ==
+             SliderStatus::UpstreamRegression &&
+         regressed_module.count() == 0 && regressed_own.acquire() == 1;
 }
 
 [[nodiscard]] bool reports_unavailable_views_without_publication() {
@@ -259,44 +198,13 @@ struct WholeRangePublish final {
          second_own.acquire() == 0 && second_module.count() == 0;
 }
 
-struct RejectingPublish final {
-  template <class Module>
-  [[nodiscard]] PublishDecision after_process(Module&,
-                                              Position) const noexcept {
-    return PublishDecision::Failed;
-  }
-
-  template <class Module>
-  [[nodiscard]] PublishDecision after_range(Module&, Position,
-                                            Position) const noexcept {
-    return PublishDecision::Hold;
-  }
-};
-
-[[nodiscard]] bool reports_publication_failure_after_processing() {
-  RecordTape tape;
-  if (!open_tape(tape) || !publish(tape, 1)) return false;
-  RecordTapeHeadProgress upstream(tape);
-  Frontier own;
-  RecordingModule module(own);
-  Slider slider(tape, upstream, own, module, AvailableRangeAcquire{},
-                RejectingPublish{});
-
-  const SliderResult result = slider.process_available();
-  return result.status == SliderStatus::PublishFailed &&
-         result.processed_count == 1 && result.current == 1 &&
-         slider.current() == 0 && module.count() == 1;
-}
-
 } // namespace
 
 int main() {
   if (!frontier_is_monotonic_and_resettable_quiescent()) return 1;
   if (!processes_available_range_in_order()) return 2;
   if (!respects_upstream_and_retries_module_failure()) return 3;
-  if (!publishes_according_to_range_policy()) return 4;
-  if (!rejects_regressed_upstream_and_invalid_ranges()) return 5;
-  if (!reports_unavailable_views_without_publication()) return 6;
-  if (!reports_publication_failure_after_processing()) return 7;
+  if (!rejects_regressed_upstream()) return 4;
+  if (!reports_unavailable_views_without_publication()) return 5;
   return 0;
 }

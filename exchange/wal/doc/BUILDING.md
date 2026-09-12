@@ -14,8 +14,8 @@ and `/permissive-` on MSVC, or `-Wall -Wextra -Wpedantic` elsewhere.
 The contract executables cover configuration, warmed aligned storage, hot-path
 allocations, FIFO and wrap-around, durability batching, physical file format,
 CRC and padding, injected append/sync failures, concurrent producer,
-durability-writer, and consumer roles, and generic slider progress, range,
-failure, and publication-policy behavior. The bare-pipeline executable covers
+durability-writer, and consumer roles, and ordinary slider ordering, frontier,
+failure, and upstream behavior. The bare-pipeline executable covers
 linear reclamation, stopped-stage backpressure, retained-slot stability,
 wraparound, and concurrent producer/slider operation. The reader and recovery
 executables cover validated scanning, corruption classification, conservative

@@ -14,11 +14,11 @@ owns live append/sync and its failure state. Their lifecycles are independent.
 `PersistenceSlider` binds that module to `head`, owns its current position, and
 publishes the durable progress frontier only after a complete batch sync.
 
-`Slider` provides generic synchronous stage mechanics over the same retained
-positions. It reads an upstream progress capability, invokes one statically
-bound module, and is the sole user of its own progress writer capability.
-Acquire and publish policies select the bounded range and publication cadence;
-the slider owns no worker, polling loop, wait strategy, or domain semantics.
+`Slider` provides synchronous stage mechanics over `RecordTape`. It reads
+either `RecordTape::head()` or an upstream `Frontier`, invokes one statically
+bound module in position order, and publishes its own `Frontier` after each
+successful record. It owns no worker, polling loop, wait strategy, or domain
+semantics.
 `NoOpModule` is the trivial successful stage used to prove the first bare
 composition: `head -> NoOpSlider -> tail`.
 

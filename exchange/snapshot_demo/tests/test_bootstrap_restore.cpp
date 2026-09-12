@@ -50,44 +50,21 @@ using Records = std::vector<snapshot_demo::ApplicationPayload>;
   return records;
 }
 
-class ReplaySource final {
-public:
-  explicit ReplaySource(const Records& records) noexcept : records_(&records) {}
-
-  [[nodiscard]] wal::AccessResult
-  try_view(wal::Position position) const noexcept {
-    if (position >= records_->size()) {
-      return {wal::ViewStatus::Unpublished, {}};
-    }
-    return {wal::ViewStatus::Ok,
-            {position, first_sequence + position,
-             std::span<const std::byte>{(*records_)[position]}}};
+[[nodiscard]] bool open_source(wal::RecordTape& source,
+                               const Records& records) noexcept {
+  if (!source.open({static_cast<std::uint32_t>(sizeof(Records::value_type)),
+                    static_cast<std::uint32_t>(records.size()),
+                    wal::default_alignment, first_sequence})
+           .ok()) {
+    return false;
   }
-
-private:
-  const Records* records_{};
-};
-
-class PositionFaultSource final {
-public:
-  PositionFaultSource(const Records& records,
-                      wal::Position supplied_position) noexcept
-      : records_(&records), supplied_position_(supplied_position) {}
-
-  [[nodiscard]] wal::AccessResult
-  try_view(wal::Position requested_position) const noexcept {
-    if (requested_position >= records_->size()) {
-      return {wal::ViewStatus::Unpublished, {}};
+  for (const auto& payload : records) {
+    if (!source.try_publish(std::span<const std::byte>{payload}).ok()) {
+      return false;
     }
-    return {wal::ViewStatus::Ok,
-            {supplied_position_, first_sequence + requested_position,
-             std::span<const std::byte>{(*records_)[requested_position]}}};
   }
-
-private:
-  const Records* records_{};
-  wal::Position supplied_position_{};
-};
+  return true;
+}
 
 template <class Module>
 [[nodiscard]] bool process_range(Module& module, const Records& records,
@@ -148,8 +125,8 @@ template <std::size_t Size>
     const snapshot_demo::SnapshotLoader& loader,
     snapshot_demo::SnapshotLoadStatus expected_status,
     const Records& records) noexcept {
-  ReplaySource source(records);
-  wal::Frontier upstream(record_count);
+  wal::RecordTape source;
+  if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier(1);
   wal::Frontier bit_frontier(1);
   snapshot_demo::HashChainModule hash;
@@ -158,7 +135,7 @@ template <std::size_t Size>
       !process_range(bits, records, 0, 1)) {
     return false;
   }
-  wal::Slider hash_slider(source, upstream, hash_frontier, hash);
+  wal::Slider hash_slider(source, hash_frontier, hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier, bits);
   const auto original_hash = hash.state();
   const auto original_bits = bits.state();
@@ -202,14 +179,13 @@ template <std::size_t Size>
     return false;
   }
 
-  ReplaySource source(records);
-  wal::Frontier upstream(record_count);
+  wal::RecordTape source;
+  if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule restored_hash;
   snapshot_demo::BitAccumulatorModule restored_bits;
-  wal::Slider hash_slider(source, upstream, hash_frontier,
-                          restored_hash);
+  wal::Slider hash_slider(source, hash_frontier, restored_hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          restored_bits);
 
@@ -249,14 +225,13 @@ template <std::size_t Size>
     const snapshot_demo::SnapshotLoader& loader, const Records& records,
     wal::Position supplied_position) noexcept {
   const wal::Position resume_position = snapshot_position + 1u;
-  PositionFaultSource source(records, supplied_position);
-  wal::Frontier upstream(resume_position + 1u);
+  wal::RecordTape source;
+  if (!open_source(source, records)) return false;
   wal::Frontier hash_frontier;
   wal::Frontier bit_frontier;
   snapshot_demo::HashChainModule hash;
   snapshot_demo::BitAccumulatorModule bits;
-  wal::Slider hash_slider(source, upstream, hash_frontier,
-                          hash);
+  wal::Slider hash_slider(source, hash_frontier, hash);
   wal::Slider bit_slider(source, hash_frontier, bit_frontier,
                          bits);
 
@@ -266,10 +241,11 @@ template <std::size_t Size>
     return false;
   }
   const snapshot_demo::BitAccumulatorState restored_bits = bits.state();
-  const wal::SliderResult hash_result = hash_slider.process_available();
+  const bool hash_processed = hash.process(
+      {supplied_position, first_sequence + resume_position,
+       std::span<const std::byte>{records[resume_position]}});
   const wal::SliderResult bit_result = bit_slider.process_available();
-  return hash_result.status == wal::SliderStatus::ModuleFailed &&
-         hash_result.processed_count == 0 && hash.state().failed &&
+  return !hash_processed && hash.state().failed &&
          hash.state().processed_end == resume_position &&
          hash_slider.current() == resume_position &&
          hash_frontier.acquire() == resume_position &&

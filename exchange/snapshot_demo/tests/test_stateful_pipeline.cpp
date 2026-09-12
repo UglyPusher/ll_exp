@@ -109,11 +109,8 @@ template <class Module>
     return false;
   }
 
-  wal::RecordTapeHeadProgress head(source);
   wal::Frontier durable;
-  wal::PersistenceSlider persistence_slider(
-      source, head, durable, persistence,
-      wal::BoundedRangeAcquire{1}, wal::PersistenceBatchPublish{});
+  wal::PersistenceSlider persistence_slider(source, durable, persistence, 1);
 
   snapshot_demo::HashChainModule hash_module;
   wal::Frontier hash_frontier;
@@ -153,7 +150,7 @@ template <class Module>
       ++produced;
     }
 
-    persistence_slider.acquire_policy().set_maximum_count(1 + cycle % 17);
+    persistence_slider.set_maximum_count(1 + cycle % 17);
     if (!accepted(persistence_slider.process_available())) return false;
     if ((cycle % 3) == 0 && !accepted(hash_slider.process_available())) {
       return false;

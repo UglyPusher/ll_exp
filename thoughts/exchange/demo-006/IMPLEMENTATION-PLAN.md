@@ -23,7 +23,7 @@ The implementation order is:
 
 ```text
 RecordTape
--> generic slider mechanics
+-> ordinary slider mechanics
 -> persistence as a slider
 -> two stateful modules
 -> snapshot semantics
@@ -68,7 +68,7 @@ needed for that extraction while retaining the existing three-role API.
 The first patch added `Position`, `RecordView`, `AccessResult`, and
 `RecordTape::try_view()`, and documented caller-owned retention and coordinate
 conversion. Physical format, adapter, reader, scanner, recovery, and CRC
-contracts were unchanged. Persistence extraction and generic slider
+contracts were unchanged. Persistence extraction and slider
 implementation remained pending.
 
 First patch status: IMPLEMENTED; independent review remains pending.
@@ -214,27 +214,22 @@ immutable `RecordView`, rejects reclaimed and unpublished identities before
 slot mapping, and documents caller-owned retention through reclamation. Its
 contract and verification are recorded under the approved first patch above.
 
-## Step 3 — implement generic slider mechanics
+## Step 3 — implement slider mechanics
 
-Implement one common stage-mechanics template parameterized by:
+Implement one stage-mechanics template parameterized by its module:
 
 ```text
-RecordTape/view
-UpstreamProgress
-OwnProgress
 Module
-AcquirePolicy
-PublishPolicy
 ```
 
 The slider must:
 
 1. observe the upstream frontier;
-2. obtain an allowed consecutive range;
+2. obtain the consecutive range visible in that observation;
 3. obtain each full RecordTape record;
 4. synchronously invoke its concrete module;
 5. advance its current position only after successful processing;
-6. publish its own frontier according to `PublishPolicy`.
+6. publish its own frontier after each successful record.
 
 The slider must not:
 
@@ -255,23 +250,15 @@ Implemented in `exchange/wal/include/fexma/wal/slider.hpp`:
 
 - `Frontier` owns one cache-line-isolated atomic exclusive-end position and
   uses constness to separate read and publish capabilities;
-- `RecordTapeHeadProgress` adapts the `RecordTape` head as a read-only upstream frontier;
-- `Slider` is parameterized by view source, upstream progress, module, acquire
-  policy, and publish policy, and holds its own `Frontier&`;
-- `AvailableRangeAcquire` selects the consecutive range visible in one
-  upstream observation;
-- `OnePositionPublish` authorizes publication after each successful module
-  call;
-- a publish policy returns `Hold`, `Publish`, or `Failed`, while only `Slider`
-  receives and invokes the own frontier writer;
-- one `process_available()` call is bounded by one acquired range and owns no
+- `Slider` is parameterized only by its module, reads `RecordTape::head()` or
+  an explicit upstream `Frontier`, and holds its own `Frontier&`;
+- one `process_available()` call is bounded by one upstream observation and owns no
   worker, polling/wait strategy, persistence, snapshot semantics, registry, or
   virtual dispatch.
 
-`test_wal_slider` verifies strict range order, exclusive progress publication,
-upstream limits, empty ranges, retry after module failure, whole-range deferred
-publication, progress mismatch, upstream regression, invalid policy ranges,
-reclaimed and unpublished views, and publication failure.
+`test_wal_slider` verifies strict order, per-record frontier publication,
+upstream limits, empty ranges, retry after module failure, upstream regression,
+and reclaimed and unpublished views.
 
 Verification on 2026-09-08, Windows / MSVC 19.44.35215.0 / x64 / C++20 /
 Release:
@@ -324,7 +311,7 @@ Implemented:
 
 - `NoOpModule` is a trivial statically bound module that completes every full
   `RecordView` synchronously;
-- the bare composition wires `RecordTapeHeadProgress`, `Slider<NoOpModule>`, its own
+- the bare composition wires `RecordTape`, `Slider<NoOpModule>`, its own
   `Frontier`, and composition-owned `RecordTape::reclaim()` without another queue
   or payload copy;
 - publication of the NoOp frontier and advancement of `tail` are distinct;
@@ -358,7 +345,7 @@ and transitional persistence compatibility composition were not changed.
 
 ## Step 5 — attach persistence through a slider
 
-Attach the extracted `PersistenceModule` to the generic slider mechanics and
+Attach the extracted `PersistenceModule` to slider mechanics and
 move the transitional durable frontier out of the compatibility composition.
 
 Composition:
@@ -406,12 +393,9 @@ Implemented:
 
 - `PersistenceModule::process(RecordView)` supplies the ordinary slider module
   contract while retaining `append()` and `sync()` as persistence operations;
-- `BoundedRangeAcquire` selects at most the requested batch size;
-- `PersistenceBatchPublish` holds the frontier after each append, performs one
-  sync after a complete non-empty range, and authorizes publication only after
-  successful sync;
-- `PersistenceSlider` is a static specialization of the generic `Slider` over
-  `RecordTape`, `RecordTapeHeadProgress`, `PersistenceModule`, and those two policies;
+- `PersistenceSlider` is a dedicated bounded stage that appends a complete
+  selected batch, performs one sync, and publishes durable progress only after
+  success;
 - the special `durable_frontier_` implementation was replaced by the slider's
   ordinary durable frontier;
 - persistence failure publication is atomic so the producer role observes the
@@ -463,12 +447,8 @@ head
   -> tail
 ```
 
-Initial policies for both stateful stages:
-
-```text
-AvailableRangeAcquire
-OnePositionPublish
-```
+Both stateful stages use the ordinary Slider and publish after each successful
+record.
 
 Tests:
 
@@ -499,7 +479,7 @@ Implemented in the separate `exchange/snapshot_demo` application component:
 - both modules require `record.position == processed_end`, complete
   synchronously without allocation, and become terminally failed on a gap,
   duplicate, or reordered position;
-- both sliders use `AvailableRangeAcquire` and `OnePositionPublish`;
+- both stateful stages use the ordinary Slider;
 - the composition advances `tail` only through `BitF`, after the final slider
   invocation has retired its borrowed views.
 
@@ -578,7 +558,7 @@ Implemented in `exchange/snapshot_demo`:
   and sequence;
 - capture slots remain occupied until the composition releases the assembled
   generation, enforcing one generation in flight;
-- the generic slider remains unaware of record kinds and publishes `N + 1`
+- the ordinary slider remains unaware of record kinds and publishes `N + 1`
   only after the module has returned success for position `N`.
 
 `test_snapshot_demo_snapshot_semantics` verifies strict codec validation,

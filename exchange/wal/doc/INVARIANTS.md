@@ -36,13 +36,13 @@ own frontier <= slider current <= observed upstream frontier
 - A record view is obtained by its absolute zero-based position.
 - The module must complete position `p` successfully before current becomes
   `p + 1`.
-- A publish decision is applied only after successful module completion.
+- Own frontier publication occurs only after successful module completion.
 - Release publication of exclusive end `p + 1` makes module output for
   position `p` visible to an acquire-reading downstream stage.
 - The composition may reclaim only through the last mandatory published
   frontier and only after all borrowed views have been retired.
 
-The generic mechanics allocate no storage, copy no payload, interpret no
+The slider mechanics allocate no storage, copy no payload, interpret no
 record kind, and perform no persistence, snapshot I/O, waiting, or scheduling.
 
 For the bare linear composition:
